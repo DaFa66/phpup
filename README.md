@@ -1,18 +1,19 @@
-# ZAMPP Dashboard
+# getPHP - Local PHP Stack. One Command. Done.
+
 Launch your local PHP web stack with a single command. > Enjoy a full development environment without the bloat of a desktop application. Currently available for macOS (Apple Silicon) only. Windows and Linux versions are in the works.
 
 ## How to use?
-Paste this into a macOS Terminal or Linux shell prompt:
+Paste this into a macOS Terminal:
 ```shell
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/zatikbalazs/zampp/HEAD/zampp.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/getphp/getphp/HEAD/getphp-mac.sh)"
 ```
-__Zero footprint:__ The ZAMPP Dashboard runs entirely in-memory and never installs itself on your machine. Only the web stack is added if you choose to install it. To manage services, update, or uninstall the stack, simply re-run the command in your terminal at any time.
+__Zero footprint:__ The getPHP script runs entirely in-memory and never installs itself on your machine. Only the PHP stack is added if you choose to install it. To manage services, update, or uninstall the stack, simply re-run the command in your terminal at any time.
 
-## What does the ZAMPP Dashboard do?
+## What does the getPHP script do?
 It lets you install and manage (update, restart, delete) your local PHP web stack.
 
 ## What exactly happens during installation?
-The ZAMPP Dashboard installs and configures everything you need to start PHP web development on your machine:
+The getPHP script installs and configures everything you need to start PHP web development on your machine:
 - installs Homebrew
 - installs Apache
 - installs MySQL
@@ -35,13 +36,13 @@ The ZAMPP Dashboard installs and configures everything you need to start PHP web
 - starts the mysql service
 - starts the php service
 
-## How does the ZAMPP Dashboard work?
-The ZAMPP Dashboard is a shell script powered by Homebrew. It runs directly from GitHub and leaves no footprint on your system. Your web stack is only installed once you explicitly choose to do so.
+## How does the getPHP script work?
+The getPHP shell script is powered by Homebrew. It runs directly from GitHub and leaves no footprint on your system. Your PHP stack is only installed once you explicitly choose to do so.
 
-## Is the ZAMPP Dashboard free?
-Yes, the ZAMPP Dashboard is 100% free and open source.
+## Is the getPHP script free?
+Yes, the getPHP script is 100% free and open source.
 
 ## Support & Contributions
-If you enjoy using ZAMPP, please give it a star on GitHub to help others find it.
+If you enjoy using getPHP, please give it a star on GitHub to help others find it.
 
-If you run into any errors or bugs, please let me know by opening an [issue](https://github.com/zatikbalazs/zampp/issues) or sending a [pull request](https://github.com/zatikbalazs/zampp/pulls).
+If you run into any errors or bugs, please let me know by opening an [issue](https://github.com/getphp/getphp/issues) or sending a [pull request](https://github.com/getphp/getphp/pulls).
