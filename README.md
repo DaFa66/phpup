@@ -5,7 +5,7 @@ Launch your local PHP web stack with a single command. > Enjoy a full developmen
 ## How to use?
 Paste this into a macOS Terminal:
 ```shell
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/getphporg/getphp/HEAD/getphp-mac.sh)"
+/bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/getphporg/getphp/HEAD/getphp-mac.sh)"
 ```
 __Zero footprint:__ The getPHP script runs entirely in-memory and never installs itself on your machine. Only the PHP stack is added if you choose to install it. To manage services, update, or uninstall the stack, simply re-run the command in your terminal at any time.
 
