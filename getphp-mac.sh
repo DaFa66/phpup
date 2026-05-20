@@ -162,7 +162,7 @@ EOF
             brew services start mysql
             brew services start php
 
-            [[ $HOMEBREW == 1 && $APACHE == 1 && $MYSQL == 1 && $PHP == 1 && $PHPMYADMIN == 1 ]] && printf "\n[${GREEN}  OK  ${RESET}]  PHP stack is installed.\n" && /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/getphp/getphp/HEAD/getphp-mac.sh)" || printf "\n[${RED}  Error  ${RESET}]  PHP stack is not installed.\n"
+            [[ $HOMEBREW == 1 && $APACHE == 1 && $MYSQL == 1 && $PHP == 1 && $PHPMYADMIN == 1 ]] && printf "\n[${GREEN}  OK  ${RESET}]  PHP stack is installed.\n" && /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/getphporg/getphp/HEAD/getphp-mac.sh)" || printf "\n[${RED}  Error  ${RESET}]  PHP stack is not installed.\n"
             ;;
         [qQ]|[qQ]uit)
             printf "[${GREEN}  OK  ${RESET}]  Goodbye!\n"
