@@ -1,5 +1,12 @@
 #!/usr/bin/env sh
 
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    if ! command -v gcc &> /dev/null; then sudo apt install -y build-essential; fi
+    if ! command -v ps &> /dev/null; then sudo apt install -y procps; fi
+    if ! command -v file &> /dev/null; then sudo apt install -y file; fi
+    if ! command -v git &> /dev/null; then sudo apt install -y git; fi
+fi
+
 RED='\033[31m'
 GREEN='\033[32m'
 CYAN='\033[36m'
@@ -15,18 +22,14 @@ STACK=0
 
 printf "\n"
 
-printf "╔════════════════════════════════════════════════════════════════════════════════╗\n"
-printf "║                                                                                ║\n"
-printf "║     █████████  ██████████ ███████████ ███████████  █████   █████ ███████████   ║\n"
-printf "║    ███░░░░░███░░███░░░░░█░█░░░███░░░█░░███░░░░░███░░███   ░░███ ░░███░░░░░███  ║\n"
-printf "║   ███     ░░░  ░███  █ ░ ░   ░███  ░  ░███    ░███ ░███    ░███  ░███    ░███  ║\n"
-printf "║  ░███          ░██████       ░███     ░██████████  ░███████████  ░██████████   ║\n"
-printf "║  ░███    █████ ░███░░█       ░███     ░███░░░░░░   ░███░░░░░███  ░███░░░░░░    ║\n"
-printf "║  ░░███  ░░███  ░███ ░   █    ░███     ░███         ░███    ░███  ░███          ║\n"
-printf "║   ░░█████████  ██████████    █████    █████        █████   █████ █████         ║\n"
-printf "║    ░░░░░░░░░  ░░░░░░░░░░    ░░░░░    ░░░░░        ░░░░░   ░░░░░ ░░░░░          ║\n"
-printf "║    ${CYAN}www.getPHP.org - Local PHP Stack. One Command. Done.${RESET}                        ║\n"
-printf "╚════════════════════════════════════════════════════════════════════════════════╝\n"
+printf "┌────────────────────────────────────┐\n"
+printf "│             _   ____  _   _ ____   │\n"
+printf "│   __ _  ___| |_|  _ \| | | |  _ \  │\n"
+printf "│  / _\` |/ _ \ __| |_) | |_| | |_) | │\n"
+printf "│ | (_| |  __/ |_|  __/|  _  |  __/  │\n"
+printf "│  \__, |\___|\__|_|   |_| |_|_|     │\n"
+printf "│  |___/${CYAN}              www.getPHP.org${RESET} │\n"
+printf "└────────────────────────────────────┘\n"
 
 printf "\n"
 
@@ -85,6 +88,12 @@ if [[ $STACK == 0 ]]; then
     case "$command" in
         [iI]|[iI]nstall)
             [[ $HOMEBREW == 0 ]] && /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" && HOMEBREW=1
+
+            if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+                eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)" && source ~/.bashrc
+                printf "[${GREEN}  OK  ${RESET}]  Added brew to PATH.\n\n"
+            fi
+
             [[ $APACHE == 0 ]] && brew install httpd && APACHE=1
             [[ $MYSQL == 0 ]] && brew install mysql && MYSQL=1
             [[ $PHP == 0 ]] && brew install php && PHP=1
@@ -92,20 +101,30 @@ if [[ $STACK == 0 ]]; then
 
             BREW_PREFIX=$(brew --prefix)
 
-            sed -i '' "s/Listen 8080/Listen 80/" "$BREW_PREFIX/etc/httpd/httpd.conf"
+            sed -i.bak "s/Listen 8080/Listen 80/" "$BREW_PREFIX/etc/httpd/httpd.conf"
             printf "[${GREEN}  OK  ${RESET}]  Enabled port 80 in Apache.\n"
 
-            mkdir $HOME/www
-            printf "[${GREEN}  OK  ${RESET}]  Created directory: $HOME/www\n"
+            if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+                sudo setcap 'cap_net_bind_service=+ep' $(readlink -f $(which httpd))
 
-            sed -i '' "s@$BREW_PREFIX/var/www@$HOME/www@g" "$BREW_PREFIX/etc/httpd/httpd.conf"
-            printf "[${GREEN}  OK  ${RESET}]  Changed document root to $HOME/www in Apache.\n"
+                sed -i.bak "s/User _www/User www-data/" "$BREW_PREFIX/etc/httpd/httpd.conf"
+                printf "[${GREEN}  OK  ${RESET}]  Changed user to www-data in Apache.\n"
 
-            sed -i '' "s@$BREW_PREFIX/var/log/httpd/error_log@$HOME/www/error_log@g" "$BREW_PREFIX/etc/httpd/httpd.conf"
-            printf "[${GREEN}  OK  ${RESET}]  Changed location of error_log to $HOME/www in Apache.\n"
+                sed -i.bak "s/Group _www/Group www-data/" "$BREW_PREFIX/etc/httpd/httpd.conf"
+                printf "[${GREEN}  OK  ${RESET}]  Changed group to www-data in Apache.\n"
+            fi
 
-            sed -i '' "s@$BREW_PREFIX/var/log/httpd/access_log@$HOME/www/access_log@g" "$BREW_PREFIX/etc/httpd/httpd.conf"
-            printf "[${GREEN}  OK  ${RESET}]  Changed location of access_log to $HOME/www in Apache.\n"
+            mkdir $HOME/localhost
+            printf "[${GREEN}  OK  ${RESET}]  Created directory: $HOME/localhost\n"
+
+            sed -i.bak "s@$BREW_PREFIX/var/www@$HOME/localhost@g" "$BREW_PREFIX/etc/httpd/httpd.conf"
+            printf "[${GREEN}  OK  ${RESET}]  Changed document root to $HOME/localhost in Apache.\n"
+
+            sed -i.bak "s@$BREW_PREFIX/var/log/httpd/error_log@$HOME/localhost/error_log@g" "$BREW_PREFIX/etc/httpd/httpd.conf"
+            printf "[${GREEN}  OK  ${RESET}]  Changed location of error_log to $HOME/localhost in Apache.\n"
+
+            sed -i.bak "s@$BREW_PREFIX/var/log/httpd/access_log@$HOME/localhost/access_log@g" "$BREW_PREFIX/etc/httpd/httpd.conf"
+            printf "[${GREEN}  OK  ${RESET}]  Changed location of access_log to $HOME/localhost in Apache.\n"
 
             grep -F "LoadModule php_module $BREW_PREFIX/opt/php/lib/httpd/modules/libphp.so" "$BREW_PREFIX/etc/httpd/httpd.conf" &> /dev/null || printf "\nLoadModule php_module $BREW_PREFIX/opt/php/lib/httpd/modules/libphp.so\n" >> $BREW_PREFIX/etc/httpd/httpd.conf
             printf "[${GREEN}  OK  ${RESET}]  Enabled PHP in Apache (1/3).\n"
@@ -119,13 +138,13 @@ EOF
             grep -F "<FilesMatch \.php$>" "$BREW_PREFIX/etc/httpd/httpd.conf" &> /dev/null || printf "\n$ENABLE_PHP\n" >> $BREW_PREFIX/etc/httpd/httpd.conf
             printf "[${GREEN}  OK  ${RESET}]  Enabled PHP in Apache (2/3).\n"
 
-            sed -i '' "s/DirectoryIndex index.html/DirectoryIndex index.php index.html/" "$BREW_PREFIX/etc/httpd/httpd.conf"
+            sed -i.bak "s/DirectoryIndex index.html/DirectoryIndex index.php index.html/" "$BREW_PREFIX/etc/httpd/httpd.conf"
             printf "[${GREEN}  OK  ${RESET}]  Enabled PHP in Apache (3/3).\n"
 
-            sed -i '' "s@#LoadModule rewrite_module lib/httpd/modules/mod_rewrite.so@LoadModule rewrite_module lib/httpd/modules/mod_rewrite.so@g" "$BREW_PREFIX/etc/httpd/httpd.conf"
+            sed -i.bak "s@#LoadModule rewrite_module lib/httpd/modules/mod_rewrite.so@LoadModule rewrite_module lib/httpd/modules/mod_rewrite.so@g" "$BREW_PREFIX/etc/httpd/httpd.conf"
             printf "[${GREEN}  OK  ${RESET}]  Enabled rewrite module in Apache (1/2).\n"
 
-            sed -i '' "s/AllowOverride None/AllowOverride All/g" "$BREW_PREFIX/etc/httpd/httpd.conf"
+            sed -i.bak "s/AllowOverride None/AllowOverride All/g" "$BREW_PREFIX/etc/httpd/httpd.conf"
             printf "[${GREEN}  OK  ${RESET}]  Enabled rewrite module in Apache (2/2).\n"
 
 ENABLE_PHPMYADMIN=$(cat <<EOF
@@ -146,23 +165,23 @@ EOF
             grep -F "Alias /phpmyadmin $BREW_PREFIX/share/phpmyadmin" "$BREW_PREFIX/etc/httpd/httpd.conf" &> /dev/null || printf "\n$ENABLE_PHPMYADMIN\n" >> $BREW_PREFIX/etc/httpd/httpd.conf
             printf "[${GREEN}  OK  ${RESET}]  Enabled phpMyAdmin in Apache.\n"
 
-            sed -i '' "s/\$cfg\['blowfish_secret'\] = '';/\$cfg\['blowfish_secret'\] = '12345678901234567890123456789012';/" "$BREW_PREFIX/etc/phpmyadmin.config.inc.php"
+            sed -i.bak "s/\$cfg\['blowfish_secret'\] = '';/\$cfg\['blowfish_secret'\] = '12345678901234567890123456789012';/" "$BREW_PREFIX/etc/phpmyadmin.config.inc.php"
             printf "[${GREEN}  OK  ${RESET}]  Filled in blowfish secret in phpMyAdmin.\n"
 
-            sed -i '' "s/\$cfg\['Servers'\]\[\$i\]\['AllowNoPassword'\] = false;/\$cfg\['Servers'\]\[\$i\]\['AllowNoPassword'\] = true;/" "$BREW_PREFIX/etc/phpmyadmin.config.inc.php"
+            sed -i.bak "s/\$cfg\['Servers'\]\[\$i\]\['AllowNoPassword'\] = false;/\$cfg\['Servers'\]\[\$i\]\['AllowNoPassword'\] = true;/" "$BREW_PREFIX/etc/phpmyadmin.config.inc.php"
             printf "[${GREEN}  OK  ${RESET}]  Enabled passwordless login in phpMyAdmin.\n"
 
-cat << EOF > $HOME/www/phpinfo.php
+cat << EOF > $HOME/localhost/phpinfo.php
 <?php phpinfo(); ?>
 
 EOF
-            printf "[${GREEN}  OK  ${RESET}]  Created file: $HOME/www/phpinfo.php\n"
+            printf "[${GREEN}  OK  ${RESET}]  Created file: $HOME/localhost/phpinfo.php\n"
 
             brew services start httpd
             brew services start mysql
             brew services start php
 
-            [[ $HOMEBREW == 1 && $APACHE == 1 && $MYSQL == 1 && $PHP == 1 && $PHPMYADMIN == 1 ]] && printf "\n[${GREEN}  OK  ${RESET}]  PHP stack is installed.\n" && /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/getphporg/getphp/HEAD/getphp-mac.sh)" || printf "\n[${RED}  Error  ${RESET}]  PHP stack is not installed.\n"
+            [[ $HOMEBREW == 1 && $APACHE == 1 && $MYSQL == 1 && $PHP == 1 && $PHPMYADMIN == 1 ]] && printf "\n[${GREEN}  OK  ${RESET}]  PHP stack is installed.\n" && /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/getphporg/getphp/HEAD/getphp.sh)" || printf "\n[${RED}  Error  ${RESET}]  PHP stack is not installed.\n"
             ;;
         [qQ]|[qQ]uit)
             printf "[${GREEN}  OK  ${RESET}]  Goodbye!\n"
