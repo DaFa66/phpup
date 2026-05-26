@@ -10,6 +10,7 @@ fi
 RED='\033[31m'
 GREEN='\033[32m'
 CYAN='\033[36m'
+BOLD='\033[1m'
 UNDERLINE='\033[4m'
 RESET='\033[0m'
 
@@ -81,7 +82,7 @@ printf "${CYAN}${UNDERLINE}Q${RESET}${CYAN}uit${RESET}     Quit this application
 
 printf "\n"
 
-printf "==> Enter command: " && read command
+printf "${BOLD}==> Enter command:${RESET} " && read command
 
 printf "\n"
 
@@ -206,17 +207,17 @@ elif [[ $STACK == 1 ]]; then
             ;;
         [dD]|[dD]elete)
             printf "IMPORTANT DELETE INFORMATION!\n"
-            printf "=============================\n"
+            printf "${RED}=============================${RESET}\n"
             printf "- The data in the 'localhost' folder will NOT be deleted.\n"
             printf "- YES, Apache, MySQL, PHP and phpMyAdmin WILL BE DELETED!\n"
             printf "- YES, all of your local MySQL databases WILL BE DELETED!\n\n"
             printf "Are you sure you want to delete?\n\n"
-            printf "==> Enter ${CYAN}Delete${RESET}/${CYAN}Cancel${RESET}: " && read confirm
+            printf "${BOLD}==> Enter ${CYAN}Delete${RESET}/${BOLD}${CYAN}Cancel${RESET}: " && read confirm
 
             if [[ "$confirm" == "Delete" || "$confirm" == "delete" ]]; then
                 brew services stop httpd && brew services stop mysql && brew services stop php && brew uninstall httpd && brew uninstall mysql && brew uninstall php && brew uninstall phpmyadmin && brew autoremove && brew cleanup && rm -rf $BREW_PREFIX/etc/httpd/httpd.conf && printf "[${GREEN}  OK  ${RESET}]  Deleted file: $BREW_PREFIX/etc/httpd/httpd.conf\n" && rm -rf $BREW_PREFIX/etc/phpmyadmin.config.inc.php && printf "[${GREEN}  OK  ${RESET}]  Deleted file: $BREW_PREFIX/etc/phpmyadmin.config.inc.php\n" && printf "\n[${GREEN}  OK  ${RESET}]  PHP stack is deleted.\n" || printf "\n[${RED}  Error  ${RESET}]  Failed to delete the PHP stack.\n"
             else
-                printf "[${GREEN}  OK  ${RESET}]  Nothing was deleted.\n"
+                printf "\n[${GREEN}  OK  ${RESET}]  Nothing was deleted.\n"
                 printf "[${GREEN}  OK  ${RESET}]  Goodbye!\n"
             fi
             ;;
