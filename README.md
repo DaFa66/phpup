@@ -1,6 +1,6 @@
 # getPHP - Local PHP Stack. One Command. Done.
 
-Launch your local PHP web stack with a single command. > Enjoy a full development environment without the bloat of a desktop application. Currently available for Apple Silicon Mac, Ubuntu, Debian and Mint. The Windows version is in the works. Please visit [getPHP.org](https://getphp.org) to subscribe for updates.
+Launch your local PHP web stack with a single command. Enjoy a full development environment without the bloat of a desktop application. Please visit [getPHP.org](https://getphp.org) to subscribe for updates.
 
 ## Apple Silicon Mac
 Copy & paste this into your terminal:
@@ -57,3 +57,7 @@ If you enjoy using getPHP, please give it a star on GitHub to help others find i
 If you run into any errors or bugs, please let me know by opening an [issue](https://github.com/getphporg/getphp/issues) or sending a [pull request](https://github.com/getphporg/getphp/pulls).
 
 You can also directly contact me through the [Support Page](https://getphp.org/support.php) at [getPHP.org](https://getphp.org).
+
+---
+
+> **Disclaimer:** getPHP is an independent open-source tool and is not affiliated with, sponsored by, or endorsed by the PHP Group or the PHP Foundation.
