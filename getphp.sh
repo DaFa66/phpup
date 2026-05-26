@@ -65,7 +65,8 @@ if [[ $STACK == 1 ]]; then
     DOCUMENT_ROOT=$(grep -F "DocumentRoot \"" "$BREW_PREFIX/etc/httpd/httpd.conf" | awk '{print substr($2, 2, length($2)-2);}')
     printf "${CYAN}Where to put website files?${RESET} $DOCUMENT_ROOT\n"
     printf "${CYAN}How to test your PHP setup?${RESET} http://localhost/phpinfo.php\n"
-    printf "${CYAN}phpMyAdmin:${RESET} http://localhost/phpmyadmin (user: root, no password)\n"
+    printf "${CYAN}Where to access phpMyAdmin?${RESET} http://localhost/phpmyadmin\n"
+    printf "${CYAN}How to log into phpMyAdmin?${RESET} Username: root | Password: [blank]\n"
     printf "\n"
 fi
 
