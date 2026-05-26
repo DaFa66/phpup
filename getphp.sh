@@ -90,9 +90,13 @@ if [[ $STACK == 0 ]]; then
             [[ $HOMEBREW == 0 ]] && /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" && HOMEBREW=1
 
             if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-                echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc
-                eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-                printf "[${GREEN}  OK  ${RESET}]  Added brew to PATH.\n\n"
+                if ! command -v brew &> /dev/null; then
+                    echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc
+                    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+                    printf "[${GREEN}  OK  ${RESET}]  Added Homebrew to PATH.\n\n"
+                else
+                    printf "[${GREEN}  OK  ${RESET}]  Homebrew is already in PATH.\n\n"
+                fi
             fi
 
             [[ $APACHE == 0 ]] && brew install httpd && APACHE=1
