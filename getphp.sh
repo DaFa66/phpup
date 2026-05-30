@@ -212,9 +212,9 @@ elif [[ $STACK == 1 ]]; then
             printf "- Files in the 'localhost' directory will NOT be deleted.\n"
             printf "- Data in your local MySQL databases will NOT be deleted.\n\n"
             printf "Are you sure you want to proceed?\n\n"
-            printf "${BOLD}==> Enter ${CYAN}Delete${RESET}/${BOLD}${CYAN}Cancel${RESET}: " && read confirm
+            printf "${BOLD}==> Enter ${CYAN}Yes${RESET}/${BOLD}${CYAN}No${RESET}: " && read confirm
 
-            if [[ "$confirm" == "Delete" || "$confirm" == "delete" ]]; then
+            if [[ "$confirm" == "Yes" || "$confirm" == "yes" ]]; then
                 brew services stop httpd && brew services stop mysql && brew services stop php && brew uninstall httpd && brew uninstall mysql && brew uninstall php && brew uninstall phpmyadmin && brew autoremove && brew cleanup && rm -rf $BREW_PREFIX/etc/httpd/httpd.conf && printf "[${GREEN}  OK  ${RESET}]  Deleted file: $BREW_PREFIX/etc/httpd/httpd.conf\n" && rm -rf $BREW_PREFIX/etc/phpmyadmin.config.inc.php && printf "[${GREEN}  OK  ${RESET}]  Deleted file: $BREW_PREFIX/etc/phpmyadmin.config.inc.php\n" && printf "\n[${GREEN}  OK  ${RESET}]  PHP stack is deleted.\n" || printf "\n[${RED}  Error  ${RESET}]  Failed to delete the PHP stack.\n"
             else
                 printf "\n[${GREEN}  OK  ${RESET}]  Nothing was deleted.\n"
