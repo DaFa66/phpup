@@ -104,10 +104,34 @@ Q  Quit
 
 ## What the Installer Configures
 
-- **Apache** — Port 80, DocumentRoot `D:/webstack/www`, mod_rewrite, AllowOverride All, PHP module, phpMyAdmin alias, logs in `www/`
-- **PHP** — `extension_dir`, essential extensions (curl, gd, mbstring, mysqli, openssl, pdo_mysql, pdo_sqlite), display_errors On
-- **MariaDB** — Data directory initialised with blank root password
-- **phpMyAdmin** — Auto-generated `config.inc.php` with blowfish secret and passwordless root login
+### Apache
+- Port 80, ServerName `localhost:80` (suppresses AH00558 warnings)
+- DocumentRoot `D:/webstack/www` with `Options Indexes FollowSymLinks`
+- `mod_rewrite` enabled with `AllowOverride All` — Trongate, Laravel, WordPress `.htaccess` rewrites work out of the box
+- PHP module loaded from the installed PHP path
+- phpMyAdmin alias at `/phpmyadmin`
+- Error and access logs written to `www/`
+- Stale `httpd.pid` cleaned before each start (no "unclean shutdown" warnings)
+- Graceful shutdown via `httpd.exe -k stop` (force kill only as fallback)
+
+### PHP
+- **Extensions enabled:** `curl`, `fileinfo`, `gd`, `intl`, `mbstring`, `mysqli`, `openssl`, `pdo_mysql`, `pdo_sqlite`, `sqlite3`
+- `display_errors = On` for development
+- **Error logging:** `error_log = D:/webstack/www/php_errors.log`
+- **OPCache:** Enabled with 256 MB memory, 16 MB interned strings, 20,000 files — production-ready out of the box
+- **DLL compatibility:** PHP dependency DLLs (ICU, libssh2, nghttp2, etc.) are automatically copied to Apache's `bin/` to resolve extension loading warnings under Windows DLL search order
+
+### SQLite3 DLL Fix
+- VS17 PHP builds (8.5+) bundle an incompatible `libsqlite3.dll` that causes a blocking "Entry Point Not Found" popup when loading `pdo_sqlite` or `sqlite3` extensions
+- The installer downloads the latest compatible `sqlite3.dll` from sqlite.org and replaces the bundled version in both the PHP root AND Apache's `bin/` directory — allowing both SQLite extensions to load cleanly
+
+### MariaDB
+- Data directory initialised with blank root password
+- Latest stable release resolved via REST API (Rolling > LTS)
+- Debug-symbols-only zip excluded from download filter
+
+### phpMyAdmin
+- Auto-generated `config.inc.php` with blowfish secret, blank-password root login, and correct 1-based server indexing (`$i = 1`)
 
 ## Prerequisites
 
@@ -129,8 +153,19 @@ Unlike most installers that hardcode version numbers, `install_webstack.ps1` dyn
 
 - **Apache** — Scrapes the Apache Lounge download page, finds all VS## x64 zips, picks the highest VS version × Apache version combination
 - **PHP** — Queries the `releases.json` API from windows.php.net, filters for PHP 8.x thread-safe x64, prefers VS17 builds over VS16
-- **MariaDB** — Queries the MariaDB REST API (`/rest-api/mariadb/`), sorts stable releases by support policy (Rolling > LTS), then by version number
+- **MariaDB** — Queries the MariaDB REST API (`/rest-api/mariadb/`), sorts stable releases by support policy (Rolling > LTS), then by version number. Excludes debug-symbols-only zips.
 - **phpMyAdmin** — Scrapes the phpMyAdmin downloads page, finds all stable `all-languages.zip` files (excluding snapshots), picks the highest version
+
+## Known Quirks & Fixes
+
+### XAMPP Service Conflict
+If you have XAMPP installed, its `Apache2.4` Windows service may auto-restart and claim port 80 when the webstack stops. To switch: stop the XAMPP service (`net stop Apache2.4`), then start the webstack Apache directly.
+
+### Trongate / Framework Subdirectory Apps
+The webstack's Apache config supports `.htaccess` rewrites out of the box (`AllowOverride All` + `Options FollowSymLinks`). Clone any Trongate app under `www/` and the `public/` front controller is routed automatically.
+
+### PHP Extension `pdo_firebird`
+Not enabled by default — requires a separate Firebird client library (`fbclient.dll`) not bundled with PHP.
 
 ## Support & Contributions
 

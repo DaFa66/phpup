@@ -397,8 +397,8 @@ function Invoke-ConfigureApache {
     # Normalise line endings — .NET (?m)$ only matches before \n, not \r\n
     $conf = $conf -replace "`r`n", "`n"
 
-    $wwwUnix  = $WWW_PATH -replace '\\\\', '/'
-    $apacheUnix = $APACHE_PATH -replace '\\', '/'
+    $wwwUnix  = $WWW_PATH -replace '\\', '/'
+    $apacheUnix = $APACHE_PATH -replace '\', '/'
 
     # 1. Set ServerRoot and SRVROOT
     $newSrvRoot = "Define SRVROOT `"$apacheUnix`""
@@ -424,6 +424,12 @@ function Invoke-ConfigureApache {
     }
     Write-Ok "Port 80 configured"
 
+    # 2b. Set ServerName to suppress AH00558 warnings
+    if ($conf -match '(?m)^#ServerName') {
+        $conf = $conf -replace '(?m)^#ServerName\s+.*$', 'ServerName localhost:80'
+        Write-Ok "ServerName set to localhost:80"
+    }
+
     # 3. DocumentRoot
     $conf = $conf -replace 'DocumentRoot\s+".*"', "DocumentRoot `"$wwwUnix`""
     Write-Ok "DocumentRoot set to $WWW_PATH"
@@ -437,17 +443,26 @@ function Invoke-ConfigureApache {
     }
     Write-Ok "DirectoryIndex: index.php before index.html"
 
-    # 6. Enable mod_rewrite
-    $conf = $conf -replace '#LoadModule rewrite_module modules/mod_rewrite\.so', 'LoadModule rewrite_module modules/mod_rewrite.so'
+    # 6. Enable mod_rewrite (handle both "#LoadModule" and "# LoadModule" variants)
+    $conf = $conf -replace '#\s*LoadModule rewrite_module modules/mod_rewrite\.so', 'LoadModule rewrite_module modules/mod_rewrite.so'
     Write-Ok "mod_rewrite enabled"
 
     # 7. AllowOverride All
     $conf = $conf -replace 'AllowOverride None', 'AllowOverride All'
     Write-Ok "AllowOverride All"
 
+    # 7b. Ensure Options FollowSymLinks (required for mod_rewrite in .htaccess)
+    # The default Apache Lounge config has this, but some variants may set Options None
+    $wwwBlockStart = [regex]::Escape("<Directory `"$wwwUnix`">")
+    $optionsPattern = "$wwwBlockStart[\s\S]*?Options\s+"
+    if ($conf -match "$optionsPattern") {
+        $conf = $conf -replace "($optionsPattern)\S+", '${1}Indexes FollowSymLinks'
+        Write-Ok "Options Indexes FollowSymLinks set"
+    }
+
     # 8. PHP integration
-    $phpModuleUnix = "$($PHP_PATH -replace '\\','/')/php8apache2_4.dll"
-    $phpIniUnix    = $PHP_PATH -replace '\\','/'
+    $phpModuleUnix = "$($PHP_PATH -replace '\','/')/php8apache2_4.dll"
+    $phpIniUnix    = $PHP_PATH -replace '\','/'
 
     if ($conf -notmatch 'php_module') {
         $phpBlock = @"
@@ -463,7 +478,7 @@ PHPIniDir "$phpIniUnix"
 
     # 9. phpMyAdmin Alias
     if ($conf -notmatch 'Alias /phpmyadmin') {
-        $pmaUnix = $PHPMYADMIN_PATH -replace '\\', '/'
+        $pmaUnix = $PHPMYADMIN_PATH -replace '\', '/'
         $pmaBlock = @"
 
 # phpMyAdmin (getPHP)
@@ -511,17 +526,18 @@ function Invoke-ConfigurePhp {
     $ini = $ini -replace ';?\s*extension_dir\s*=\s*".*"', "extension_dir = `"$extDir`""
 
     # Enable essential extensions
-    # NOTE: pdo_sqlite is NOT enabled — VS17 PHP builds (8.5+) ship with a
-    # mismatched libsqlite3.dll that causes a blocking Entry Point popup.
-    # Use the sqlite3 extension (procedural API) instead.
+    # Note: pdo_sqlite + sqlite3 require Invoke-FixSqliteDll to replace
+    # the bundled libsqlite3.dll (VS17 builds have an incompatible version).
     $extensions = @(
         'extension=curl',
         'extension=fileinfo',
         'extension=gd',
+        'extention=intl',
         'extension=mbstring',
         'extension=mysqli',
         'extension=openssl',
         'extension=pdo_mysql',
+        'extension=pdo_sqlite',
         'extension=sqlite3'
     )
 
@@ -534,8 +550,26 @@ function Invoke-ConfigurePhp {
     $ini = $ini -replace 'display_startup_errors\s*=\s*Off', 'display_startup_errors = On'
     $ini = $ini -replace 'error_reporting\s*=\s*E_ALL & ~E_DEPRECATED & ~E_STRICT', 'error_reporting = E_ALL'
 
+    # Enable PHP error logging to file
+    $errorLogPath = "$WWW_PATH\php_errors.log"
+    $errorLogPathUnix = $errorLogPath -replace '\\', '/'
+    if ($ini -match ';?error_log\s*=') {
+        $ini = $ini -replace ';?error_log\s*=\s*.*', "error_log = `"$errorLogPathUnix`""
+    }
+    Write-Ok "PHP error_log -> $errorLogPath"
+
+    # Enable OPCache for performance
+    $ini = $ini -replace ';?opcache\.enable\s*=\s*\d', 'opcache.enable=1'
+    $ini = $ini -replace ';?opcache\.enable_cli\s*=\s*\d', 'opcache.enable_cli=0'
+    $ini = $ini -replace ';?opcache\.memory_consumption\s*=\s*\d+', 'opcache.memory_consumption=256'
+    $ini = $ini -replace ';?opcache\.interned_strings_buffer\s*=\s*\d+', 'opcache.interned_strings_buffer=16'
+    $ini = $ini -replace ';?opcache\.max_accelerated_files\s*=\s*\d+', 'opcache.max_accelerated_files=20000'
+    $ini = $ini -replace ';?opcache\.validate_timestamps\s*=\s*\d', 'opcache.validate_timestamps=1'
+    $ini = $ini -replace ';?opcache\.revalidate_freq\s*=\s*\d+', 'opcache.revalidate_freq=2'
+    Write-Ok "OPCache enabled (256 MB, production-ready)"
+
     Set-Content -Path $iniPath -Value $ini
-    Write-Ok "PHP extensions enabled: curl, fileinfo, gd, mbstring, mysqli, openssl, pdo_mysql, sqlite3"
+    Write-Ok "PHP extensions enabled: curl, fileinfo, gd, intl, mbstring, mysqli, openssl, pdo_mysql, pdo_sqlite, sqlite3"
 }
 
 function Invoke-FixSqliteDll {
@@ -569,7 +603,9 @@ function Invoke-FixSqliteDll {
             $srcDll = Get-ChildItem $extractDir -Filter "sqlite3.dll" -Recurse | Select-Object -First 1
             if ($srcDll) {
                 Copy-Item $srcDll.FullName $dllPath -Force
-                Write-Ok "SQLite3 DLL updated (replaced bundled version for VS17 compatibility)"
+                # Also copy to Apache bin — Windows DLL search starts from httpd.exe's dir
+                Copy-Item $srcDll.FullName "$APACHE_PATH\bin\libsqlite3.dll" -Force
+                Write-Ok "SQLite3 DLL updated (PHP root + Apache bin)"
             }
             else {
                 Write-Warn "Could not find sqlite3.dll in downloaded archive - skipping"
@@ -584,6 +620,33 @@ function Invoke-FixSqliteDll {
     }
     catch {
         Write-Warn "SQLite3 DLL update failed ($($_.Exception.Message)) - pdo_sqlite may not load"
+    }
+}
+
+function Invoke-CopyPhpDlls {
+    Write-Host ""
+    Write-Warn "Copying PHP dependency DLLs to Apache bin..."
+
+    $phpDlls = @(
+        'icudt77.dll',
+        'icuin77.dll',
+        'icuio77.dll',
+        'icuuc77.dll',
+        'libssh2.dll',
+        'nghttp2.dll',
+        'libzstd.dll',
+        'libsodium.dll'
+    )
+
+    foreach ($dll in $phpDlls) {
+        $src = "$PHP_PATH\$dll"
+        $dst = "$APACHE_PATH\bin\$dll"
+        if (Test-Path $src) {
+            Copy-Item $src $dst -Force
+            Write-Ok "Copied $dll"
+        } else {
+            Write-Warn "$dll not found in PHP root - skipping"
+        }
     }
 }
 
@@ -648,6 +711,7 @@ function Invoke-ConfigurePhpMyAdmin {
     $config = @"
 <?php
 /* getPHP - phpMyAdmin configuration */
+`$i = 1;
 `$cfg['blowfish_secret'] = '$blowfishSecret';
 `$cfg['Servers'][`$i]['host']          = '127.0.0.1';
 `$cfg['Servers'][`$i]['port']          = '3306';
@@ -687,6 +751,10 @@ function Start-WebStackServices {
             Write-Info "  https://aka.ms/vs/17/release/vc_redist.x64.exe"
             return
         }
+
+        # Remove stale pid file from previous unclean shutdown
+        $pidFile = "$APACHE_PATH\logs\httpd.pid"
+        if (Test-Path $pidFile) { Remove-Item $pidFile -Force -ErrorAction SilentlyContinue }
 
         Start-Process -FilePath "$APACHE_PATH\bin\httpd.exe" -WindowStyle Hidden
         Start-Sleep -Seconds 2
@@ -729,8 +797,13 @@ function Stop-WebStackServices {
     $stopped = $false
 
     if (Test-ApacheRunning) {
-        Get-Process -Name "httpd" -ErrorAction SilentlyContinue | Stop-Process -Force
-        Start-Sleep -Seconds 1
+        # Try graceful shutdown first, fall back to force kill
+        $graceful = & "$APACHE_PATH\bin\httpd.exe" -k stop 2>&1
+        Start-Sleep -Seconds 2
+        if (Test-ApacheRunning) {
+            Get-Process -Name "httpd" -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 1
+        }
         Write-Ok "Apache stopped"
         $stopped = $true
     }
@@ -797,10 +870,14 @@ function Invoke-InstallWebStack {
     Invoke-DownloadAndExtract $mariadbUrl $MARIADB_PATH    "MariaDB"
     Invoke-DownloadAndExtract $pmaUrl     $PHPMYADMIN_PATH "phpMyAdmin"
 
+    # Copy PHP dependency DLLs to Apache bin (ICU, curl deps, etc.)
+    # Windows DLL search starts from httpd.exe's directory, not PHP's.
+    Invoke-CopyPhpDlls
+
     # Configure
     Invoke-ConfigureApache
     Invoke-ConfigurePhp
-    # Invoke-FixSqliteDll
+    Invoke-FixSqliteDll
     Invoke-ConfigureMariaDb
     Invoke-ConfigurePhpMyAdmin
 
@@ -872,7 +949,7 @@ function Invoke-UpdateWebStack {
 
     Invoke-ConfigureApache
     Invoke-ConfigurePhp
-    # Invoke-FixSqliteDll
+    Invoke-FixSqliteDll
     Invoke-ConfigureMariaDb
     Invoke-ConfigurePhpMyAdmin
 
