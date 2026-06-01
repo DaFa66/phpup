@@ -47,12 +47,12 @@ function Get-MariaDbVersion {
 }
 
 function Test-ApacheRunning {
-    return (Get-Process -Name "httpd" -ErrorAction SilentlyContinue) -ne $null
+    return $null -ne (Get-Process -Name "httpd" -ErrorAction SilentlyContinue)
 }
 
 function Test-MariaDbRunning {
-    return ((Get-Process -Name "mysqld" -ErrorAction SilentlyContinue) -ne $null) -or
-           ((Get-Process -Name "mariadbd" -ErrorAction SilentlyContinue) -ne $null)
+    return ($null -ne (Get-Process -Name "mysqld" -ErrorAction SilentlyContinue)) -or
+           ($null -ne (Get-Process -Name "mariadbd" -ErrorAction SilentlyContinue))
 }
 
 function Test-StackComplete {
