@@ -494,8 +494,8 @@ Alias /phpmyadmin "$pmaUnix"
     Write-Ok "phpMyAdmin alias configured"
 
     # 10. Error/access logs in www folder
-    $conf = $conf -replace 'ErrorLog\s+".*"', "ErrorLog `"$wwwUnix/error_log`""
-    $conf = $conf -replace 'CustomLog\s+".*"\s+common', "CustomLog `"$wwwUnix/access_log`" common"
+    $conf = $conf -replace 'ErrorLog\s+".*"', "ErrorLog `"$wwwUnix/error.log`""
+    $conf = $conf -replace 'CustomLog\s+".*"\s+common', "CustomLog `"$wwwUnix/access.log`" common"
     Write-Ok "Log files directed to $WWW_PATH"
 
     Set-Content -Path $confPath -Value $conf
@@ -762,7 +762,7 @@ function Start-WebStackServices {
             Write-Ok "Apache started"
         }
         else {
-            Write-Err "Apache failed to start - check error_log in $WWW_PATH"
+            Write-Err "Apache failed to start - check error.log in $WWW_PATH"
             Write-Info "Common causes: port 80 in use, missing VC++ Redistributable, or config error."
         }
     }
