@@ -779,10 +779,10 @@ function Start-WebStackServices {
         $dataDir = "$MARIADB_PATH\data"
         $mysqld  = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
 
-        $proc = Start-Process -FilePath $mysqld `
+        Start-Process -FilePath $mysqld `
             -ArgumentList "--datadir=`"$dataDir`"", "--console" `
             -WindowStyle Hidden `
-            -PassThru
+            -PassThru | Out-Null
 
         Start-Sleep -Seconds 3
         if (Test-MariaDbRunning) {
@@ -802,7 +802,7 @@ function Stop-WebStackServices {
 
     if (Test-ApacheRunning) {
         # Try graceful shutdown first, fall back to force kill
-        $graceful = & "$APACHE_PATH\bin\httpd.exe" -k stop 2>&1
+        & "$APACHE_PATH\bin\httpd.exe" -k stop 2>&1 | Out-Null
         Start-Sleep -Seconds 2
         if (Test-ApacheRunning) {
             Get-Process -Name "httpd" -ErrorAction SilentlyContinue | Stop-Process -Force
