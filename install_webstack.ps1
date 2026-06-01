@@ -201,7 +201,7 @@ function Get-LatestMariadbUrl {
             $release = $detail.releases.$key
             foreach ($file in $release.files) {
                 $name = $file.file_name.ToLower()
-                if ($name -like "*winx64*" -and ($name -like "*.msi" -or $name -like "*.zip")) {
+                if ($name -like "*winx64*" -and $name -like "*.zip" -and $name -notlike "*debugsymbols*") {
                     Write-Ok "MariaDB -> $($file.file_download_url)"
                     return $file.file_download_url
                 }
@@ -275,8 +275,51 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
     $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
     try {
-        # Use MaximumRedirection for sites that redirect (MariaDB, phpMyAdmin)
-        if ($url -like "*mariadb*" -or $url -like "*files.phpmyadmin*") {
+        # MariaDB uses HTTP redirects that Invoke-WebRequest can't handle reliably.
+        # Use manual redirect-following downloader instead.
+        if ($url -like "*mariadb*") {
+            Write-Info "  (using redirect-resolving downloader)"
+
+            $current_url = $url
+            $max_redirects = 10
+            $i = 0
+
+            while ($i -lt $max_redirects) {
+                $request = [System.Net.HttpWebRequest]::Create($current_url)
+                $request.Method = "GET"
+                $request.AllowAutoRedirect = $false
+                $request.UserAgent = $ua
+
+                $response = $request.GetResponse()
+                $status = [int]$response.StatusCode
+
+                if ($status -ge 300 -and $status -lt 400) {
+                    $location = $response.Headers["Location"]
+                    if (-not $location) {
+                        $response.Close()
+                        throw "Redirect without Location header"
+                    }
+                    $current_url = $location
+                    $response.Close()
+                    $i++
+                    continue
+                }
+
+                # Final URL reached — stream to file
+                $stream = $response.GetResponseStream()
+                $fileStream = [System.IO.File]::Create($zipPath)
+                $stream.CopyTo($fileStream)
+                $fileStream.Close()
+                $stream.Close()
+                $response.Close()
+                break
+            }
+
+            if ($i -ge $max_redirects) {
+                throw "Too many redirects resolving MariaDB download"
+            }
+        }
+        elseif ($url -like "*files.phpmyadmin*") {
             Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -MaximumRedirection 10 -Headers @{ "User-Agent" = $ua }
         }
         else {
@@ -294,15 +337,37 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
     Write-Info "Extracting to $dest..."
     Expand-Archive -Path $zipPath -DestinationPath $dest -Force
 
-    # Flatten wrapper folder if present (e.g. Apache Lounge zip has Apache24/ folder)
-    $items = @(Get-ChildItem $dest)
-    if ($items.Count -eq 1 -and $items[0].PSIsContainer) {
-        $inner = $items[0].FullName
-        Write-Info "Flattening wrapper folder: $($items[0].Name)"
-        Get-ChildItem $inner | ForEach-Object {
-            Move-Item $_.FullName $dest -Force
+    # Flatten wrapper folder if present.
+    # Apache Lounge = Apache24/  |  PHP = php-8.x.x-Win32-vs17-x64/
+    # MariaDB = mariadb-12.x.x-winx64/  |  phpMyAdmin = phpMyAdmin-x.x.x-all-languages/
+    $allItems = @(Get-ChildItem $dest -Force)
+    $dirsOnly = @($allItems | Where-Object { $_ -is [System.IO.DirectoryInfo] })
+    $filesOnly = @($allItems | Where-Object { $_ -is [System.IO.FileInfo] })
+
+    # Strategy: if there's exactly one directory and no loose files, flatten it
+    if ($dirsOnly.Count -eq 1 -and $filesOnly.Count -eq 0) {
+        $inner = $dirsOnly[0].FullName
+        Write-Info "Flattening wrapper folder: $($dirsOnly[0].Name)"
+        Get-ChildItem $inner -Force | ForEach-Object {
+            Move-Item $_.FullName $dest -Force -ErrorAction SilentlyContinue
         }
-        Remove-Item $inner -Recurse -Force
+        Remove-Item $inner -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    elseif ($dirsOnly.Count -ge 1) {
+        # Multiple directories or mixed files/dirs — try to find known wrapper patterns
+        $knownWrappers = @('Apache24', 'php-*', 'mariadb-*', 'phpMyAdmin-*')
+        foreach ($pattern in $knownWrappers) {
+            $match = @($dirsOnly | Where-Object { $_.Name -like $pattern })
+            if ($match.Count -eq 1) {
+                $inner = $match[0].FullName
+                Write-Info "Flattening wrapper folder: $($match[0].Name)"
+                Get-ChildItem $inner -Force | ForEach-Object {
+                    Move-Item $_.FullName $dest -Force -ErrorAction SilentlyContinue
+                }
+                Remove-Item $inner -Recurse -Force -ErrorAction SilentlyContinue
+                break
+            }
+        }
     }
 
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
@@ -328,16 +393,25 @@ function Invoke-ConfigureApache {
     Copy-Item $confPath "$confPath.bak" -Force
 
     $conf = Get-Content $confPath -Raw
-    $wwwUnix  = $WWW_PATH -replace '\\', '/'
+
+    # Normalise line endings — .NET (?m)$ only matches before \n, not \r\n
+    $conf = $conf -replace "`r`n", "`n"
+
+    $wwwUnix  = $WWW_PATH -replace '\\\\', '/'
     $apacheUnix = $APACHE_PATH -replace '\\', '/'
 
-    # 1. Set ServerRoot
+    # 1. Set ServerRoot and SRVROOT
     $newSrvRoot = "Define SRVROOT `"$apacheUnix`""
     if ($conf -match '(?m)^Define SRVROOT') {
         $conf = $conf -replace '(?m)^Define SRVROOT ".*"$', $newSrvRoot
     }
     else {
         $conf = $newSrvRoot + "`r`n" + $conf
+    }
+
+    # Also fix literal ServerRoot (some configs don't use ${SRVROOT})
+    if ($conf -match '(?m)^ServerRoot\s+".*"') {
+        $conf = $conf -replace '(?m)^ServerRoot\s+".*"', "ServerRoot `"$apacheUnix`""
     }
     Write-Ok "ServerRoot configured"
 
@@ -437,6 +511,9 @@ function Invoke-ConfigurePhp {
     $ini = $ini -replace ';?\s*extension_dir\s*=\s*".*"', "extension_dir = `"$extDir`""
 
     # Enable essential extensions
+    # NOTE: pdo_sqlite is NOT enabled — VS17 PHP builds (8.5+) ship with a
+    # mismatched libsqlite3.dll that causes a blocking Entry Point popup.
+    # Use the sqlite3 extension (procedural API) instead.
     $extensions = @(
         'extension=curl',
         'extension=fileinfo',
@@ -445,7 +522,7 @@ function Invoke-ConfigurePhp {
         'extension=mysqli',
         'extension=openssl',
         'extension=pdo_mysql',
-        'extension=pdo_sqlite'
+        'extension=sqlite3'
     )
 
     foreach ($ext in $extensions) {
@@ -458,7 +535,56 @@ function Invoke-ConfigurePhp {
     $ini = $ini -replace 'error_reporting\s*=\s*E_ALL & ~E_DEPRECATED & ~E_STRICT', 'error_reporting = E_ALL'
 
     Set-Content -Path $iniPath -Value $ini
-    Write-Ok "PHP extensions enabled: curl, fileinfo, gd, mbstring, mysqli, openssl, pdo_mysql"
+    Write-Ok "PHP extensions enabled: curl, fileinfo, gd, mbstring, mysqli, openssl, pdo_mysql, sqlite3"
+}
+
+function Invoke-FixSqliteDll {
+    Write-Host ""
+    Write-Warn "Checking SQLite3 DLL..."
+
+    $dllPath = "$PHP_PATH\libsqlite3.dll"
+
+    # Scrape sqlite.org for the latest x64 DLL
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        $html = Invoke-WebRequest "https://www.sqlite.org/download.html" -UseBasicParsing -Headers @{ "User-Agent" = $ua }
+
+        # Find the x64 DLL zip path — sqlite.org changed their page layout.
+        # The path is now embedded in a CSV line or JS call, e.g.:
+        #   PRODUCT,3.53.1,2026/sqlite-dll-win-x64-3530100.zip,...
+        #   d391('a11','2026/sqlite-dll-win-x64-3530100.zip');
+        if ($html.Content -match '[/\w]*sqlite-dll-win-x64-(\d+)\.zip') {
+            $zipPath = $matches[0]
+            $url = "https://www.sqlite.org/$zipPath"
+            $zipFile = "$TEMP_DOWNLOADS\sqlite3_dll.zip"
+
+            Write-Info "Downloading latest SQLite3 DLL..."
+            Invoke-WebRequest $url -OutFile $zipFile -UseBasicParsing -Headers @{ "User-Agent" = $ua }
+
+            $extractDir = "$TEMP_DOWNLOADS\sqlite3_dll_extract"
+            New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+            Expand-Archive $zipFile $extractDir -Force
+
+            $srcDll = Get-ChildItem $extractDir -Filter "sqlite3.dll" -Recurse | Select-Object -First 1
+            if ($srcDll) {
+                Copy-Item $srcDll.FullName $dllPath -Force
+                Write-Ok "SQLite3 DLL updated (replaced bundled version for VS17 compatibility)"
+            }
+            else {
+                Write-Warn "Could not find sqlite3.dll in downloaded archive - skipping"
+            }
+
+            Remove-Item $zipFile -Force -ErrorAction SilentlyContinue
+            Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        else {
+            Write-Warn "Could not resolve latest SQLite3 DLL URL - skipping"
+        }
+    }
+    catch {
+        Write-Warn "SQLite3 DLL update failed ($($_.Exception.Message)) - pdo_sqlite may not load"
+    }
 }
 
 function Invoke-ConfigureMariaDb {
@@ -473,19 +599,34 @@ function Invoke-ConfigureMariaDb {
         return
     }
 
-    # Find the right executable
-    $mysqld = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
-
     Write-Info "Initialising MariaDB data directory..."
 
-    # --initialize-insecure creates a root account with no password
-    & $mysqld --initialize-insecure "--datadir=$dataDir" --console 2>&1 | Out-Null
+    # Try mariadb-install-db first (MariaDB 10.5+), fall back to mysqld --initialize-insecure
+    $installDb = "$MARIADB_PATH\bin\mariadb-install-db.exe"
+    $mysqld    = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
+
+    if (Test-Path $installDb) {
+        # Newer MariaDB: use mariadb-install-db
+        Write-Info "  Using mariadb-install-db..."
+        & $installDb --datadir="$dataDir" --password= 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+    }
+    elseif (Test-Path $mysqld) {
+        # Older / MySQL-compatible: --initialize-insecure creates root with no password
+        Write-Info "  Using mysqld --initialize-insecure..."
+        & $mysqld --initialize-insecure "--datadir=$dataDir" --console 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+    }
+    else {
+        Write-Err "No MariaDB server executable found in $MARIADB_PATH\bin"
+        Write-Err "Check that the MariaDB zip was extracted and flattened correctly."
+        return
+    }
 
     if (Test-Path $dataDir) {
         Write-Ok "MariaDB data directory initialised (root password is blank)"
     }
     else {
-        Write-Err "MariaDB initialisation failed"
+        Write-Err "MariaDB initialisation failed - check output above for details"
+        Write-Info "Common causes: missing Visual C++ Redistributable, or permission denied."
     }
 }
 
@@ -507,16 +648,16 @@ function Invoke-ConfigurePhpMyAdmin {
     $config = @"
 <?php
 /* getPHP - phpMyAdmin configuration */
-\$cfg['blowfish_secret'] = '$blowfishSecret';
-\$cfg['Servers'][\$i]['host']          = '127.0.0.1';
-\$cfg['Servers'][\$i]['port']          = '3306';
-\$cfg['Servers'][\$i]['connect_type']  = 'tcp';
-\$cfg['Servers'][\$i]['auth_type']     = 'config';
-\$cfg['Servers'][\$i]['user']          = 'root';
-\$cfg['Servers'][\$i]['password']      = '';
-\$cfg['Servers'][\$i]['AllowNoPassword'] = true;
-\$cfg['UploadDir'] = '';
-\$cfg['SaveDir']   = '';
+`$cfg['blowfish_secret'] = '$blowfishSecret';
+`$cfg['Servers'][`$i]['host']          = '127.0.0.1';
+`$cfg['Servers'][`$i]['port']          = '3306';
+`$cfg['Servers'][`$i]['connect_type']  = 'tcp';
+`$cfg['Servers'][`$i]['auth_type']     = 'config';
+`$cfg['Servers'][`$i]['user']          = 'root';
+`$cfg['Servers'][`$i]['password']      = '';
+`$cfg['Servers'][`$i]['AllowNoPassword'] = true;
+`$cfg['UploadDir'] = '';
+`$cfg['SaveDir']   = '';
 "@
 
     Set-Content -Path $configPath -Value $config
@@ -536,6 +677,17 @@ function Start-WebStackServices {
         Write-Info "Apache is already running"
     }
     else {
+        # Quick syntax check first - captures config errors before daemonizing
+        $testResult = & "$APACHE_PATH\bin\httpd.exe" -t 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "Apache configuration error:"
+            Write-Host $testResult -ForegroundColor DarkGray
+            Write-Info "If the error mentions missing DLLs (VCRUNTIME, MSVCP, etc.),"
+            Write-Info "install the Visual C++ Redistributable from:"
+            Write-Info "  https://aka.ms/vs/17/release/vc_redist.x64.exe"
+            return
+        }
+
         Start-Process -FilePath "$APACHE_PATH\bin\httpd.exe" -WindowStyle Hidden
         Start-Sleep -Seconds 2
         if (Test-ApacheRunning) {
@@ -543,6 +695,7 @@ function Start-WebStackServices {
         }
         else {
             Write-Err "Apache failed to start - check error_log in $WWW_PATH"
+            Write-Info "Common causes: port 80 in use, missing VC++ Redistributable, or config error."
         }
     }
 
@@ -647,6 +800,7 @@ function Invoke-InstallWebStack {
     # Configure
     Invoke-ConfigureApache
     Invoke-ConfigurePhp
+    Invoke-FixSqliteDll
     Invoke-ConfigureMariaDb
     Invoke-ConfigurePhpMyAdmin
 
@@ -718,6 +872,7 @@ function Invoke-UpdateWebStack {
 
     Invoke-ConfigureApache
     Invoke-ConfigurePhp
+    Invoke-FixSqliteDll
     Invoke-ConfigureMariaDb
     Invoke-ConfigurePhpMyAdmin
 
@@ -1007,15 +1162,13 @@ while ($true) {
             Write-Host ""
             Write-Ok "Goodbye!"
             Write-Host ""
-            break
+            exit 0
         }
         default {
             Write-Err "Command not recognised."
         }
     }
 
-    if ($cmd.ToLower() -ne "q") {
-        Write-Host ""
-        Pause
-    }
+    Write-Host ""
+    Pause
 }
