@@ -532,7 +532,7 @@ function Invoke-ConfigurePhp {
         'extension=curl',
         'extension=fileinfo',
         'extension=gd',
-        'extension=intl',
+        'extention=intl',
         'extension=mbstring',
         'extension=mysqli',
         'extension=openssl',
@@ -588,8 +588,8 @@ function Invoke-FixSqliteDll {
         # The path is now embedded in a CSV line or JS call, e.g.:
         #   PRODUCT,3.53.1,2026/sqlite-dll-win-x64-3530100.zip,...
         #   d391('a11','2026/sqlite-dll-win-x64-3530100.zip');
-        if ($html.Content -match 'PRODUCT,\d+\.\d+\.\d+,(\d{4}/sqlite-dll-win-x64-\d+\.zip)') {
-            $zipPath = $matches[1]
+        if ($html.Content -match '[/\w]*sqlite-dll-win-x64-(\d+)\.zip') {
+            $zipPath = $matches[0]
             $url = "https://www.sqlite.org/$zipPath"
             $zipFile = "$TEMP_DOWNLOADS\sqlite3_dll.zip"
 

@@ -398,7 +398,7 @@ function Invoke-ConfigureApache {
     $conf = $conf -replace "`r`n", "`n"
 
     $wwwUnix  = $WWW_PATH -replace '\\', '/'
-    $apacheUnix = $APACHE_PATH -replace '\', '/'
+    $apacheUnix = $APACHE_PATH -replace '\\', '/'
 
     # 1. Set ServerRoot and SRVROOT
     $newSrvRoot = "Define SRVROOT `"$apacheUnix`""
@@ -461,8 +461,8 @@ function Invoke-ConfigureApache {
     }
 
     # 8. PHP integration
-    $phpModuleUnix = "$($PHP_PATH -replace '\','/')/php8apache2_4.dll"
-    $phpIniUnix    = $PHP_PATH -replace '\','/'
+    $phpModuleUnix = "$($PHP_PATH -replace '\\','/')/php8apache2_4.dll"
+    $phpIniUnix    = $PHP_PATH -replace '\\','/'
 
     if ($conf -notmatch 'php_module') {
         $phpBlock = @"
@@ -478,7 +478,7 @@ PHPIniDir "$phpIniUnix"
 
     # 9. phpMyAdmin Alias
     if ($conf -notmatch 'Alias /phpmyadmin') {
-        $pmaUnix = $PHPMYADMIN_PATH -replace '\', '/'
+        $pmaUnix = $PHPMYADMIN_PATH -replace '\\', '/'
         $pmaBlock = @"
 
 # phpMyAdmin (getPHP)
@@ -494,8 +494,8 @@ Alias /phpmyadmin "$pmaUnix"
     Write-Ok "phpMyAdmin alias configured"
 
     # 10. Error/access logs in www folder
-    $conf = $conf -replace 'ErrorLog\s+".*"', "ErrorLog `"$wwwUnix/error_log`""
-    $conf = $conf -replace 'CustomLog\s+".*"\s+common', "CustomLog `"$wwwUnix/access_log`" common"
+    $conf = $conf -replace 'ErrorLog\s+".*"', "ErrorLog `"$wwwUnix/error.log`""
+    $conf = $conf -replace 'CustomLog\s+".*"\s+common', "CustomLog `"$wwwUnix/access.log`" common"
     Write-Ok "Log files directed to $WWW_PATH"
 
     Set-Content -Path $confPath -Value $conf
@@ -532,7 +532,7 @@ function Invoke-ConfigurePhp {
         'extension=curl',
         'extension=fileinfo',
         'extension=gd',
-        'extention=intl',
+        'extension=intl',
         'extension=mbstring',
         'extension=mysqli',
         'extension=openssl',
@@ -588,8 +588,8 @@ function Invoke-FixSqliteDll {
         # The path is now embedded in a CSV line or JS call, e.g.:
         #   PRODUCT,3.53.1,2026/sqlite-dll-win-x64-3530100.zip,...
         #   d391('a11','2026/sqlite-dll-win-x64-3530100.zip');
-        if ($html.Content -match '[/\w]*sqlite-dll-win-x64-(\d+)\.zip') {
-            $zipPath = $matches[0]
+        if ($html.Content -match 'PRODUCT,\d+\.\d+\.\d+,(\d{4}/sqlite-dll-win-x64-\d+\.zip)') {
+            $zipPath = $matches[1]
             $url = "https://www.sqlite.org/$zipPath"
             $zipFile = "$TEMP_DOWNLOADS\sqlite3_dll.zip"
 
@@ -762,7 +762,7 @@ function Start-WebStackServices {
             Write-Ok "Apache started"
         }
         else {
-            Write-Err "Apache failed to start - check error_log in $WWW_PATH"
+            Write-Err "Apache failed to start - check error.log in $WWW_PATH"
             Write-Info "Common causes: port 80 in use, missing VC++ Redistributable, or config error."
         }
     }
