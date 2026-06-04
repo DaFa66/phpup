@@ -2,18 +2,16 @@
 
 Launch your local PHP web stack with a single command. Enjoy a full development environment without the bloat of a desktop application. Please visit [getPHP.org](https://getphp.org) to subscribe for updates.
 
-## Apple Silicon Mac
-Copy & paste this into your terminal:
+## Copy & Paste Into Your Terminal
+Apple Silicon Mac:
 ```shell
 /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/getphporg/getphp/HEAD/getphp.sh)"
 ```
-## Ubuntu, Debian, Mint
-Copy & paste this into your terminal:
+Ubuntu, Debian, Mint:
 ```shell
 if ! command -v curl &> /dev/null; then sudo apt install -y curl; fi && source <(curl -fsSL https://raw.githubusercontent.com/getphporg/getphp/HEAD/getphp.sh)
 ```
-## Windows 11
-Currently under development.
+Windows 11: Currently under development.
 
 ## Video Tutorial
 If you want to see the script in action and learn how to use it, check out the video tutorial below:
