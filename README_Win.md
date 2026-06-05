@@ -2,7 +2,8 @@
 
 Launch your local PHP web stack on Windows 11 with a single PowerShell script. Enjoy a full development environment without the bloat of other desktop application and a replacement for a stale XAMPP install.
 
-> **This is the official Windows port of [getPHP.org](https://getphp.org).**  
+> **This is the unofficial Windows port of [getPHP.org](https://getphp.org).**
+> Port done by Simon Field (aka DaFa)  
 > The original Mac/Linux script lives at [getphporg/getphp](https://github.com/getphporg/getphp).
 
 ## Quick Start
@@ -233,17 +234,9 @@ Unlike most installers that hardcode version numbers, `getphp.ps1` dynamically r
 
 ## Known Quirks & Fixes
 
-### ARM64 / Snapdragon
+### ARM64 / Snapdragon / Apple Silicon (Windows VM)
+
 Not supported. getPHP requires x64 (Intel/AMD 64-bit) — Apache Lounge and MariaDB do not provide native ARM64 Windows binaries. The script detects ARM64 at startup and exits with a clear message.
-
-### XAMPP Service Conflict
-If you have XAMPP installed, its `Apache2.4` Windows service may auto-restart and claim port 80 when the webstack stops. To switch: stop the XAMPP service (`net stop Apache2.4`), then start the webstack Apache directly.
-
-### Trongate / Framework Subdirectory Apps
-The webstack's Apache config supports `.htaccess` rewrites out of the box (`AllowOverride All` + `Options FollowSymLinks`). Clone any Trongate app under `www/` and the `public/` front controller is routed automatically.
-
-### PHP Extension `pdo_firebird`
-Not enabled by default — requires a separate Firebird client library (`fbclient.dll`) not bundled with PHP.
 
 ## Support & Contributions
 
