@@ -1089,6 +1089,27 @@ function Invoke-InstallWebStack {
     Invoke-ConfigureApache
     Invoke-ConfigurePhp
     Invoke-FixSqliteDll
+
+    # Check for orphaned database backup from a previous install
+    $backupDir = "$BASE\data_backup"
+    if ((Test-Path $backupDir) -and (Get-ChildItem $backupDir -ErrorAction SilentlyContinue)) {
+        Write-Host ""
+        Write-Warn "Found database backup from a previous install: $backupDir"
+        $restore = Read-Host "Restore previous databases? [Y/n]"
+        if ($restore -eq "" -or $restore -match "^[Yy]") {
+            $dataDir = "$MARIADB_PATH\data"
+            New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+            Get-ChildItem $backupDir | ForEach-Object {
+                Move-Item $_.FullName $dataDir -Force
+            }
+            Remove-Item $backupDir -Force
+            Write-Ok "Previous databases restored to $dataDir"
+        }
+        else {
+            Write-Info "Skipping restore — backup remains at $backupDir"
+        }
+    }
+
     Invoke-ConfigureMariaDb
     Invoke-ConfigurePhpMyAdmin
 
@@ -1228,6 +1249,14 @@ function Invoke-DeleteWebStack {
     $dataDir = "$MARIADB_PATH\data"
     $backupDir = "$BASE\data_backup"
     if (Test-Path $dataDir) {
+        # If a previous backup already exists, timestamp it to avoid collision
+        if (Test-Path $backupDir) {
+            $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+            $oldBackup = "$BASE\data_backup_$ts"
+            Write-Warn "Existing data_backup found — renaming to data_backup_$ts"
+            Rename-Item $backupDir $oldBackup
+        }
+
         Write-Info "Backing up database data to $backupDir ..."
         New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
         Get-ChildItem $dataDir | ForEach-Object {
