@@ -63,6 +63,42 @@ function Test-StackComplete {
     return (Test-ApacheInstalled) -and (Test-PhpInstalled) -and (Test-MariaDbInstalled) -and (Test-PhpMyAdminInstalled)
 }
 
+# ---- Config Persistence --------------------------------------
+
+$CONFIG_FILE = "$env:APPDATA\getphp\config.json"
+
+function Get-Config {
+    if (-not (Test-Path $CONFIG_FILE)) { return $null }
+    try {
+        $config = Get-Content $CONFIG_FILE -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($config.install_path) { return $config }
+    }
+    catch {
+        # Corrupted config — treat as missing
+    }
+    return $null
+}
+
+function Save-Config {
+    param([string]$Path)
+    $configDir = Split-Path $CONFIG_FILE -Parent
+    if (-not (Test-Path $configDir)) {
+        New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+    }
+
+    $config = @{
+        install_path = $Path
+        installed_at = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+    }
+    $config | ConvertTo-Json | Out-File $CONFIG_FILE -Encoding UTF8
+}
+
+function Clear-Config {
+    if (Test-Path $CONFIG_FILE) {
+        Remove-Item $CONFIG_FILE -Force
+    }
+}
+
 # ---- VC++ Redistributable Check ------------------------------
 
 function Test-VcRedistInstalled {
@@ -1094,6 +1130,10 @@ function Invoke-DeleteWebStack {
     Write-Ok "PHP web stack deleted."
     Write-Info "Your website files in $WWW_PATH were preserved."
     Write-Info "Your database data was backed up to $backupDir"
+
+    # Clear saved config so next run prompts for a fresh location
+    Clear-Config
+    Write-Info "Installer config cleared — next run will prompt for a new path."
 }
 
 # ============================================================
@@ -1232,33 +1272,59 @@ if (-not $isAdmin) {
     exit 1
 }
 
-# Prompt for install location
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  getPHP Web Stack Install Location" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
-Write-Info "Where should the web stack be installed?"
-Write-Info "Press Enter to accept the default, or type a custom path."
-Write-Host ""
+# ---- Install location (config-aware) -------------------------
 
-$userPath = Read-Host "Install path [D:\webstack]"
+$config = Get-Config
 
-if ([string]::IsNullOrWhiteSpace($userPath)) {
-    $BASE = "D:\webstack"
-}
-else {
-    # Strip trailing backslash if present
-    $BASE = $userPath.TrimEnd('\')
+if ($config) {
+    # Previous run detected — use saved path
+    $BASE = $config.install_path
+    Write-Host ""
+    Write-Info "Stack location: $BASE"
 
-    # Reject paths with spaces (can break mysqld --datadir)
+    # Validate the saved path is usable
     if ($BASE -match '\s') {
-        Write-Err "Paths containing spaces are not supported (can cause issues with MariaDB)."
-        Write-Info "Please use a path without spaces, e.g. C:\webstack"
+        Write-Err "Saved path contains spaces — this is unsupported."
+        Write-Info "Delete the config and re-run: Remove-Item '$CONFIG_FILE'"
         Write-Host ""
         Pause
         exit 1
     }
+}
+else {
+    # First run — prompt for install location
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "  getPHP Web Stack Install Location" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Info "Where should the web stack be installed?"
+    Write-Info "Press Enter to accept the default, or type a custom path."
+    Write-Host ""
+
+    $userPath = Read-Host "Install path [C:\webstack]"
+
+    if ([string]::IsNullOrWhiteSpace($userPath)) {
+        $BASE = "C:\webstack"
+    }
+    else {
+        # Strip trailing backslash if present
+        $BASE = $userPath.TrimEnd('\')
+
+        # Reject paths with spaces (can break mysqld --datadir)
+        if ($BASE -match '\s') {
+            Write-Err "Paths containing spaces are not supported (can cause issues with MariaDB)."
+            Write-Info "Please use a path without spaces, e.g. C:\webstack"
+            Write-Host ""
+            Pause
+            exit 1
+        }
+    }
+
+    # Save for future runs so we skip this prompt next time
+    Save-Config -Path $BASE
+    Write-Host ""
+    Write-Ok "Web stack will be installed to: $BASE"
 }
 
 # Derive all paths from $BASE
@@ -1268,11 +1334,10 @@ $MARIADB_PATH    = "$BASE\mariadb"
 $WWW_PATH        = "$BASE\www"
 $PHPMYADMIN_PATH = "$WWW_PATH\phpmyadmin"
 
-Write-Host ""
-Write-Ok "Web stack will be installed to: $BASE"
-Write-Info "  Websites:  $WWW_PATH"
-Write-Info "  phpMyAdmin: http://localhost/phpmyadmin"
-Write-Host ""
+if (-not $config) {
+    Write-Info "  Websites:  $WWW_PATH"
+    Write-Info "  phpMyAdmin: http://localhost/phpmyadmin"
+}
 
 # ---- VC++ Redistributable startup check ----
 if (-not (Test-VcRedistInstalled)) {
