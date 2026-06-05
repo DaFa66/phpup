@@ -935,12 +935,26 @@ function Start-WebStackServices {
     Write-Host ""
     Write-Warn "Starting services..."
 
+    $apacheAsService  = Get-Service -Name $SERVICE_APACHE -ErrorAction SilentlyContinue
+    $mariadbAsService = Get-Service -Name $SERVICE_MARIADB -ErrorAction SilentlyContinue
+
     # Apache
     if (Test-ApacheRunning) {
         Write-Info "Apache is already running"
     }
+    elseif ($apacheAsService) {
+        # Registered as a Windows service — use service control
+        Start-Service $SERVICE_APACHE -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+        if ((Get-Service $SERVICE_APACHE).Status -eq "Running") {
+            Write-Ok "Apache started (Windows service)"
+        }
+        else {
+            Write-Err "Apache service failed to start — check Windows Event Viewer"
+        }
+    }
     else {
-        # Quick syntax check first - captures config errors before daemonizing
+        # Process mode: quick syntax check before daemonizing
         $testResult = & "$APACHE_PATH\bin\httpd.exe" -t 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
             Write-Err "Apache configuration error:"
@@ -970,6 +984,16 @@ function Start-WebStackServices {
     if (Test-MariaDbRunning) {
         Write-Info "MariaDB is already running"
     }
+    elseif ($mariadbAsService) {
+        Start-Service $SERVICE_MARIADB -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
+        if ((Get-Service $SERVICE_MARIADB).Status -eq "Running") {
+            Write-Ok "MariaDB started (Windows service, root password is blank)"
+        }
+        else {
+            Write-Err "MariaDB service failed to start — check Windows Event Viewer"
+        }
+    }
     else {
         $dataDir = "$MARIADB_PATH\data"
         $mysqld  = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
@@ -995,8 +1019,18 @@ function Stop-WebStackServices {
 
     $stopped = $false
 
-    if (Test-ApacheRunning) {
-        # Try graceful shutdown first, fall back to force kill
+    $apacheAsService  = Get-Service -Name $SERVICE_APACHE -ErrorAction SilentlyContinue
+    $mariadbAsService = Get-Service -Name $SERVICE_MARIADB -ErrorAction SilentlyContinue
+
+    # Apache
+    if ($apacheAsService -and (Get-Service $SERVICE_APACHE).Status -ne "Stopped") {
+        Stop-Service $SERVICE_APACHE -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+        Write-Ok "Apache service stopped"
+        $stopped = $true
+    }
+    elseif (Test-ApacheRunning) {
+        # Process mode: try graceful shutdown first, fall back to force kill
         & "$APACHE_PATH\bin\httpd.exe" -k stop 2>&1 | Out-Null
         Start-Sleep -Seconds 2
         if (Test-ApacheRunning) {
@@ -1010,7 +1044,14 @@ function Stop-WebStackServices {
         Write-Info "Apache not running"
     }
 
-    if (Test-MariaDbRunning) {
+    # MariaDB
+    if ($mariadbAsService -and (Get-Service $SERVICE_MARIADB).Status -ne "Stopped") {
+        Stop-Service $SERVICE_MARIADB -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+        Write-Ok "MariaDB service stopped"
+        $stopped = $true
+    }
+    elseif (Test-MariaDbRunning) {
         Get-Process -Name "mysqld", "mariadbd" -ErrorAction SilentlyContinue | Stop-Process -Force
         Start-Sleep -Seconds 2
         Write-Ok "MariaDB stopped"
@@ -1022,6 +1063,77 @@ function Stop-WebStackServices {
 
     if (-not $stopped) {
         Write-Info "No services were running"
+    }
+}
+
+# ---- Windows Service Helpers ---------------------------------
+
+$SERVICE_APACHE  = "getPHP_Apache"
+$SERVICE_MARIADB = "getPHP_MariaDB"
+
+function Test-ServicesInstalled {
+    return (Get-Service -Name $SERVICE_APACHE -ErrorAction SilentlyContinue) -ne $null
+}
+
+function Install-AsServices {
+    Write-Host ""
+    Write-Info "Registering Windows services (auto-start on boot)..."
+
+    # Stop any running process-mode instances first
+    Stop-WebStackServices
+
+    # --- Apache ---
+    if (Get-Service -Name $SERVICE_APACHE -ErrorAction SilentlyContinue) {
+        Write-Info "$SERVICE_APACHE service already exists — skipping"
+    }
+    else {
+        & "$APACHE_PATH\bin\httpd.exe" -k install -n $SERVICE_APACHE 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            # Set to auto-start
+            sc.exe config $SERVICE_APACHE start=auto 2>&1 | Out-Null
+            Write-Ok "$SERVICE_APACHE service installed"
+        }
+        else {
+            Write-Err "Failed to install $SERVICE_APACHE service"
+        }
+    }
+
+    # --- MariaDB ---
+    if (Get-Service -Name $SERVICE_MARIADB -ErrorAction SilentlyContinue) {
+        Write-Info "$SERVICE_MARIADB service already exists — skipping"
+    }
+    else {
+        $mysqld  = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
+        $dataDir = "$MARIADB_PATH\data"
+        & $mysqld --install $SERVICE_MARIADB --datadir="$dataDir" 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            sc.exe config $SERVICE_MARIADB start=auto 2>&1 | Out-Null
+            Write-Ok "$SERVICE_MARIADB service installed"
+        }
+        else {
+            Write-Err "Failed to install $SERVICE_MARIADB service"
+        }
+    }
+
+    # Start services
+    Start-Sleep -Seconds 1
+    Start-WebStackServices
+}
+
+function Remove-Services {
+    Write-Host ""
+    Write-Info "Removing Windows services..."
+
+    Stop-WebStackServices
+    Start-Sleep -Seconds 2
+
+    if (Get-Service -Name $SERVICE_APACHE -ErrorAction SilentlyContinue) {
+        sc.exe delete $SERVICE_APACHE 2>&1 | Out-Null
+        Write-Ok "$SERVICE_APACHE service removed"
+    }
+    if (Get-Service -Name $SERVICE_MARIADB -ErrorAction SilentlyContinue) {
+        sc.exe delete $SERVICE_MARIADB 2>&1 | Out-Null
+        Write-Ok "$SERVICE_MARIADB service removed"
     }
 }
 
@@ -1146,6 +1258,18 @@ function Invoke-InstallWebStack {
     Write-Host ""
     Write-Info "  PHP + MariaDB added to user PATH (new terminals only)"
     Write-Host ""
+
+    # Offer to register as Windows services (auto-start on boot)
+    if (-not (Test-ServicesInstalled)) {
+        $svcChoice = Read-Host "Install as Windows services (auto-start on boot)? [y/N]"
+        if ($svcChoice -match "^[Yy]") {
+            Install-AsServices
+        }
+        else {
+            Write-Info "Services will run as processes (started via this script)."
+            Write-Info "Re-run and press 'T' to start, or reinstall to register services."
+        }
+    }
 }
 
 # ============================================================
@@ -1213,6 +1337,15 @@ function Invoke-UpdateWebStack {
     }
     $pathEntries = Add-ToPath
     Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries
+
+    # Offer Windows services if not already registered
+    if (-not (Test-ServicesInstalled)) {
+        Write-Host ""
+        $svcChoice = Read-Host "Install as Windows services (auto-start on boot)? [y/N]"
+        if ($svcChoice -match "^[Yy]") {
+            Install-AsServices
+        }
+    }
 }
 
 # ============================================================
@@ -1281,6 +1414,9 @@ function Invoke-DeleteWebStack {
     Write-Ok "PHP web stack deleted."
     Write-Info "Your website files in $WWW_PATH were preserved."
     Write-Info "Your database data was backed up to $backupDir"
+
+    # Unregister Windows services if present
+    Remove-Services
 
     # Remove webstack from user PATH
     Remove-FromPath
