@@ -4,8 +4,8 @@
 #  Github: https://github.com/getphporg/getphp
 #  Author: Simon Field (AKA - DaFa)
 #  License: MIT
-#  Date: 2024-06-01
-#  Version: 1.0.0
+#  Date: 2024-06-05
+#  Version: 1.0.1
 # ============================================================
 #Requires -RunAsAdministrator
 
@@ -51,12 +51,12 @@ function Get-MariaDbVersion {
 }
 
 function Get-PhpMyAdminVersion {
-    # phpMyAdmin stores its version in the README file (e.g. "phpMyAdmin 5.2.2")
+    # phpMyAdmin stores its version in the README file (e.g. "Version 5.2.3")
     if (-not (Test-PhpMyAdminInstalled)) { return $null }
     $readme = "$PHPMYADMIN_PATH\README"
     if (Test-Path $readme) {
-        $content = Get-Content $readme -First 5 -Raw -ErrorAction SilentlyContinue
-        if ($content -match "phpMyAdmin\s+([\d.]+)") {
+        $content = (Get-Content $readme -First 5 -ErrorAction SilentlyContinue) -join "`n"
+        if ($content -match "Version\s+([\d.]+)") {
             return $matches[1]
         }
     }
