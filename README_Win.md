@@ -14,6 +14,8 @@ irm https://raw.githubusercontent.com/getphporg/getphp/HEAD/getphp.ps1 | iex
 
 Press **I** to install. That's it.
 
+On subsequent runs the script remembers your install path and goes straight to the dashboard — no prompts.
+
 ## What It Installs
 
 | Component      | Source                                                         | Latest?                                                             |
@@ -23,12 +25,12 @@ Press **I** to install. That's it.
 | **MariaDB**    | [mariadb.org](https://downloads.mariadb.org/rest-api/mariadb/) | ✅ Queries REST API for latest Stable (Rolling > LTS)               |
 | **phpMyAdmin** | [phpmyadmin.net](https://www.phpmyadmin.net/downloads/)        | ✅ Scrapes downloads page for latest stable                         |
 
-All installed to `D:\webstack\` by default, but you can change it — no system-wide changes, no services registered, no cruft.
+All installed to `C:\webstack\` by default — no system-wide changes, no services registered, no cruft.
 
 ## Directory Layout
 
 ```
-D:\webstack\
+C:\webstack\
 ├── apache\          # Apache Lounge (VS18, port 80)
 │   ├── bin\
 │   ├── conf\
@@ -41,9 +43,10 @@ D:\webstack\
 │   ├── bin\
 │   ├── data\
 │   └── ...
-└── www\             # ← Your websites go here
-    ├── phpinfo.php  # (auto-created test file)
-    └── phpmyadmin\  # phpMyAdmin
+├── www\             # ← Your websites go here
+│   ├── phpinfo.php  # (auto-created test file)
+│   └── phpmyadmin\  # phpMyAdmin
+└── data_backup\     # (created on delete — databases preserved here)
 ```
 
 ## Dashboard Commands
@@ -63,9 +66,9 @@ After running the script, you'll see the getPHP dashboard:
 Your Web Stack:
 ~~~~~~~~~~~~~~~
 Apache -------> 2.4.67
-MariaDB ------> 11.4.5
-PHP ----------> 8.4.7
-phpMyAdmin ---> available
+MariaDB ------> 12.3.2
+PHP ----------> 8.5.7
+phpMyAdmin ---> 5.2.3
 
 Service Status:
 ~~~~~~~~~~~~~~~
@@ -95,19 +98,54 @@ Q  Quit
 
 ## After Installation
 
-| Question                    | Answer                                 |
-| --------------------------- | -------------------------------------- |
-| Where to put website files? | `D:\webstack\www`                      |
-| How to test your PHP setup? | http://localhost/phpinfo.php           |
-| Where to access phpMyAdmin? | http://localhost/phpmyadmin            |
-| How to log into phpMyAdmin? | Username: `root` / Password: _(blank)_ |
+| Question                    | Answer                                    |
+| --------------------------- | ----------------------------------------- |
+| Where to put website files? | `C:\webstack\www`                         |
+| How to test your PHP setup? | http://localhost/phpinfo.php              |
+| Where to access phpMyAdmin? | http://localhost/phpmyadmin               |
+| How to log into phpMyAdmin? | Username: `root` / Password: _(blank)_    |
+| PHP from terminal?          | `php` and `mysql` added to user PATH      |
+
+## Persistent Config
+
+The script saves your install path and component versions to `%APPDATA%\getphp\config.json`. This means:
+
+- **One-time path prompt** — asked only on first run; subsequent runs go straight to the dashboard
+- **Version tracking** — Apache, PHP, MariaDB, and phpMyAdmin versions are recorded after each install/update
+- **PATH management** — the config tracks which directories were added to your user PATH
+- **Reset on delete** — pressing `D` clears the config entirely, so the next run prompts for a fresh location
+
+Example `config.json`:
+```json
+{
+  "install_path": "C:\\webstack",
+  "installed_at": "2026-06-05T20:45:00",
+  "paths": {
+    "apache": "C:\\webstack\\apache",
+    "php": "C:\\webstack\\php",
+    "mariadb": "C:\\webstack\\mariadb",
+    "www": "C:\\webstack\\www",
+    "phpmyadmin": "C:\\webstack\\www\\phpmyadmin"
+  },
+  "versions": {
+    "apache": "2.4.67",
+    "php": "8.5.7",
+    "mariadb": "12.3.2",
+    "phpmyadmin": "5.2.3"
+  },
+  "path_entries": [
+    "C:\\webstack\\php",
+    "C:\\webstack\\mariadb\\bin"
+  ]
+}
+```
 
 ## What the Installer Configures
 
 ### Apache
 
 - Port 80, ServerName `localhost:80` (suppresses AH00558 warnings)
-- DocumentRoot `D:/webstack/www` with `Options Indexes FollowSymLinks`
+- DocumentRoot `C:/webstack/www` with `Options Indexes FollowSymLinks`
 - `mod_rewrite` enabled with `AllowOverride All` — Trongate, Laravel, WordPress `.htaccess` rewrites work out of the box
 - PHP module loaded from the installed PHP path
 - phpMyAdmin alias at `/phpmyadmin`
@@ -119,9 +157,10 @@ Q  Quit
 
 - **Extensions enabled:** `curl`, `fileinfo`, `gd`, `intl`, `mbstring`, `mysqli`, `openssl`, `pdo_mysql`, `pdo_sqlite`, `sqlite3`
 - `display_errors = On` for development
-- **Error logging:** `error_log = D:/webstack/www/php_errors.log`
+- **Error logging:** `error_log = C:/webstack/www/php_errors.log`
 - **OPCache:** Enabled with 256 MB memory, 16 MB interned strings, 20,000 files — production-ready out of the box
 - **DLL compatibility:** PHP dependency DLLs (ICU, libssh2, nghttp2, etc.) are automatically copied to Apache's `bin/` to resolve extension loading warnings under Windows DLL search order
+- **Added to user PATH** — `php` command works from any new terminal window
 
 ### SQLite3 DLL Fix
 
@@ -133,28 +172,49 @@ Q  Quit
 - Data directory initialised with blank root password
 - Latest stable release resolved via REST API (Rolling > LTS)
 - Debug-symbols-only zip excluded from download filter
+- **Added to user PATH** — `mysql` command works from any new terminal window
 
 ### phpMyAdmin
 
 - Auto-generated `config.inc.php` with blowfish secret, blank-password root login, and correct 1-based server indexing (`$i = 1`)
+- Version detected from the installed README and shown in the dashboard
 
 ## Prerequisites
 
 - **Windows 10/11** (64-bit)
 - **Run as Administrator** (required for port 80 binding)
-- **Visual C++ Redistributable** — Apache Lounge VS18 binaries require the [latest VC++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe). The script will warn you about this during install if it's needed.
+- **Visual C++ Redistributable** — Apache Lounge VS18 and MariaDB 12.x require the [VC++ Redistributable (VS 2017–2026) x64](https://aka.ms/vs/17/release/vc_redist.x64.exe). The installer **automatically checks** if it's installed and offers a one-click silent install if missing.
+
+## Delete / Reinstall — Database Safety
+
+The delete command (`D`) preserves your data:
+
+1. Services are stopped
+2. `mariadb\data\` is moved to `data_backup\`
+3. Apache, PHP, MariaDB, and phpMyAdmin are removed
+4. `www\` (your websites) is left untouched
+5. If `data_backup\` already exists from a previous delete, it is timestamped (`data_backup_20260605_213000`) to avoid collisions
+
+When you reinstall (`I`), the script detects the orphaned `data_backup\` and offers to restore your databases:
+
+```
+Found database backup from a previous install: C:\webstack\data_backup
+Restore previous databases? [Y/n]
+```
+
+Say **yes** and your databases are moved back — MariaDB picks them up without re-initialisation.
 
 ## Zero Footprint
 
-The `install_webstack.ps1` script runs entirely in-memory and never installs itself on your machine. Only the web stack is added to `D:\webstack\` if you choose to install it. To manage services, update, or uninstall the stack, simply re-run the script at any time.
+The `getphp.ps1` script runs entirely in-memory and never installs itself on your machine. Only the web stack is added to `C:\webstack\` if you choose to install it, plus a small config file at `%APPDATA%\getphp\config.json`. To manage services, update, or uninstall the stack, simply re-run the script at any time.
 
 ## Uninstalling
 
-Run the script and press **D** (Delete). This removes Apache, PHP, MariaDB, and phpMyAdmin but **preserves** your website files in `D:\webstack\www\` and your MariaDB data directory. To perform a complete wipe, delete `D:\webstack\` manually after running Delete.
+Run the script and press **D** (Delete). This removes Apache, PHP, MariaDB, and phpMyAdmin but **preserves** your website files in `C:\webstack\www\` and your MariaDB data in `C:\webstack\data_backup\`. PATH entries are removed and the config is cleared. To perform a complete wipe, delete `C:\webstack\` and `%APPDATA%\getphp\` manually after running Delete.
 
 ## How It Resolves Latest Versions
 
-Unlike most installers that hardcode version numbers, `install_webstack.ps1` dynamically resolves the latest stable version of every component every time you install or update:
+Unlike most installers that hardcode version numbers, `getphp.ps1` dynamically resolves the latest stable version of every component every time you install or update:
 
 - **Apache** — Scrapes the Apache Lounge download page, finds all VS## x64 zips, picks the highest VS version × Apache version combination
 - **PHP** — Queries the `releases.json` API from windows.php.net, filters for PHP 8.x thread-safe x64, prefers VS17 builds over VS16
