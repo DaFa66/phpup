@@ -63,6 +63,69 @@ function Test-StackComplete {
     return (Test-ApacheInstalled) -and (Test-PhpInstalled) -and (Test-MariaDbInstalled) -and (Test-PhpMyAdminInstalled)
 }
 
+# ---- VC++ Redistributable Check ------------------------------
+
+function Test-VcRedistInstalled {
+# Checks whether Visual C++ Redistributable 14.51+ (VS 2017-2026) x64 is installed.
+# Required by Apache Lounge VS18 and MariaDB 12.x.
+    $minVersion = [version]"14.51.0"
+
+    $uninstallPaths = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+
+    foreach ($path in $uninstallPaths) {
+        $items = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -match "Microsoft Visual C\+\+ .*Redistributable.*x64" }
+
+        foreach ($item in $items) {
+            if ($item.DisplayVersion) {
+                try {
+                    $ver = [version]$item.DisplayVersion
+                    if ($ver -ge $minVersion) {
+                        return $true
+                    }
+                }
+                catch {
+                    # Version string couldn't be parsed — skip this entry
+                }
+            }
+        }
+    }
+    return $false
+}
+
+function Install-VcRedist {
+# Downloads and silently installs the Visual C++ Redistributable (VS 2017-2026) x64.
+    $installer = "$env:TEMP\vc_redist.x64.exe"
+
+    try {
+        Write-Info "Downloading Visual C++ Redistributable (VS 2017-2026) x64..."
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri "https://aka.ms/vc14/vc_redist.x64.exe" -OutFile $installer
+
+        Write-Info "Running installer (silent -- this may take a moment)..."
+        $proc = Start-Process -FilePath $installer -ArgumentList "/install", "/quiet", "/norestart" -Wait -PassThru
+
+        Remove-Item $installer -Force -ErrorAction SilentlyContinue
+
+        if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) {
+            Write-Ok "Visual C++ Redistributable installed successfully"
+            # 3010 = success, reboot required — unlikely with /norestart but handle gracefully
+        }
+        else {
+            Write-Warn "Installer exited with code $($proc.ExitCode). You may need to install manually:"
+            Write-Info "  https://aka.ms/vc14/vc_redist.x64.exe"
+        }
+    }
+    catch {
+        Write-Err "Failed to download or install VC++ Redistributable: $_"
+        Write-Info "Please install manually: https://aka.ms/vc14/vc_redist.x64.exe"
+        Remove-Item $installer -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # ============================================================
 #  URL RESOLUTION — Latest Stable Versions
 # ============================================================
@@ -840,11 +903,23 @@ function Invoke-InstallWebStack {
     Write-Bold "  Installing PHP Web Stack on Windows"
     Write-Bold "========================================"
 
-    # Pre-flight: VS18 Redistributable notice
+    # Pre-flight: VC++ Redistributable check (required by Apache VS18 + MariaDB 12.x)
     Write-Host ""
-    Write-Warn "Apache Lounge VS18 binaries require the latest Visual C++ Redistributable."
-    Write-Info "  If Apache fails to start, download and install:"
-    Write-Info "  https://aka.ms/vs/17/release/vc_redist.x64.exe"
+    if (Test-VcRedistInstalled) {
+        Write-Ok "Visual C++ Redistributable (VS 2017-2026) x64 — detected"
+    }
+    else {
+        Write-Warn "Visual C++ Redistributable (VS 2017-2026) x64 is NOT installed."
+        Write-Info "  This is required by Apache Lounge VS18 and MariaDB 12.x."
+        Write-Host ""
+        $choice = Read-Host "  Install it now? [Y/n]"
+        if ($choice -eq "" -or $choice -match "^[Yy]") {
+            Install-VcRedist
+        }
+        else {
+            Write-Warn "Skipping. Apache or MariaDB may fail to start without it."
+        }
+    }
     Write-Host ""
 
     # Create base directories
@@ -1198,6 +1273,14 @@ Write-Ok "Web stack will be installed to: $BASE"
 Write-Info "  Websites:  $WWW_PATH"
 Write-Info "  phpMyAdmin: http://localhost/phpmyadmin"
 Write-Host ""
+
+# ---- VC++ Redistributable startup check ----
+if (-not (Test-VcRedistInstalled)) {
+    Write-Warn "Visual C++ Redistributable (VS 2017-2026) x64 is NOT installed."
+    Write-Info "  This is required by Apache Lounge VS18 and MariaDB 12.x."
+    Write-Info "  The installer will offer to install it when you press 'I'."
+    Write-Host ""
+}
 
 while ($true) {
     Show-Dashboard
