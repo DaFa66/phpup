@@ -50,6 +50,19 @@ function Get-MariaDbVersion {
     return $null
 }
 
+function Get-PhpMyAdminVersion {
+    # phpMyAdmin stores its version in the README file (e.g. "phpMyAdmin 5.2.2")
+    if (-not (Test-PhpMyAdminInstalled)) { return $null }
+    $readme = "$PHPMYADMIN_PATH\README"
+    if (Test-Path $readme) {
+        $content = Get-Content $readme -First 5 -Raw -ErrorAction SilentlyContinue
+        if ($content -match "phpMyAdmin\s+([\d.]+)") {
+            return $matches[1]
+        }
+    }
+    return "unknown"
+}
+
 function Test-ApacheRunning {
     return $null -ne (Get-Process -Name "httpd" -ErrorAction SilentlyContinue)
 }
@@ -80,23 +93,106 @@ function Get-Config {
 }
 
 function Save-Config {
-    param([string]$Path)
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$InstallPath,
+
+        [hashtable]$Versions,
+
+        [string[]]$PathEntries
+    )
+
     $configDir = Split-Path $CONFIG_FILE -Parent
     if (-not (Test-Path $configDir)) {
         New-Item -ItemType Directory -Force -Path $configDir | Out-Null
     }
 
-    $config = @{
-        install_path = $Path
+    $config = [ordered]@{
+        install_path = $InstallPath
         installed_at = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+        paths        = @{
+            apache     = "$InstallPath\apache"
+            php        = "$InstallPath\php"
+            mariadb    = "$InstallPath\mariadb"
+            www        = "$InstallPath\www"
+            phpmyadmin = "$InstallPath\www\phpmyadmin"
+        }
     }
-    $config | ConvertTo-Json | Out-File $CONFIG_FILE -Encoding UTF8
+
+    if ($Versions)    { $config.versions     = $Versions }
+    if ($PathEntries) { $config.path_entries = $PathEntries }
+
+    $config | ConvertTo-Json -Depth 4 | Out-File $CONFIG_FILE -Encoding UTF8
 }
 
 function Clear-Config {
     if (Test-Path $CONFIG_FILE) {
         Remove-Item $CONFIG_FILE -Force
     }
+}
+
+# ---- PATH Management -----------------------------------------
+
+function Add-ToPath {
+    <#
+    .SYNOPSIS
+    Adds PHP and MariaDB bin directories to the user PATH.
+    Removes any previous webstack entries stored in config first.
+    #>
+    $phpBin    = "$BASE\php"
+    $mariadbBin = "$BASE\mariadb\bin"
+
+    $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    $entries = if ($currentPath) { $currentPath -split ';' | Where-Object { $_ } } else { @() }
+
+    # Remove old webstack entries (from previous install at a different path)
+    $oldEntries = @()
+    $savedConfig = Get-Config
+    if ($savedConfig -and $savedConfig.path_entries) {
+        $oldEntries = $savedConfig.path_entries
+        $entries = $entries | Where-Object { $oldEntries -notcontains $_ }
+    }
+
+    # Build list of new entries to add (avoid duplicates)
+    $toAdd = @()
+    foreach ($p in @($phpBin, $mariadbBin)) {
+        if ($entries -notcontains $p) {
+            $toAdd += $p
+            Write-Ok "Added to PATH: $p"
+        }
+    }
+
+    if ($toAdd.Count -eq 0) {
+        Write-Info "PATH entries already present"
+        return @()
+    }
+
+    $newPath = (@($entries) + @($toAdd)) -join ';'
+    [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+
+    # Also update the current session
+    $env:PATH = $newPath
+
+    return $toAdd
+}
+
+function Remove-FromPath {
+    <#
+    .SYNOPSIS
+    Removes webstack PATH entries (PHP + MariaDB bin) from the user PATH.
+    #>
+    $toRemove = @("$BASE\php", "$BASE\mariadb\bin")
+
+    $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    if (-not $currentPath) { return }
+
+    $entries = $currentPath -split ';' | Where-Object { $_ } | Where-Object { $toRemove -notcontains $_ }
+    $newPath = $entries -join ';'
+
+    [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+    $env:PATH = $newPath
+
+    Write-Ok "Webstack entries removed from PATH"
 }
 
 # ---- VC++ Redistributable Check ------------------------------
@@ -1003,6 +1099,20 @@ function Invoke-InstallWebStack {
     # Start services
     Start-WebStackServices
 
+    # Capture installed versions
+    $versions = @{
+        apache     = Get-ApacheVersion
+        php        = Get-PhpVersion
+        mariadb    = Get-MariaDbVersion
+        phpmyadmin = (Get-PhpMyAdminVersion)
+    }
+
+    # Add PHP + MariaDB to user PATH (removes old entries from previous install)
+    $pathEntries = Add-ToPath
+
+    # Update config with versions and PATH entries
+    Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries
+
     Write-Host ""
     Write-Bold "========================================"
     Write-Bold "  Installation Complete!"
@@ -1012,6 +1122,8 @@ function Invoke-InstallWebStack {
     Write-Info "  PHP test:      http://localhost/phpinfo.php"
     Write-Info "  phpMyAdmin:    http://localhost/phpmyadmin"
     Write-Info "  MariaDB login: root / [blank password]"
+    Write-Host ""
+    Write-Info "  PHP + MariaDB added to user PATH (new terminals only)"
     Write-Host ""
 }
 
@@ -1070,6 +1182,16 @@ function Invoke-UpdateWebStack {
 
     Start-WebStackServices
     Write-Ok "Update complete"
+
+    # Update config with new versions
+    $versions = @{
+        apache     = Get-ApacheVersion
+        php        = Get-PhpVersion
+        mariadb    = Get-MariaDbVersion
+        phpmyadmin = (Get-PhpMyAdminVersion)
+    }
+    $pathEntries = Add-ToPath
+    Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries
 }
 
 # ============================================================
@@ -1131,6 +1253,9 @@ function Invoke-DeleteWebStack {
     Write-Info "Your website files in $WWW_PATH were preserved."
     Write-Info "Your database data was backed up to $backupDir"
 
+    # Remove webstack from user PATH
+    Remove-FromPath
+
     # Clear saved config so next run prompts for a fresh location
     Clear-Config
     Write-Info "Installer config cleared — next run will prompt for a new path."
@@ -1188,7 +1313,7 @@ function Show-Dashboard {
 
     Write-Host "phpMyAdmin ---> " -NoNewline
     if (Test-PhpMyAdminInstalled) {
-        Write-Host "available" -ForegroundColor Green
+        Write-Host (Get-PhpMyAdminVersion) -ForegroundColor Green
     }
     else {
         Write-Host "not installed" -ForegroundColor Red
@@ -1322,7 +1447,7 @@ else {
     }
 
     # Save for future runs so we skip this prompt next time
-    Save-Config -Path $BASE
+    Save-Config -InstallPath $BASE
     Write-Host ""
     Write-Ok "Web stack will be installed to: $BASE"
 }
