@@ -1,11 +1,11 @@
 # ============================================================
-#  getPHP — Windows 11 Web Stack Installer & Dashboard
-#  Inspired by getphp.org (Mac) — PowerShell Edition
+#  getPHP — Windows 11 x64 Web Stack Installer & Dashboard
+#  Inspired by getphp.org (Mac & Linux) — PowerShell Edition
 #  Github: https://github.com/getphporg/getphp
-#  Author: Simon Field (AKA - DaFa)
+#  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2024-06-05
-#  Version: 1.0.1
+#  Date: 2024-06-06
+#  Version: 1.0.2
 # ============================================================
 #Requires -RunAsAdministrator
 
