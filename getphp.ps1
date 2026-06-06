@@ -108,9 +108,11 @@ function Save-Config {
         [Parameter(Mandatory=$true)]
         [string]$InstallPath,
 
-        [hashtable]$Versions,
+        $Versions,
 
-        [string[]]$PathEntries
+        [string[]]$PathEntries,
+
+        [bool]$ServicesRegistered = $false
     )
 
     $configDir = Split-Path $CONFIG_FILE -Parent
@@ -118,10 +120,12 @@ function Save-Config {
         New-Item -ItemType Directory -Force -Path $configDir | Out-Null
     }
 
+    # Start with base structure (always fresh)
     $config = [ordered]@{
-        install_path = $InstallPath
-        installed_at = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
-        paths        = @{
+        install_path        = $InstallPath
+        installed_at        = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+        services_registered = $ServicesRegistered
+        paths               = @{
             apache     = "$InstallPath\apache"
             php        = "$InstallPath\php"
             mariadb    = "$InstallPath\mariadb"
@@ -130,7 +134,14 @@ function Save-Config {
         }
     }
 
-    if ($Versions)    { $config.versions     = $Versions }
+    if ($Versions) {
+        # Convert from PSCustomObject (JSON round-trip) or accept hashtable
+        $v = @{}
+        foreach ($prop in $Versions.PSObject.Properties) {
+            $v[$prop.Name] = $prop.Value
+        }
+        $config.versions = $v
+    }
     if ($PathEntries) { $config.path_entries = $PathEntries }
 
     $config | ConvertTo-Json -Depth 4 | Out-File $CONFIG_FILE -Encoding UTF8
@@ -1132,7 +1143,7 @@ function Install-AsServices {
     Start-WebStackServices
 }
 
-function Offer-ServiceRegistration {
+function Request-ServiceRegistration {
     if (Test-ServicesInstalled) { return }
 
     Write-Host ""
@@ -1157,6 +1168,9 @@ function Offer-ServiceRegistration {
             sc.exe config $SERVICE_MARIADB start=auto 2>&1 | Out-Null
             Write-Ok "$SERVICE_MARIADB service installed"
         }
+
+        # Update config to reflect registered services
+        Save-Config -InstallPath $BASE -ServicesRegistered:$true
     }
 }
 
@@ -1290,9 +1304,6 @@ function Invoke-InstallWebStack {
     # Add PHP + MariaDB to user PATH (removes old entries from previous install)
     $pathEntries = Add-ToPath
 
-    # Update config with versions and PATH entries
-    Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries
-
     Write-Host ""
     Write-Bold "========================================"
     Write-Bold "  Installation Complete!"
@@ -1329,6 +1340,9 @@ function Invoke-InstallWebStack {
 
     # Start services (uses service control if registered, process mode otherwise)
     Start-WebStackServices
+
+    # Save config with final state (including service registration decision)
+    Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries -ServicesRegistered:(Test-ServicesInstalled)
 }
 
 # ============================================================
@@ -1439,7 +1453,6 @@ function Invoke-UpdateWebStack {
         phpmyadmin = $(if ($needsPma)     { Get-PhpMyAdminVersion }  else { $existingConfig.versions.phpmyadmin })
     }
     $pathEntries = Add-ToPath
-    Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries
 
     # Offer Windows services if not already registered
     if (-not (Test-ServicesInstalled)) {
@@ -1449,6 +1462,9 @@ function Invoke-UpdateWebStack {
             Install-AsServices
         }
     }
+
+    # Save config with final state (including service registration)
+    Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries -ServicesRegistered:(Test-ServicesInstalled)
 }
 
 # ============================================================
@@ -1616,6 +1632,26 @@ function Show-Dashboard {
         Write-Host "not available" -ForegroundColor Red
     }
 
+    # Windows Services (always shown when stack is complete)
+    Write-Host ""
+    Write-Host "Windows Services:" -ForegroundColor White
+    Write-Host "~~~~~~~~~~~~~~~~"
+    $svcRegistered = Test-ServicesInstalled
+    Write-Host "getPHP_Apache   " -NoNewline
+    if ($svcRegistered) {
+        Write-Host "registered" -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host "not registered" -ForegroundColor DarkGray
+    }
+    Write-Host "getPHP_MariaDB  " -NoNewline
+    if ($svcRegistered) {
+        Write-Host "registered" -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host "not registered" -ForegroundColor DarkGray
+    }
+
     # ---- Info ----
     if (Test-StackComplete) {
         Write-Host ""
@@ -1766,6 +1802,19 @@ if (-not (Test-VcRedistInstalled)) {
     Write-Host ""
 }
 
+# ---- Sync config service state with reality ----
+if ($config -and (Test-StackComplete)) {
+    $actualRegistered = Test-ServicesInstalled
+    $configRegistered  = if ($config.PSObject.Properties.Name -contains 'services_registered') {
+        $config.services_registered
+    } else {
+        $false
+    }
+    if ($actualRegistered -ne $configRegistered) {
+        Save-Config -InstallPath $BASE -ServicesRegistered:$actualRegistered -Versions $config.versions -PathEntries $config.path_entries
+    }
+}
+
 while ($true) {
     Show-Dashboard
 
@@ -1795,12 +1844,28 @@ while ($true) {
             else { Write-Err "Stack not installed." }
         }
         "s" {
-            if ($stackComplete) { Stop-WebStackServices }
+            if ($stackComplete) {
+                if (Test-ServicesInstalled) {
+                    $choice = Read-Host "Remove Windows service registration? [y/N]"
+                    if ($choice -match "^[Yy]") {
+                        Stop-WebStackServices
+                        Remove-Services
+                        Save-Config -InstallPath $BASE -ServicesRegistered:$false
+                        Write-Ok "Windows services removed — run 'T' to register again"
+                    }
+                    else {
+                        Stop-WebStackServices
+                    }
+                }
+                else {
+                    Stop-WebStackServices
+                }
+            }
             else { Write-Err "Stack not installed." }
         }
         "t" {
             if ($stackComplete) {
-                Offer-ServiceRegistration
+                Request-ServiceRegistration
                 Start-WebStackServices
             }
             else { Write-Err "Stack not installed." }

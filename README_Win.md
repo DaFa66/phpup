@@ -77,6 +77,11 @@ Apache -------> running
 MariaDB ------> running
 PHP ----------> CLI available
 
+Windows Services:
+~~~~~~~~~~~~~~~~
+getPHP_Apache   registered
+getPHP_MariaDB  registered
+
 Stack Commands:
 ~~~~~~~~~~~~~~~
 U  Update outdated components
@@ -92,7 +97,7 @@ Q  Quit
 | **I** | Install the web stack (download + configure + start)                      |
 | **U** | Update outdated components (compares installed vs latest online versions) |
 | **R** | Restart Apache + MariaDB                                                  |
-| **S** | Stop all services                                                         |
+| **S** | Stop all services (offers to unregister if Windows services installed) |
 | **T** | Start all services (offers Windows service registration if not installed) |
 | **D** | Delete the web stack (preserves `www\` files and MariaDB data)            |
 | **Q** | Quit                                                                      |
@@ -113,6 +118,7 @@ The script saves your install path and component versions to `%APPDATA%\getphp\c
 
 - **One-time path prompt** — asked only on first run; subsequent runs go straight to the dashboard
 - **Version tracking** — Apache, PHP, MariaDB, and phpMyAdmin versions are recorded after each install/update
+- **Service registration** — whether Apache and MariaDB are registered as Windows services is persisted between runs
 - **PATH management** — the config tracks which directories were added to your user PATH
 - **Reset on delete** — pressing `D` clears the config entirely, so the next run prompts for a fresh location
 
@@ -122,6 +128,7 @@ Example `config.json`:
 {
   "install_path": "C:\\webstack",
   "installed_at": "2026-06-05T20:45:00",
+  "services_registered": true,
   "paths": {
     "apache": "C:\\webstack\\apache",
     "php": "C:\\webstack\\php",
@@ -212,9 +219,11 @@ During install, the script asks whether to register Apache and MariaDB as Window
 Install as Windows services (auto-start on boot)? [y/N]
 ```
 
-Say **yes** and two services are created — `getPHP_Apache` and `getPHP_MariaDB` — set to auto-start. After a reboot your stack is running without opening the script.
+Say **yes** and two services are created — `getPHP_Apache` and `getPHP_MariaDB` — set to auto-start. After a reboot your stack is running without opening the script. The config file records the choice so the dashboard always reflects current state.
 
-If you skip registration during install, the **T** (Start) command will offer to register them on first use. The hint `(offers Windows service registration)` appears next to **T** in the dashboard until services are installed — then it disappears. **R** (Restart) and **S** (Stop) work silently regardless.
+If you skip registration during install, the **T** (Start) command will offer to register them on first use. The hint `(offers Windows service registration)` appears next to **T** in the dashboard until services are installed — then it disappears. A **Windows Services** block always appears below Service Status, showing `registered` or `not registered` for each service.
+
+**S** (Stop) works in reverse — if services are registered, it offers to unregister them. Say yes to remove the Windows service entries and revert to process mode.
 
 Services are automatically removed when you delete the stack (`D`).
 
