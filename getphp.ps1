@@ -76,6 +76,17 @@ function Test-StackComplete {
     return (Test-ApacheInstalled) -and (Test-PhpInstalled) -and (Test-MariaDbInstalled) -and (Test-PhpMyAdminInstalled)
 }
 
+# Extract version string from a download URL
+function Get-VersionFromUrl([string]$url, [string]$component) {
+    switch ($component) {
+        'apache'     { if ($url -match 'httpd-([\d.]+)-\d+-') { return $matches[1] } }
+        'php'        { if ($url -match 'php-([\d.]+)-Win32-')  { return $matches[1] } }
+        'mariadb'    { if ($url -match 'mariadb-([\d.]+)-winx64') { return $matches[1] } }
+        'phpmyadmin' { if ($url -match 'phpMyAdmin-([\d.]+)-all-languages') { return $matches[1] } }
+    }
+    return $null
+}
+
 # ---- Config Persistence --------------------------------------
 
 $CONFIG_FILE = "$env:APPDATA\getphp\config.json"
@@ -1121,6 +1132,34 @@ function Install-AsServices {
     Start-WebStackServices
 }
 
+function Offer-ServiceRegistration {
+    if (Test-ServicesInstalled) { return }
+
+    Write-Host ""
+    Write-Warn "Services are not registered as Windows services."
+    Write-Info "  Without service registration, Apache and MariaDB won't auto-start on boot."
+    Write-Info "  You'll need to run this script and press 'T' after every reboot."
+
+    $choice = Read-Host "Register as Windows services now? [y/N]"
+    if ($choice -match "^[Yy]") {
+        Write-Info "Registering Windows services..."
+
+        if (-not (Get-Service -Name $SERVICE_APACHE -ErrorAction SilentlyContinue)) {
+            & "$APACHE_PATH\bin\httpd.exe" -k install -n $SERVICE_APACHE 2>&1 | Out-Null
+            sc.exe config $SERVICE_APACHE start=auto 2>&1 | Out-Null
+            Write-Ok "$SERVICE_APACHE service installed"
+        }
+
+        if (-not (Get-Service -Name $SERVICE_MARIADB -ErrorAction SilentlyContinue)) {
+            $mysqld = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
+            $dataDir = "$MARIADB_PATH\data"
+            & $mysqld --install $SERVICE_MARIADB --datadir="$dataDir" 2>&1 | Out-Null
+            sc.exe config $SERVICE_MARIADB start=auto 2>&1 | Out-Null
+            Write-Ok "$SERVICE_MARIADB service installed"
+        }
+    }
+}
+
 function Remove-Services {
     Write-Host ""
     Write-Info "Removing Windows services..."
@@ -1240,9 +1279,6 @@ function Invoke-InstallWebStack {
     "<?php phpinfo(); ?>" | Out-File -FilePath "$WWW_PATH\phpinfo.php" -Encoding ASCII
     Write-Ok "Created $WWW_PATH\phpinfo.php"
 
-    # Start services
-    Start-WebStackServices
-
     # Capture installed versions
     $versions = @{
         apache     = Get-ApacheVersion
@@ -1270,17 +1306,29 @@ function Invoke-InstallWebStack {
     Write-Info "  PHP + MariaDB added to user PATH (new terminals only)"
     Write-Host ""
 
-    # Offer to register as Windows services (auto-start on boot)
+    # Ask about Windows services BEFORE starting (avoids start-stop-restart cycle)
     if (-not (Test-ServicesInstalled)) {
         $svcChoice = Read-Host "Install as Windows services (auto-start on boot)? [y/N]"
         if ($svcChoice -match "^[Yy]") {
-            Install-AsServices
+            # Register services now, then Start-WebStackServices will use service control
+            Write-Info "Registering Windows services..."
+            & "$APACHE_PATH\bin\httpd.exe" -k install -n $SERVICE_APACHE 2>&1 | Out-Null
+            sc.exe config $SERVICE_APACHE start=auto 2>&1 | Out-Null
+            Write-Ok "$SERVICE_APACHE service installed"
+
+            $mysqld = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
+            $dataDir = "$MARIADB_PATH\data"
+            & $mysqld --install $SERVICE_MARIADB --datadir="$dataDir" 2>&1 | Out-Null
+            sc.exe config $SERVICE_MARIADB start=auto 2>&1 | Out-Null
+            Write-Ok "$SERVICE_MARIADB service installed"
         }
         else {
             Write-Info "Services will run as processes (started via this script)."
-            Write-Info "Re-run and press 'T' to start, or reinstall to register services."
         }
     }
+
+    # Start services (uses service control if registered, process mode otherwise)
+    Start-WebStackServices
 }
 
 # ============================================================
@@ -1297,54 +1345,98 @@ function Invoke-UpdateWebStack {
     $latestMariadbUrl = Get-LatestMariadbUrl -ErrorAction SilentlyContinue
     $latestPmaUrl     = Get-LatestPhpMyAdminUrl -ErrorAction SilentlyContinue
 
+    # Extract latest version strings from URLs
+    $latestApacheVer  = Get-VersionFromUrl $latestApacheUrl  'apache'
+    $latestPhpVer     = Get-VersionFromUrl $latestPhpUrl     'php'
+    $latestMariadbVer = Get-VersionFromUrl $latestMariadbUrl 'mariadb'
+    $latestPmaVer     = Get-VersionFromUrl $latestPmaUrl     'phpmyadmin'
+
+    # Get installed versions
     $currentApacheVer  = Get-ApacheVersion
     $currentPhpVer     = Get-PhpVersion
     $currentMariadbVer = Get-MariaDbVersion
+    $currentPmaVer     = Get-PhpMyAdminVersion
+
+    # Compare and build outdated list
+    $outdated = @()
+    if ($currentApacheVer -and $latestApacheVer -and ([version]$latestApacheVer -gt [version]$currentApacheVer)) {
+        $outdated += "Apache  ($currentApacheVer -> $latestApacheVer)"
+    }
+    if ($currentPhpVer -and $latestPhpVer -and ([version]$latestPhpVer -gt [version]$currentPhpVer)) {
+        $outdated += "PHP     ($currentPhpVer -> $latestPhpVer)"
+    }
+    if ($currentMariadbVer -and $latestMariadbVer -and ([version]$latestMariadbVer -gt [version]$currentMariadbVer)) {
+        $outdated += "MariaDB ($currentMariadbVer -> $latestMariadbVer)"
+    }
+    if ($currentPmaVer -and $latestPmaVer -and ($currentPmaVer -ne 'unknown') -and ([version]$latestPmaVer -gt [version]$currentPmaVer)) {
+        $outdated += "phpMyAdmin ($currentPmaVer -> $latestPmaVer)"
+    }
 
     Write-Host ""
-    Write-Info "Current versions:"
-    Write-Info "  Apache:  $currentApacheVer"
-    Write-Info "  PHP:     $currentPhpVer"
-    Write-Info "  MariaDB: $currentMariadbVer"
+    if ($outdated.Count -eq 0) {
+        Write-Ok "Stack is up to date. Nothing to update."
+        Write-Info "  Apache:     $currentApacheVer"
+        Write-Info "  PHP:        $currentPhpVer"
+        Write-Info "  MariaDB:    $currentMariadbVer"
+        Write-Info "  phpMyAdmin: $currentPmaVer"
+        return
+    }
 
-    $confirm = Read-Host "Re-download and re-install all components? This will overwrite current configs [y/N]"
+    Write-Warn "Updates available:"
+    foreach ($item in $outdated) {
+        Write-Info "  * $item"
+    }
+
+    $confirm = Read-Host "`nInstall these updates? [y/N]"
 
     if ($confirm -notmatch '^[yY]') {
         Write-Info "Update cancelled."
         return
     }
 
+    $needsApache  = ($currentApacheVer -and $latestApacheVer -and ([version]$latestApacheVer -gt [version]$currentApacheVer))
+    $needsPhp     = ($currentPhpVer -and $latestPhpVer -and ([version]$latestPhpVer -gt [version]$currentPhpVer))
+    $needsMariadb = ($currentMariadbVer -and $latestMariadbVer -and ([version]$latestMariadbVer -gt [version]$currentMariadbVer))
+    $needsPma     = ($currentPmaVer -and $latestPmaVer -and ($currentPmaVer -ne 'unknown') -and ([version]$latestPmaVer -gt [version]$currentPmaVer))
+
     Stop-WebStackServices
 
-    # Clean and re-download
     Write-Host ""
-    Write-Warn "Removing old installations..."
-    Remove-Item $APACHE_PATH -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item $PHP_PATH -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item $MARIADB_PATH -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item $PHPMYADMIN_PATH -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Warn "Removing outdated installations..."
 
-    # Re-install
-    Invoke-DownloadAndExtract $latestApacheUrl  $APACHE_PATH     "Apache"
-    Invoke-DownloadAndExtract $latestPhpUrl     $PHP_PATH        "PHP"
-    Invoke-DownloadAndExtract $latestMariadbUrl $MARIADB_PATH    "MariaDB"
-    Invoke-DownloadAndExtract $latestPmaUrl     $PHPMYADMIN_PATH "phpMyAdmin"
-
-    Invoke-ConfigureApache
-    Invoke-ConfigurePhp
-    Invoke-FixSqliteDll
-    Invoke-ConfigureMariaDb
-    Invoke-ConfigurePhpMyAdmin
+    if ($needsApache) {
+        Remove-Item $APACHE_PATH -Recurse -Force -ErrorAction SilentlyContinue
+        Invoke-DownloadAndExtract $latestApacheUrl $APACHE_PATH "Apache"
+        Invoke-ConfigureApache
+    }
+    if ($needsPhp) {
+        Remove-Item $PHP_PATH -Recurse -Force -ErrorAction SilentlyContinue
+        Invoke-DownloadAndExtract $latestPhpUrl $PHP_PATH "PHP"
+        Invoke-ConfigurePhp
+        Invoke-FixSqliteDll
+        Invoke-CopyPhpDlls
+    }
+    if ($needsMariadb) {
+        Remove-Item $MARIADB_PATH -Recurse -Force -ErrorAction SilentlyContinue
+        Invoke-DownloadAndExtract $latestMariadbUrl $MARIADB_PATH "MariaDB"
+        Invoke-ConfigureMariaDb
+    }
+    if ($needsPma) {
+        Remove-Item $PHPMYADMIN_PATH -Recurse -Force -ErrorAction SilentlyContinue
+        Invoke-DownloadAndExtract $latestPmaUrl $PHPMYADMIN_PATH "phpMyAdmin"
+        Invoke-ConfigurePhpMyAdmin
+    }
 
     Start-WebStackServices
     Write-Ok "Update complete"
 
-    # Update config with new versions
+    # Update config with new versions (preserve existing for components not updated)
+    $existingConfig = Get-Config
     $versions = @{
-        apache     = Get-ApacheVersion
-        php        = Get-PhpVersion
-        mariadb    = Get-MariaDbVersion
-        phpmyadmin = (Get-PhpMyAdminVersion)
+        apache     = $(if ($needsApache)  { Get-ApacheVersion }     else { $existingConfig.versions.apache })
+        php        = $(if ($needsPhp)     { Get-PhpVersion }        else { $existingConfig.versions.php })
+        mariadb    = $(if ($needsMariadb) { Get-MariaDbVersion }     else { $existingConfig.versions.mariadb })
+        phpmyadmin = $(if ($needsPma)     { Get-PhpMyAdminVersion }  else { $existingConfig.versions.phpmyadmin })
     }
     $pathEntries = Add-ToPath
     Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries
@@ -1549,7 +1641,13 @@ function Show-Dashboard {
         Write-Host "U  Update all components" -ForegroundColor Cyan
         Write-Host "R  Restart all services" -ForegroundColor Cyan
         Write-Host "S  Stop all services" -ForegroundColor Cyan
-        Write-Host "T  Start all services" -ForegroundColor Cyan
+        Write-Host "T  Start all services" -NoNewline -ForegroundColor Cyan
+        if (-not (Test-ServicesInstalled)) {
+            Write-Host " (add service registration)" -ForegroundColor DarkGray
+        }
+        else {
+            Write-Host ""
+        }
         Write-Host "D  Delete the web stack" -ForegroundColor Cyan
     }
     Write-Host "Q  Quit" -ForegroundColor Cyan
@@ -1701,7 +1799,10 @@ while ($true) {
             else { Write-Err "Stack not installed." }
         }
         "t" {
-            if ($stackComplete) { Start-WebStackServices }
+            if ($stackComplete) {
+                Offer-ServiceRegistration
+                Start-WebStackServices
+            }
             else { Write-Err "Stack not installed." }
         }
         "d" {
