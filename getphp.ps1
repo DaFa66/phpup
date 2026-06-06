@@ -1573,13 +1573,20 @@ if (-not $isAdmin) {
 }
 
 # CPU architecture check — only x64 (AMD64) is supported
-$cpuArch = $env:PROCESSOR_ARCHITECTURE
-if ($cpuArch -ne "AMD64") {
+if (-not [Environment]::Is64BitOperatingSystem) {
+    Write-Err "A 64-bit version of Windows is required."
+    exit 1
+}
+
+$os_architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+
+if ($os_architecture -ne [System.Runtime.InteropServices.Architecture]::X64) {
     Write-Host ""
-    Write-Err "Unsupported CPU architecture: $cpuArch"
+    Write-Err "Unsupported CPU architecture: $os_architecture"
+    Write-Host ""
     Write-Info "getPHP for Windows currently only supports x64 (Intel/AMD 64-bit)."
-    Write-Info "ARM64 (Snapdragon, etc.) is not supported — Apache Lounge and"
-    Write-Info "MariaDB do not provide native ARM64 Windows binaries."
+    Write-Info "ARM64 (Snapdragon, Apple Silicon running Windows, etc.) is not supported."
+    Write-Info "Apache Lounge and MariaDB do not currently provide native ARM64 Windows binaries."
     Write-Host ""
     Pause
     exit 1
