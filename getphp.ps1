@@ -934,9 +934,19 @@ function Invoke-ConfigurePhp {
     $ini = $ini -replace ';?opcache\.validate_timestamps\s*=\s*\d', 'opcache.validate_timestamps=1'
     $ini = $ini -replace ';?opcache\.revalidate_freq\s*=\s*\d+', 'opcache.revalidate_freq=2'
 
-    # Enable JIT compilation
-    $ini = $ini -replace ';?opcache\.jit\s*=\s*\S+', 'opcache.jit=tracing'
-    $ini = $ini -replace ';?opcache\.jit_buffer_size\s*=\s*\S+', 'opcache.jit_buffer_size=100M'
+    # Enable JIT compilation (these directives aren't in default php.ini — append if missing)
+    if ($ini -match 'opcache\.jit\s*=') {
+        $ini = $ini -replace ';?opcache\.jit\s*=\s*\S+', 'opcache.jit=tracing'
+    }
+    else {
+        $ini += "`nopcache.jit=tracing"
+    }
+    if ($ini -match 'opcache\.jit_buffer_size\s*=') {
+        $ini = $ini -replace ';?opcache\.jit_buffer_size\s*=\s*\S+', 'opcache.jit_buffer_size=100M'
+    }
+    else {
+        $ini += "`nopcache.jit_buffer_size=100M"
+    }
     Write-Ok "OPCache enabled (256 MB, JIT tracing, production-ready)"
 
     Set-Content -Path $iniPath -Value $ini
