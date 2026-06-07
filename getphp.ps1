@@ -4,7 +4,7 @@
 #  Github: https://github.com/getphporg/getphp
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2024-06-07
+#  Date: 2026-06-07
 #  Version: 1.0.3
 # ============================================================
 #Requires -RunAsAdministrator
@@ -933,7 +933,11 @@ function Invoke-ConfigurePhp {
     $ini = $ini -replace ';?opcache\.max_accelerated_files\s*=\s*\d+', 'opcache.max_accelerated_files=20000'
     $ini = $ini -replace ';?opcache\.validate_timestamps\s*=\s*\d', 'opcache.validate_timestamps=1'
     $ini = $ini -replace ';?opcache\.revalidate_freq\s*=\s*\d+', 'opcache.revalidate_freq=2'
-    Write-Ok "OPCache enabled (256 MB, production-ready)"
+
+    # Enable JIT compilation
+    $ini = $ini -replace ';?opcache\.jit\s*=\s*\S+', 'opcache.jit=tracing'
+    $ini = $ini -replace ';?opcache\.jit_buffer_size\s*=\s*\S+', 'opcache.jit_buffer_size=100M'
+    Write-Ok "OPCache enabled (256 MB, JIT tracing, production-ready)"
 
     Set-Content -Path $iniPath -Value $ini
     Write-Ok "PHP extensions enabled: curl, fileinfo, gd, intl, mbstring, mysqli, openssl, pdo_mysql, pdo_sqlite, sqlite3"
