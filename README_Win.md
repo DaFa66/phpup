@@ -190,7 +190,7 @@ Example `config.json`:
 
 - **Windows 10/11** (x64 only — Intel/AMD 64-bit; ARM64 is not supported)
 - **Run as Administrator** (required for port 80 binding)
-- **Visual C++ Redistributable** — Apache Lounge VS18 and MariaDB 12.x require the [VC++ Redistributable (VS 2017–2026) x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170). The installer **automatically checks** if it's installed and offers a one-click silent install if missing.
+- **Visual C++ Redistributable** — Apache Lounge VS18 and MariaDB 12.x require the [VC++ Redistributable (VS 2017–2026) x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170), minimum version **14.51.36231**. The installer **blocks** until it's installed — checks for outdated versions and offers a one-click upgrade via winget (or direct download as fallback). A reboot may be required after upgrading from an older version.
 
 ## Delete / Reinstall — Database Safety
 
