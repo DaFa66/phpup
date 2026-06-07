@@ -164,7 +164,7 @@ Example `config.json`:
 - **Extensions enabled:** `curl`, `fileinfo`, `gd`, `intl`, `mbstring`, `mysqli`, `openssl`, `pdo_mysql`, `pdo_sqlite`, `sqlite3`
 - `display_errors = On` for development
 - **Error logging:** `error_log = C:/webstack/www/php_errors.log`
-- **OPCache:** Enabled with 256 MB memory, 16 MB interned strings, 20,000 files — production-ready out of the box
+- **OPCache:** Enabled with 256 MB memory, 16 MB interned strings, 20,000 files, JIT tracing with 100 MB buffer — production-ready out of the box
 - **DLL compatibility:** PHP dependency DLLs (ICU, libssh2, nghttp2, etc.) are automatically copied to Apache's `bin/` to resolve extension loading warnings under Windows DLL search order
 - **Added to user PATH** — `php` command works from any new terminal window
 
