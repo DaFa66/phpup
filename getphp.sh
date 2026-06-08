@@ -34,10 +34,15 @@ printf "└───────────────────────
 
 printf "\n"
 
-printf "Your PHP Stack:\n"
+printf "Required Tools:\n"
 printf "~~~~~~~~~~~~~~~\n"
 printf "Homebrew ${CYAN}----->${RESET} "
 brew --version &> /dev/null && brew --version | awk '{print $2}' && HOMEBREW=1 || printf "${RED}not installed${RESET}\n"
+
+printf "\n"
+
+printf "Your PHP Stack:\n"
+printf "~~~~~~~~~~~~~~~\n"
 printf "Apache ${CYAN}------->${RESET} "
 brew list --versions httpd &> /dev/null && brew list --versions httpd | awk '{print $2}' && APACHE=1 || printf "${RED}not installed${RESET}\n"
 printf "MySQL ${CYAN}-------->${RESET} "
