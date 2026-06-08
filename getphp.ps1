@@ -2015,11 +2015,11 @@ if (-not [Environment]::Is64BitOperatingSystem) {
     exit 1
 }
 
-$os_architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+$cpu_arch = $env:PROCESSOR_ARCHITECTURE
 
-if ($os_architecture -ne [System.Runtime.InteropServices.Architecture]::X64) {
+if ($cpu_arch -ne 'AMD64') {
     Write-Host ""
-    Write-Err "Unsupported CPU architecture: $os_architecture"
+    Write-Err "Unsupported CPU architecture: $cpu_arch"
     Write-Host ""
     Write-Info "getPHP for Windows currently only supports x64 (Intel/AMD 64-bit)."
     Write-Info "ARM64 (Snapdragon, Apple Silicon running Windows, etc.) is not supported."
