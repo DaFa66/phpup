@@ -667,6 +667,14 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
     # Check if we already have this exact version cached
     if (Test-Path $zipPath) {
         Write-Ok "$label zip already cached — using $filename"
+
+        # Skip extraction if destination already populated (re-install of same version)
+        $existing = @(Get-ChildItem $dest -Force -ErrorAction SilentlyContinue)
+        if ($existing.Count -gt 0) {
+            Write-Ok "$label already extracted — skipping"
+            return
+        }
+
         Write-Info "Extracting to $dest..."
         Expand-Archive -Path $zipPath -DestinationPath $dest -Force
     } else {
@@ -710,6 +718,13 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
 
         if (-not (Test-Path $zipPath)) {
             throw "Download failed - file not found: $zipPath"
+        }
+
+        # Skip extraction if destination already populated (offline mode pre-extracted)
+        $existing = @(Get-ChildItem $dest -Force -ErrorAction SilentlyContinue)
+        if ($existing.Count -gt 0) {
+            Write-Ok "$label already extracted — skipping"
+            return
         }
 
         Write-Info "Extracting to $dest..."
@@ -1129,7 +1144,7 @@ plugin-dir=$MARIADB_PATH\lib\plugin
 
 function Invoke-ConfigurePhpMyAdmin {
     Write-Host ""
-    Write-Warn "Configuring phpMyAdmin, Test Script & System Paths..."
+    Write-Warn "Configuring phpMyAdmin & Test Script..."
 
     $configPath = "$PHPMYADMIN_PATH\config.inc.php"
 
@@ -1688,7 +1703,8 @@ function Invoke-InstallWebStack {
         mariadb    = Get-MariaDbVersion
         phpmyadmin = (Get-PhpMyAdminVersion)
     }
-
+    Write-Host ""
+    Write-Warn "Configuring paths (this may take a moment)..."
     # Add PHP + MariaDB to user PATH (removes old entries from previous install)
     $pathEntries = Add-ToPath
 
@@ -1868,6 +1884,7 @@ function Invoke-DeleteWebStack {
     Write-Warn "  - PHP     ($PHP_PATH)"
     Write-Warn "  - MariaDB binaries ($MARIADB_PATH\bin)"
     Write-Warn "  - phpMyAdmin ($PHPMYADMIN_PATH)"
+    Write-Warn "  - Log files ($LOGS_PATH)"
     Write-Host ""
     Write-Info "The following will NOT be deleted:"
     Write-Info "  - Your website files in $WWW_PATH"
@@ -1934,9 +1951,9 @@ function Invoke-DeleteWebStack {
     Write-Info "Installer config cleared — next run will prompt for a new path."
 
     Write-Host ""
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host "  Stack Deleted — Cleanup Complete" -ForegroundColor Yellow
-    Write-Host "========================================" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor White
+    Write-Host "  Stack Deleted — Cleanup Complete" -ForegroundColor White
+    Write-Host "========================================" -ForegroundColor White
     Write-Host ""
     Write-Info "  Website files preserved: $WWW_PATH"
     Write-Info "  Database backup:         $backupDir"
