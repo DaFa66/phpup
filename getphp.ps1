@@ -1902,6 +1902,9 @@ function Invoke-DeleteWebStack {
     Remove-Item $PHPMYADMIN_PATH -Recurse -Force -ErrorAction SilentlyContinue
     Write-Ok "phpMyAdmin removed"
 
+    Remove-Item $LOGS_PATH -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Ok "Log files removed"
+
     Write-Host ""
     Write-Ok "PHP web stack deleted."
     Write-Info "Your website files in $WWW_PATH were preserved."
