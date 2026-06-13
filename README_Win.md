@@ -167,7 +167,7 @@ Example `config.json`:
 
 ### PHP
 
-- **Extensions enabled:** `curl`, `fileinfo`, `gd`, `intl`, `mbstring`, `mysqli`, `openssl`, `pdo_mysql`, `pdo_sqlite`, `sqlite3`
+- **Extensions enabled:** `curl`, `fileinfo`, `gd`, `intl`, `mbstring`, `mysqli`, `openssl`, `pdo_mysql`, `pdo_sqlite`, `sodium`, `sqlite3`
 - `display_errors = On` for development
 - **Error logging:** `error_log = logs/php_errors.log`
 - **OPCache:** Enabled with 256 MB memory, 16 MB interned strings, 20,000 files, JIT tracing with 100 MB buffer — production-ready out of the box
@@ -206,7 +206,7 @@ The delete command (`D`) preserves your data:
 
 1. Services are stopped
 2. `mariadb\data\` is moved to `data_backup\`
-3. Apache, PHP, MariaDB, and phpMyAdmin are removed
+3. Apache, PHP, MariaDB, phpMyAdmin, and log files are removed
 4. `www\` (your websites) is left untouched
 5. If `data_backup\` already exists from a previous delete, it is timestamped (`data_backup_20260605_213000`) to avoid collisions
 
@@ -251,6 +251,23 @@ Unlike most installers that hardcode version numbers, `getphp.ps1` dynamically r
 - **PHP** — Queries the `releases.json` API from windows.php.net, filters for PHP 8.x thread-safe x64, prefers VS17 builds over VS16
 - **MariaDB** — Queries the MariaDB REST API (`/rest-api/mariadb/`), sorts stable releases by support policy (Rolling > LTS), then by version number. Constructs direct archive URL from version and filename (bypasses REST API redirector). Excludes debug-symbols-only zips.
 - **phpMyAdmin** — Scrapes the phpMyAdmin downloads page, finds all stable `all-languages.zip` files (excluding snapshots), picks the highest version
+
+## Offline Mode & Download Caching
+
+Run the script with `-Offline` to skip all URL resolution and downloading:
+
+```powershell
+.\getphp.ps1 -Offline
+```
+
+Offline mode requires four pre-downloaded zip files in `%TEMP%\webstack_downloads\` (Apache, PHP, MariaDB, phpMyAdmin) — run the script online once to populate the cache, then subsequent installs skip downloads entirely.
+
+All downloaded files are cached permanently in `%TEMP%\webstack_downloads\`:
+- Component zips (Apache, PHP, MariaDB, phpMyAdmin) — reused on re-install when the version hasn't changed
+- SQLite3 DLL zip — cached and reused
+- VC++ Redistributable installer (`.exe`) — cached and reused
+
+Extraction is also skipped when the destination directory is already populated, making re-installs of the same version nearly instant.
 
 ## Known Quirks & Fixes
 
