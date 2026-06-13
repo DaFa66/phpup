@@ -4,20 +4,35 @@
 #  Github: https://github.com/getphporg/getphp
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-06-07
-#  Version: 1.0.3
+#  Date: 2026-06-13
+#  Version: 1.0.4
 # ============================================================
 #Requires -RunAsAdministrator
 
 # ---- Config -------------------------------------------------
 $TEMP_DOWNLOADS  = "$env:TEMP\webstack_downloads"
 
+# ---- Banner -------------------------------------------------
+$BANNER_ART = @'
+┌────────────────────────────────────┐
+│             _   ____  _   _ ____   │
+│   __ _  ___| |_|  _ \| | | |  _ \  │
+│  / _` |/ _ \ __| |_) | |_| | |_) | │
+│ | (_| |  __/ |_|  __/|  _  |  __/  │
+│  \__, |\___|\__|_|   |_| |_|_|     │
+│  |___/              www.getPHP.org │
+└────────────────────────────────────┘
+'@
+
 # Pinned fallback URLs — used when live scraping/API resolution fails.
 # These point to the last known-good versions for each component.
 # Update these when bumping the pinned versions.
 $FALLBACK_URLS = @{
-    Apache     = ""
-    phpMyAdmin = ""
+    Redist     = "https://aka.ms/vc14/vc_redist.x64.exe"
+    Apache     = "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.68-260610-Win64-VS18.zip"
+    PHP        = "https://windows.php.net/downloads/releases/php-8.5.7-Win32-vs17-x64.zip"
+    MariaDB    = "https://archive.mariadb.org/mariadb-12.3.2/winx64-packages/mariadb-12.3.2-winx64.zip"
+    phpMyAdmin = "https://files.phpmyadmin.net/phpMyAdmin/5.2.3/phpMyAdmin-5.2.3-all-languages.zip"
 }
 
 # ---- Colours -----------------------------------------------
@@ -534,8 +549,10 @@ function Get-LatestMariadbUrl {
             foreach ($file in $release.files) {
                 $name = $file.file_name.ToLower()
                 if ($name -like "*winx64*" -and $name -like "*.zip" -and $name -notlike "*debugsymbols*") {
-                    Write-Ok "MariaDB -> $($file.file_download_url)"
-                    return $file.file_download_url
+                    # Construct direct archive URL — bypass REST API redirector
+                    $archiveUrl = "https://archive.mariadb.org/mariadb-$version/winx64-packages/$($file.file_name)"
+                    Write-Ok "MariaDB -> $archiveUrl"
+                    return $archiveUrl
                 }
             }
         }
@@ -549,7 +566,12 @@ function Get-LatestMariadbUrl {
                 Start-Sleep -Seconds $retryDelay
             }
             else {
-                Write-Err "Failed to resolve MariaDB URL after $maxRetries attempts."
+                Write-Warn "Live resolution failed after $maxRetries attempts."
+                if ($FALLBACK_URLS.MariaDB) {
+                    Write-Info "  Falling back to pinned MariaDB URL: $($FALLBACK_URLS.MariaDB)"
+                    return $FALLBACK_URLS.MariaDB
+                }
+                Write-Err "Failed to resolve MariaDB URL and no fallback URL is configured."
                 Write-Info "  Check https://mariadb.org/download/ or try again later."
                 throw
             }
@@ -642,48 +664,12 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
                 Write-Info "  Retry $attempt of $maxRetries..."
             }
 
-            # MariaDB download URLs redirect through a CDN chain that
-            # Invoke-WebRequest with auto-redirect sometimes mishandles.
-            # Follow redirects manually, then download the final URL.
-            if ($url -like "*mariadb*") {
-                $current_url = $url
-                $max_redirects = 10
-                $i = 0
-
-                while ($i -lt $max_redirects) {
-                    $response = Invoke-WebRequest -Uri $current_url -Method Get `
-                        -MaximumRedirection 0 -Headers @{ "User-Agent" = $ua } `
-                        -ErrorAction Stop
-                    $status = [int]$response.StatusCode
-
-                    if ($status -ge 300 -and $status -lt 400) {
-                        $location = $response.Headers["Location"]
-                        if (-not $location) {
-                            throw "Redirect without Location header"
-                        }
-                        $current_url = $location
-                        $i++
-                        continue
-                    }
-
-                    # Final URL — download with OutFile
-                    Invoke-WebRequest -Uri $current_url -OutFile $zipPath `
-                        -Headers @{ "User-Agent" = $ua }
-                    break
-                }
-
-                if ($i -ge $max_redirects) {
-                    throw "Too many redirects resolving MariaDB download"
-                }
+            # Try with progress bar first (no -UseBasicParsing), fall back if IE not available
+            try {
+                Invoke-WebRequest -Uri $url -OutFile $zipPath -Headers @{ "User-Agent" = $ua }
             }
-            else {
-                # Try with progress bar first (no -UseBasicParsing), fall back if IE not available
-                try {
-                    Invoke-WebRequest -Uri $url -OutFile $zipPath -Headers @{ "User-Agent" = $ua }
-                }
-                catch [System.Management.Automation.MethodInvocationException] {
-                    Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -Headers @{ "User-Agent" = $ua }
-                }
+            catch [System.Management.Automation.MethodInvocationException] {
+                Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -Headers @{ "User-Agent" = $ua }
             }
 
             # Download succeeded — break out of retry loop
@@ -891,10 +877,11 @@ Alias /phpmyadmin "$pmaUnix"
     }
     Write-Ok "phpMyAdmin alias configured"
 
-    # 10. Error/access logs in www folder
-    $conf = $conf -replace 'ErrorLog\s+".*"', "ErrorLog `"$wwwUnix/error.log`""
-    $conf = $conf -replace 'CustomLog\s+".*"\s+common', "CustomLog `"$wwwUnix/access.log`" common"
-    Write-Ok "Log files directed to $WWW_PATH"
+    # 10. Error/access logs in logs folder
+    $logsUnix = $LOGS_PATH -replace '\\', '/'
+    $conf = $conf -replace 'ErrorLog\s+".*"', "ErrorLog `"$logsUnix/apache_error.log`""
+    $conf = $conf -replace 'CustomLog\s+".*"\s+common', "CustomLog `"$logsUnix/apache_access.log`" common"
+    Write-Ok "Log files directed to $LOGS_PATH"
 
     Set-Content -Path $confPath -Value $conf
     Write-Ok "Apache configuration complete"
@@ -949,7 +936,7 @@ function Invoke-ConfigurePhp {
     $ini = $ini -replace 'error_reporting\s*=\s*E_ALL & ~E_DEPRECATED & ~E_STRICT', 'error_reporting = E_ALL'
 
     # Enable PHP error logging to file
-    $errorLogPath = "$WWW_PATH\php_errors.log"
+    $errorLogPath = "$LOGS_PATH\php_errors.log"
     $errorLogPathUnix = $errorLogPath -replace '\\', '/'
     if ($ini -match ';?error_log\s*=') {
         $ini = $ini -replace ';?error_log\s*=\s*.*', "error_log = `"$errorLogPathUnix`""
@@ -1067,6 +1054,22 @@ function Invoke-ConfigureMariaDb {
     Write-Warn "Configuring MariaDB..."
 
     $dataDir = "$MARIADB_PATH\data"
+    $logsUnix = $LOGS_PATH -replace '\\', '/'
+
+    # Write my.ini with log-error (always, even if data dir exists)
+    $myIniPath = "$MARIADB_PATH\my.ini"
+    $myIni = @"
+[mysqld]
+datadir=$dataDir
+log-error=$logsUnix/mariadb_error.log
+
+[client]
+plugin-dir=$MARIADB_PATH\lib\plugin
+"@
+    if (-not (Test-Path $myIniPath) -or (Get-Content $myIniPath -Raw) -notmatch 'log-error') {
+        Set-Content -Path $myIniPath -Value $myIni
+        Write-Ok "MariaDB my.ini written (log-error -> $LOGS_PATH\mariadb_error.log)"
+    }
 
     # Check if already initialised
     if (Test-Path $dataDir) {
@@ -1145,7 +1148,7 @@ function Invoke-ConfigurePmaStorage {
 # Creates the phpmyadmin config storage database and imports the schema.
 # Enables bookmarks, query history, table tracking, designer, etc.
     Write-Host ""
-    Write-Warn "Configuring phpMyAdmin storage..."
+    Write-Warn "Configuring phpMyAdmin storage (this may take a moment)..."
 
     # Check if already configured
     $testResult = & "$MARIADB_PATH\bin\mariadb.exe" -u root --skip-password -e "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA='phpmyadmin' AND TABLE_NAME='pma__bookmark'" 2>&1
@@ -1273,7 +1276,7 @@ function Start-WebStackServices {
             Write-Ok "Apache started"
         }
         else {
-            Write-Err "Apache failed to start - check error.log in $WWW_PATH"
+            Write-Err "Apache failed to start - check apache_error.log in $LOGS_PATH"
             Write-Info "Common causes: port 80 in use, missing VC++ Redistributable, or config error."
         }
     }
@@ -1295,9 +1298,10 @@ function Start-WebStackServices {
     else {
         $dataDir = "$MARIADB_PATH\data"
         $mysqld  = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
+        $logsUnix = $LOGS_PATH -replace '\\', '/'
 
         Start-Process -FilePath $mysqld `
-            -ArgumentList "--datadir=`"$dataDir`"", "--console" `
+            -ArgumentList "--datadir=`"$dataDir`" --log-error=`"$logsUnix/mariadb_error.log`"" `
             -WindowStyle Hidden `
             -PassThru | Out-Null
 
@@ -1404,7 +1408,7 @@ function Install-AsServices {
     else {
         $mysqld  = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
         $dataDir = "$MARIADB_PATH\data"
-        & $mysqld --install $SERVICE_MARIADB --datadir="$dataDir" 2>&1 | Out-Null
+        & $mysqld --install $SERVICE_MARIADB --datadir="$dataDir" --log-error="$LOGS_PATH\mariadb_error.log" 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Set-Service -Name $SERVICE_MARIADB -StartupType Automatic -ErrorAction SilentlyContinue
             Write-Ok "$SERVICE_MARIADB service installed"
@@ -1440,7 +1444,7 @@ function Request-ServiceRegistration {
         if (-not (Get-Service -Name $SERVICE_MARIADB -ErrorAction SilentlyContinue)) {
             $mysqld = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
             $dataDir = "$MARIADB_PATH\data"
-            & $mysqld --install $SERVICE_MARIADB --datadir="$dataDir" 2>&1 | Out-Null
+            & $mysqld --install $SERVICE_MARIADB --datadir="$dataDir" --log-error="$LOGS_PATH\mariadb_error.log" 2>&1 | Out-Null
             Set-Service -Name $SERVICE_MARIADB -StartupType Automatic -ErrorAction SilentlyContinue
             Write-Ok "$SERVICE_MARIADB service installed"
         }
@@ -1536,6 +1540,7 @@ function Invoke-InstallWebStack {
     # Create base directories
     New-Item -ItemType Directory -Force -Path $BASE | Out-Null
     New-Item -ItemType Directory -Force -Path $WWW_PATH | Out-Null
+    New-Item -ItemType Directory -Force -Path $LOGS_PATH | Out-Null
     New-Item -ItemType Directory -Force -Path $TEMP_DOWNLOADS | Out-Null
 
     # Resolve URLs (or use local zips in offline mode)
@@ -1595,10 +1600,36 @@ function Invoke-InstallWebStack {
             return
         }
 
-        # Download and extract (Apache, PHP, MariaDB only — PMA deferred)
-        Invoke-DownloadAndExtract $apacheUrl  $APACHE_PATH     "Apache"
-        Invoke-DownloadAndExtract $phpUrl     $PHP_PATH        "PHP"
-        Invoke-DownloadAndExtract $mariadbUrl $MARIADB_PATH    "MariaDB"
+        # Download and extract (Apache, PHP, MariaDB only — PMA deferred).
+        # Skip components already at the latest version.
+        $resolvedApacheVer  = Get-VersionFromUrl $apacheUrl  'apache'
+        $resolvedPhpVer     = Get-VersionFromUrl $phpUrl     'php'
+        $resolvedMariadbVer = Get-VersionFromUrl $mariadbUrl 'mariadb'
+
+        $installedApacheVer  = Get-ApacheVersion
+        $installedPhpVer     = Get-PhpVersion
+        $installedMariadbVer = Get-MariaDbVersion
+
+        if ($installedApacheVer -and $resolvedApacheVer -and ([version]$resolvedApacheVer -le [version]$installedApacheVer)) {
+            Write-Ok "Apache $installedApacheVer already installed — skipping download"
+        } else {
+            if ($installedApacheVer) { Write-Info "Apache $installedApacheVer -> $resolvedApacheVer" }
+            Invoke-DownloadAndExtract $apacheUrl  $APACHE_PATH  "Apache"
+        }
+
+        if ($installedPhpVer -and $resolvedPhpVer -and ([version]$resolvedPhpVer -le [version]$installedPhpVer)) {
+            Write-Ok "PHP $installedPhpVer already installed — skipping download"
+        } else {
+            if ($installedPhpVer) { Write-Info "PHP $installedPhpVer -> $resolvedPhpVer" }
+            Invoke-DownloadAndExtract $phpUrl     $PHP_PATH     "PHP"
+        }
+
+        if ($installedMariadbVer -and $resolvedMariadbVer -and ([version]$resolvedMariadbVer -le [version]$installedMariadbVer)) {
+            Write-Ok "MariaDB $installedMariadbVer already installed — skipping download"
+        } else {
+            if ($installedMariadbVer) { Write-Info "MariaDB $installedMariadbVer -> $resolvedMariadbVer" }
+            Invoke-DownloadAndExtract $mariadbUrl $MARIADB_PATH "MariaDB"
+        }
     }
 
     # Copy PHP dependency DLLs to Apache bin (ICU, curl deps, etc.)
@@ -1654,18 +1685,6 @@ function Invoke-InstallWebStack {
     $pathEntries = Add-ToPath
 
     Write-Host ""
-    Write-Bold "========================================"
-    Write-Bold "  Installation Complete!"
-    Write-Bold "========================================"
-    Write-Host ""
-    Write-Info "  Website root:  $WWW_PATH"
-    Write-Info "  PHP test:      http://localhost/phpinfo.php"
-    Write-Info "  phpMyAdmin:    http://localhost/phpmyadmin"
-    Write-Info "  MariaDB login: root / [blank password]"
-    Write-Host ""
-    Write-Info "  PHP + MariaDB added to user PATH (new terminals only)"
-    Write-Host ""
-
     # Ask about Windows services BEFORE starting (avoids start-stop-restart cycle)
     if (-not (Test-ServicesInstalled)) {
         $svcChoice = Read-Host "Install as Windows services (auto-start on boot)? [y/N]"
@@ -1678,7 +1697,7 @@ function Invoke-InstallWebStack {
 
             $mysqld = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
             $dataDir = "$MARIADB_PATH\data"
-            & $mysqld --install $SERVICE_MARIADB --datadir="$dataDir" 2>&1 | Out-Null
+            & $mysqld --install $SERVICE_MARIADB --datadir="$dataDir" --log-error="$LOGS_PATH\mariadb_error.log" 2>&1 | Out-Null
             Set-Service -Name $SERVICE_MARIADB -StartupType Automatic -ErrorAction SilentlyContinue
             Write-Ok "$SERVICE_MARIADB service installed"
         }
@@ -1692,6 +1711,19 @@ function Invoke-InstallWebStack {
 
     # phpMyAdmin configuration storage (bookmarks, history, designer, etc.)
     Invoke-ConfigurePmaStorage
+
+    Write-Host ""
+    Write-Bold "========================================"
+    Write-Bold "  Installation Complete!"
+    Write-Bold "========================================"
+    Write-Host ""
+    Write-Info "  Website root:  $WWW_PATH"
+    Write-Info "  PHP test:      http://localhost/phpinfo.php"
+    Write-Info "  phpMyAdmin:    http://localhost/phpmyadmin"
+    Write-Info "  MariaDB login: root / [blank password]"
+    Write-Host ""
+    Write-Info "  PHP + MariaDB added to user PATH (new terminals only)"
+    Write-Host ""
 
     # Save config with final state (including service registration decision)
     Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries -ServicesRegistered:(Test-ServicesInstalled)
@@ -1899,6 +1931,15 @@ function Invoke-DeleteWebStack {
     # Clear saved config so next run prompts for a fresh location
     Clear-Config
     Write-Info "Installer config cleared — next run will prompt for a new path."
+
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host "  Stack Deleted — Cleanup Complete" -ForegroundColor Yellow
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host ""
+    Write-Info "  Website files preserved: $WWW_PATH"
+    Write-Info "  Database backup:         $backupDir"
+    Write-Host ""
 }
 
 # ============================================================
@@ -1909,18 +1950,7 @@ function Show-Dashboard {
     Clear-Host
 
     Write-Host ""
-
-    $banner = @'
-┌────────────────────────────────────┐
-│             _   ____  _   _ ____   │
-│   __ _  ___| |_|  _ \| | | |  _ \  │
-│  / _` |/ _ \ __| |_) | |_| | |_) | │
-│ | (_| |  __/ |_|  __/|  _  |  __/  │
-│  \__, |\___|\__|_|   |_| |_|_|     │
-│  |___/              www.getPHP.org │
-└────────────────────────────────────┘
-'@
-    Write-Host $banner -ForegroundColor Cyan
+    Write-Host $BANNER_ART -ForegroundColor Cyan
     Write-Host ""
 
     # ---- Stack Status ----
@@ -2069,9 +2099,9 @@ function Show-Dashboard {
 #  MAIN LOOP
 # ============================================================
 
-param(
-    [switch]$Offline  # Skip URL resolution — use pre-downloaded zips from TEMP
-)
+# param(
+#     [switch]$Offline  # Skip URL resolution — use pre-downloaded zips from TEMP
+# )
 
 # Ensure we're running as Admin
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
@@ -2105,6 +2135,10 @@ if ($cpu_arch -ne 'AMD64') {
     Pause
     exit 1
 }
+
+# ---- Banner ----
+Write-Host $BANNER_ART -ForegroundColor Cyan
+Write-Host ""
 
 # ---- VC++ Redistributable: system prerequisite (BLOCKING) ----
 Write-Host ""
@@ -2193,10 +2227,10 @@ else {
     Write-Info "Press Enter to accept the default, or type a custom path."
     Write-Host ""
 
-    $userPath = Read-Host "Install path [C:\webstack]"
+    $userPath = Read-Host "Install path [%USERPROFILE%\getphp]"
 
     if ([string]::IsNullOrWhiteSpace($userPath)) {
-        $BASE = "C:\webstack"
+        $BASE = "$env:USERPROFILE\getphp"
     }
     else {
         # Strip trailing backslash if present
@@ -2205,7 +2239,7 @@ else {
         # Reject paths with spaces (can break mysqld --datadir)
         if ($BASE -match '\s') {
             Write-Err "Paths containing spaces are not supported (can cause issues with MariaDB)."
-            Write-Info "Please use a path without spaces, e.g. C:\webstack"
+            Write-Info "Please use a path without spaces, e.g. C:\getphp"
             Write-Host ""
             Pause
             exit 1
@@ -2223,6 +2257,7 @@ $APACHE_PATH     = "$BASE\apache"
 $PHP_PATH        = "$BASE\php"
 $MARIADB_PATH    = "$BASE\mariadb"
 $WWW_PATH        = "$BASE\www"
+$LOGS_PATH       = "$BASE\logs"
 $PHPMYADMIN_PATH = "$WWW_PATH\phpmyadmin"
 
 if (-not $config) {

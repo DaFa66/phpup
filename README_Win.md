@@ -26,12 +26,12 @@ On subsequent runs the script remembers your install path and goes straight to t
 | **MariaDB**    | [mariadb.org](https://downloads.mariadb.org/rest-api/mariadb/) | ✅ Queries REST API for latest Stable (Rolling > LTS)               |
 | **phpMyAdmin** | [phpmyadmin.net](https://www.phpmyadmin.net/downloads/)        | ✅ Scrapes downloads page for latest stable                         |
 
-All installed to `C:\webstack\` by default — no system-wide changes, no cruft. Optionally register as Windows services for auto-start on boot.
+All installed to `%USERPROFILE%\getphp\` by default (e.g. `C:\Users\<you>\getphp`) — matching the home-directory convention of getphp.sh on Mac/Linux. No system-wide changes, no cruft. Optionally register as Windows services for auto-start on boot.
 
 ## Directory Layout
 
 ```
-C:\webstack\
+C:\Users\<you>\getphp\
 ├── apache\          # Apache Lounge (VS18, port 80)
 │   ├── bin\
 │   ├── conf\
@@ -47,6 +47,11 @@ C:\webstack\
 ├── www\             # ← Your websites go here
 │   ├── phpinfo.php  # (auto-created test file)
 │   └── phpmyadmin\  # phpMyAdmin
+├── logs\            # All log files
+│   ├── apache_error.log
+│   ├── apache_access.log
+│   ├── php_errors.log
+│   └── mariadb_error.log
 └── data_backup\     # (created on delete — databases preserved here)
 ```
 
@@ -106,7 +111,7 @@ Q  Quit
 
 | Question                    | Answer                                 |
 | --------------------------- | -------------------------------------- |
-| Where to put website files? | `C:\webstack\www`                      |
+| Where to put website files? | `%USERPROFILE%\getphp\www`              |
 | How to test your PHP setup? | http://localhost/phpinfo.php           |
 | Where to access phpMyAdmin? | http://localhost/phpmyadmin            |
 | How to log into phpMyAdmin? | Username: `root` / Password: _(blank)_ |
@@ -126,15 +131,16 @@ Example `config.json`:
 
 ```json
 {
-  "install_path": "C:\\webstack",
+  "install_path": "C:\\Users\\<you>\\getphp",
   "installed_at": "2026-06-05T20:45:00",
   "services_registered": true,
   "paths": {
-    "apache": "C:\\webstack\\apache",
-    "php": "C:\\webstack\\php",
-    "mariadb": "C:\\webstack\\mariadb",
-    "www": "C:\\webstack\\www",
-    "phpmyadmin": "C:\\webstack\\www\\phpmyadmin"
+    "apache": "C:\\Users\\<you>\\getphp\\apache",
+    "php": "C:\\Users\\<you>\\getphp\\php",
+    "mariadb": "C:\\Users\\<you>\\getphp\\mariadb",
+    "www": "C:\\Users\\<you>\\getphp\\www",
+    "logs": "C:\\Users\\<you>\\getphp\\logs",
+    "phpmyadmin": "C:\\Users\\<you>\\getphp\\www\\phpmyadmin"
   },
   "versions": {
     "apache": "2.4.67",
@@ -142,7 +148,7 @@ Example `config.json`:
     "mariadb": "12.3.2",
     "phpmyadmin": "5.2.3"
   },
-  "path_entries": ["C:\\webstack\\php", "C:\\webstack\\mariadb\\bin"]
+  "path_entries": ["C:\\Users\\<you>\\getphp\\php", "C:\\Users\\<you>\\getphp\\mariadb\\bin"]
 }
 ```
 
@@ -151,11 +157,11 @@ Example `config.json`:
 ### Apache
 
 - Port 80, ServerName `localhost:80` (suppresses AH00558 warnings)
-- DocumentRoot `C:/webstack/www` with `Options Indexes FollowSymLinks`
+- DocumentRoot with `Options Indexes FollowSymLinks`
 - `mod_rewrite` enabled with `AllowOverride All` — Trongate, Laravel, WordPress `.htaccess` rewrites work out of the box
 - PHP module loaded from the installed PHP path
 - phpMyAdmin alias at `/phpmyadmin`
-- Error and access logs written to `www/`
+- Error and access logs written to `logs/` (not `www/`)
 - Stale `httpd.pid` cleaned before each start (no "unclean shutdown" warnings)
 - Graceful shutdown via `httpd.exe -k stop` (force kill only as fallback)
 
@@ -163,7 +169,7 @@ Example `config.json`:
 
 - **Extensions enabled:** `curl`, `fileinfo`, `gd`, `intl`, `mbstring`, `mysqli`, `openssl`, `pdo_mysql`, `pdo_sqlite`, `sqlite3`
 - `display_errors = On` for development
-- **Error logging:** `error_log = C:/webstack/www/php_errors.log`
+- **Error logging:** `error_log = logs/php_errors.log`
 - **OPCache:** Enabled with 256 MB memory, 16 MB interned strings, 20,000 files, JIT tracing with 100 MB buffer — production-ready out of the box
 - **DLL compatibility:** PHP dependency DLLs (ICU, libssh2, nghttp2, etc.) are automatically copied to Apache's `bin/` to resolve extension loading warnings under Windows DLL search order
 - **Added to user PATH** — `php` command works from any new terminal window
@@ -176,8 +182,10 @@ Example `config.json`:
 ### MariaDB
 
 - Data directory initialised with blank root password
+- `my.ini` written with `log-error` → `logs/mariadb_error.log`
 - Latest stable release resolved via REST API (Rolling > LTS)
 - Debug-symbols-only zip excluded from download filter
+- Download URL constructed directly from archive (bypasses REST API redirector)
 - **Added to user PATH** — `mysql` command works from any new terminal window
 
 ### phpMyAdmin
@@ -229,11 +237,11 @@ Services are automatically removed when you delete the stack (`D`).
 
 ## Zero Footprint
 
-The `getphp.ps1` script runs entirely in-memory and never installs itself on your machine. Only the web stack is added to `C:\webstack\` if you choose to install it, plus a small config file at `%APPDATA%\getphp\config.json`. To manage services, update, or uninstall the stack, simply re-run the script at any time.
+The `getphp.ps1` script runs entirely in-memory and never installs itself on your machine. Only the web stack is added to `%USERPROFILE%\getphp\` if you choose to install it, plus a small config file at `%APPDATA%\getphp\config.json`. To manage services, update, or uninstall the stack, simply re-run the script at any time.
 
 ## Uninstalling
 
-Run the script and press **D** (Delete). This removes Apache, PHP, MariaDB, and phpMyAdmin but **preserves** your website files in `C:\webstack\www\` and your MariaDB data in `C:\webstack\data_backup\`. PATH entries are removed and the config is cleared. To perform a complete wipe, delete `C:\webstack\` and `%APPDATA%\getphp\` manually after running Delete.
+Run the script and press **D** (Delete). This removes Apache, PHP, MariaDB, and phpMyAdmin but **preserves** your website files in `www\` and your MariaDB data in `data_backup\`. PATH entries are removed and the config is cleared. To perform a complete wipe, delete the install directory and `%APPDATA%\getphp\` manually after running Delete.
 
 ## How It Resolves Latest Versions
 
@@ -241,7 +249,7 @@ Unlike most installers that hardcode version numbers, `getphp.ps1` dynamically r
 
 - **Apache** — Scrapes the Apache Lounge download page, finds all VS## x64 zips, picks the highest VS version × Apache version combination
 - **PHP** — Queries the `releases.json` API from windows.php.net, filters for PHP 8.x thread-safe x64, prefers VS17 builds over VS16
-- **MariaDB** — Queries the MariaDB REST API (`/rest-api/mariadb/`), sorts stable releases by support policy (Rolling > LTS), then by version number. Excludes debug-symbols-only zips.
+- **MariaDB** — Queries the MariaDB REST API (`/rest-api/mariadb/`), sorts stable releases by support policy (Rolling > LTS), then by version number. Constructs direct archive URL from version and filename (bypasses REST API redirector). Excludes debug-symbols-only zips.
 - **phpMyAdmin** — Scrapes the phpMyAdmin downloads page, finds all stable `all-languages.zip` files (excluding snapshots), picks the highest version
 
 ## Known Quirks & Fixes
