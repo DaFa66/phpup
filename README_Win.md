@@ -267,8 +267,6 @@ All downloaded files are cached permanently in `%TEMP%\webstack_downloads\`:
 - SQLite3 DLL zip — cached and reused
 - VC++ Redistributable installer (`.exe`) — cached and reused
 
-Extraction is also skipped when the zip was cached and the destination is already populated — same-version re-installs are nearly instant.
-
 ## Known Quirks & Fixes
 
 ### ARM64 / Snapdragon / Apple Silicon (Windows VM)
