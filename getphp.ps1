@@ -988,6 +988,7 @@ function Invoke-ConfigurePhp {
         'extension=openssl',
         'extension=pdo_mysql',
         'extension=pdo_sqlite',
+        'extension=sodium', 
         'extension=sqlite3'
     )
 
@@ -1033,7 +1034,7 @@ function Invoke-ConfigurePhp {
     Write-Ok "OPCache enabled (256 MB, JIT tracing, production-ready)"
 
     Set-Content -Path $iniPath -Value $ini
-    Write-Ok "PHP extensions enabled: curl, fileinfo, gd, intl, mbstring, mysqli, openssl, pdo_mysql, pdo_sqlite, sqlite3"
+    Write-Ok "PHP extensions enabled: curl, fileinfo, gd, intl, mbstring, mysqli, openssl, pdo_mysql, pdo_sqlite, sodium, sqlite3"
 }
 
 function Invoke-FixSqliteDll {
