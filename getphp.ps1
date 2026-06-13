@@ -738,6 +738,10 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
     $dirsOnly = @($allItems | Where-Object { $_ -is [System.IO.DirectoryInfo] })
     $filesOnly = @($allItems | Where-Object { $_ -is [System.IO.FileInfo] })
 
+    # Suppress progress bars during bulk file moves (phpMyAdmin has ~4,300 files)
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+
     # Strategy: if there's exactly one directory and no loose files, flatten it
     if ($dirsOnly.Count -eq 1 -and $filesOnly.Count -eq 0) {
         $inner = $dirsOnly[0].FullName
@@ -764,6 +768,8 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
         }
     }
 
+    $ProgressPreference = $prevProgress
+
     Write-Ok "$label extracted"
 }
 
@@ -781,10 +787,14 @@ function Invoke-ExtractZip($zipPath, $dest, $label) {
     if ($dirsOnly.Count -eq 1 -and $filesOnly.Count -eq 0) {
         $inner = $dirsOnly[0].FullName
         Write-Info "  Flattening wrapper folder: $($dirsOnly[0].Name)"
+
+        $prevProgress = $ProgressPreference
+        $ProgressPreference = 'SilentlyContinue'
         Get-ChildItem $inner -Force | ForEach-Object {
             Move-Item $_.FullName $dest -Force -ErrorAction SilentlyContinue
         }
         Remove-Item $inner -Recurse -Force -ErrorAction SilentlyContinue
+        $ProgressPreference = $prevProgress
     }
     Write-Ok "$label extracted"
 }
@@ -1911,13 +1921,14 @@ function Invoke-DeleteWebStack {
             Write-Warn "Existing data_backup found — renaming to data_backup_$ts"
             Rename-Item $backupDir $oldBackup
         }
-
+        Write-Host ""
         Write-Info "Backing up database data to $backupDir ..."
         New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
         Get-ChildItem $dataDir | ForEach-Object {
             Move-Item $_.FullName $backupDir -Force
         }
         Write-Ok "Database data preserved at $backupDir"
+        Write-Host ""
     }
 
     Remove-Item $APACHE_PATH -Recurse -Force -ErrorAction SilentlyContinue
@@ -1934,11 +1945,7 @@ function Invoke-DeleteWebStack {
 
     Remove-Item $LOGS_PATH -Recurse -Force -ErrorAction SilentlyContinue
     Write-Ok "Log files removed"
-
     Write-Host ""
-    Write-Ok "PHP web stack deleted."
-    Write-Info "Your website files in $WWW_PATH were preserved."
-    Write-Info "Your database data was backed up to $backupDir"
 
     # Unregister Windows services if present
     Remove-Services
@@ -1955,8 +1962,8 @@ function Invoke-DeleteWebStack {
     Write-Host "  Stack Deleted — Cleanup Complete" -ForegroundColor White
     Write-Host "========================================" -ForegroundColor White
     Write-Host ""
-    Write-Info "  Website files preserved: $WWW_PATH"
-    Write-Info "  Database backup:         $backupDir"
+    Write-Info "Website files preserved: $WWW_PATH"
+    Write-Info "Database backup:         $backupDir"
     Write-Host ""
 }
 
