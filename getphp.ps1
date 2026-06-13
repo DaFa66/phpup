@@ -1439,21 +1439,7 @@ function Request-ServiceRegistration {
 
     $choice = Read-Host "Register as Windows services now? [y/N]"
     if ($choice -match "^[Yy]") {
-        Write-Info "Registering Windows services..."
-
-        if (-not (Get-Service -Name $SERVICE_APACHE -ErrorAction SilentlyContinue)) {
-            & "$APACHE_PATH\bin\httpd.exe" -k install -n $SERVICE_APACHE 2>&1 | Out-Null
-            Set-Service -Name $SERVICE_APACHE -StartupType Automatic -ErrorAction SilentlyContinue
-            Write-Ok "$SERVICE_APACHE service installed"
-        }
-
-        if (-not (Get-Service -Name $SERVICE_MARIADB -ErrorAction SilentlyContinue)) {
-            $mysqld = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
-            $dataDir = "$MARIADB_PATH\data"
-            & $mysqld --install $SERVICE_MARIADB --datadir="$dataDir" --log-error="$LOGS_PATH\mariadb_error.log" 2>&1 | Out-Null
-            Set-Service -Name $SERVICE_MARIADB -StartupType Automatic -ErrorAction SilentlyContinue
-            Write-Ok "$SERVICE_MARIADB service installed"
-        }
+        Install-AsServices
 
         # Update config to reflect registered services
         Save-Config -InstallPath $BASE -ServicesRegistered:$true
@@ -1695,17 +1681,7 @@ function Invoke-InstallWebStack {
     if (-not (Test-ServicesInstalled)) {
         $svcChoice = Read-Host "Install as Windows services (auto-start on boot)? [y/N]"
         if ($svcChoice -match "^[Yy]") {
-            # Register services now, then Start-WebStackServices will use service control
-            Write-Info "Registering Windows services..."
-            & "$APACHE_PATH\bin\httpd.exe" -k install -n $SERVICE_APACHE 2>&1 | Out-Null
-            Set-Service -Name $SERVICE_APACHE -StartupType Automatic -ErrorAction SilentlyContinue
-            Write-Ok "$SERVICE_APACHE service installed"
-
-            $mysqld = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
-            $dataDir = "$MARIADB_PATH\data"
-            & $mysqld --install $SERVICE_MARIADB --datadir="$dataDir" --log-error="$LOGS_PATH\mariadb_error.log" 2>&1 | Out-Null
-            Set-Service -Name $SERVICE_MARIADB -StartupType Automatic -ErrorAction SilentlyContinue
-            Write-Ok "$SERVICE_MARIADB service installed"
+            Install-AsServices
         }
         else {
             Write-Info "Services will run as processes (started via this script)."
