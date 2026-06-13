@@ -800,6 +800,26 @@ function Invoke-ExtractZip($zipPath, $dest, $label) {
         Remove-Item $inner -Recurse -Force -ErrorAction SilentlyContinue
         $ProgressPreference = $prevProgress
     }
+    elseif ($dirsOnly.Count -ge 1) {
+        # Multiple directories or mixed files/dirs — try known wrapper patterns
+        $knownWrappers = @('Apache24', 'php-*', 'mariadb-*', 'phpMyAdmin-*')
+        foreach ($pattern in $knownWrappers) {
+            $match = @($dirsOnly | Where-Object { $_.Name -like $pattern })
+            if ($match.Count -eq 1) {
+                $inner = $match[0].FullName
+                Write-Info "  Flattening wrapper folder: $($match[0].Name)"
+
+                $prevProgress = $ProgressPreference
+                $ProgressPreference = 'SilentlyContinue'
+                Get-ChildItem $inner -Force | ForEach-Object {
+                    Move-Item $_.FullName $dest -Force -ErrorAction SilentlyContinue
+                }
+                Remove-Item $inner -Recurse -Force -ErrorAction SilentlyContinue
+                $ProgressPreference = $prevProgress
+                break
+            }
+        }
+    }
     Write-Ok "$label extracted"
 }
 
