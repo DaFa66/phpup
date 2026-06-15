@@ -4,8 +4,8 @@
 #  Github: https://github.com/getphporg/getphp
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-06-13
-#  Version: 1.0.4
+#  Date: 2026-06-15
+#  Version: 1.0.5
 # ============================================================
 #Requires -RunAsAdministrator
 
