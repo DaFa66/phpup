@@ -8,9 +8,11 @@ Launch your local PHP web stack on Windows 11 with a single PowerShell script. E
 
 ## Quick Start
 
+Right-click PowerShell → Run as Administrator, then:
+
 ```powershell
-# Right-click PowerShell → Run as Administrator, then:
-irm https://raw.githubusercontent.com/getphporg/getphp/HEAD/getphp.ps1 | iex
+
+irm https://raw.githubusercontent.com/dafa66/getphp/HEAD/getphp.ps1 | iex
 ```
 
 Press **I** to install. That's it.
@@ -97,22 +99,22 @@ D  Delete the web stack
 Q  Quit
 ```
 
-| Key    | Action                                                                                |
-| ------ | ------------------------------------------------------------------------------------- |
-| **I**  | Install the web stack (download + configure + start)                                  |
-| **U**  | Update outdated components (compares installed vs latest online versions)             |
+| Key    | Action                                                                                                                              |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **I**  | Install the web stack (download + configure + start)                                                                                |
+| **U**  | Update outdated components (compares installed vs latest online versions)                                                           |
 | **fu** | _(hidden)_ Forced update — switch components to any cached version from `%TEMP%\\webstack_downloads\\` without touching the network |
-| **R**  | Restart Apache + MariaDB                                                              |
-| **S**  | Stop all services (offers to unregister if Windows services installed)                |
-| **T**  | Start all services (offers Windows service registration if not installed)             |
-| **D**  | Delete the web stack (preserves `www\\` files and MariaDB data)                       |
-| **Q**  | Quit                                                                                  |
+| **R**  | Restart Apache + MariaDB                                                                                                            |
+| **S**  | Stop all services (offers to unregister if Windows services installed)                                                              |
+| **T**  | Start all services (offers Windows service registration if not installed)                                                           |
+| **D**  | Delete the web stack (preserves `www\\` files and MariaDB data)                                                                     |
+| **Q**  | Quit                                                                                                                                |
 
 ## After Installation
 
 | Question                    | Answer                                 |
 | --------------------------- | -------------------------------------- |
-| Where to put website files? | `%USERPROFILE%\getphp\www`              |
+| Where to put website files? | `%USERPROFILE%\getphp\www`             |
 | How to test your PHP setup? | http://localhost/phpinfo.php           |
 | Where to access phpMyAdmin? | http://localhost/phpmyadmin            |
 | How to log into phpMyAdmin? | Username: `root` / Password: _(blank)_ |
@@ -149,7 +151,10 @@ Example `config.json`:
     "mariadb": "12.3.2",
     "phpmyadmin": "5.2.3"
   },
-  "path_entries": ["C:\\Users\\<you>\\getphp\\php", "C:\\Users\\<you>\\getphp\\mariadb\\bin"]
+  "path_entries": [
+    "C:\\Users\\<you>\\getphp\\php",
+    "C:\\Users\\<you>\\getphp\\mariadb\\bin"
+  ]
 }
 ```
 
@@ -264,11 +269,189 @@ Run the script with `-Offline` to skip all URL resolution and downloading:
 Offline mode requires four pre-downloaded zip files in `%TEMP%\webstack_downloads\` (Apache, PHP, MariaDB, phpMyAdmin) — run the script online once to populate the cache, then subsequent installs skip downloads entirely.
 
 All downloaded files are cached permanently in `%TEMP%\webstack_downloads\`:
+
 - Component zips (Apache, PHP, MariaDB, phpMyAdmin) — reused on re-install when the version hasn't changed
 - SQLite3 DLL zip — cached and reused
 - VC++ Redistributable installer (`.exe`) — cached and reused
 
 Once you have multiple versions cached, the hidden **`fu`** (forced update) command lets you switch between them interactively without touching the network. Type `fu` at the dashboard prompt and you'll see a summary of installed vs cached versions, then choose which version to install per component — upgrades, downgrades, or snapshots. MariaDB databases are automatically backed up and restored across version changes.
+
+## Program Flow Diagram
+
+```mermaid
+flowchart TD
+    %% ── Entry Point ──
+    START(["irm getphp.ps1 | iex"]) --> PARAM{"-Offline?"}
+    PARAM -->|"Yes"| OFFLINE_FLAG["Set $Offline = $true"]
+    PARAM -->|"No"| ADMIN
+    OFFLINE_FLAG --> ADMIN
+
+    %% ── Pre-flight Guards ──
+    ADMIN{"Run as Admin?"} -->|"No"| EXIT_ADMIN["Exit: Admin required"]
+    ADMIN -->|"Yes"| ARCH{"x64 (AMD64)?"}
+    ARCH -->|"No"| EXIT_ARCH["Exit: ARM / 32-bit unsupported"]
+    ARCH -->|"Yes"| BANNER["Display Banner"]
+
+    %% ── VC++ Redist Check (blocking) ──
+    BANNER --> VCREDIST{"VC++ Redist ≥ 14.51?"}
+    VCREDIST -->|"No"| VC_PROMPT["Offer install/update"]
+    VC_PROMPT -->|"Accept"| VC_INSTALL["Download & run VC++ installer"]
+    VC_INSTALL --> VC_REBOOT{"Reboot needed?"}
+    VC_REBOOT -->|"Yes"| VC_OFFER_REBOOT["Offer reboot"]
+    VC_OFFER_REBOOT -->|"Yes"| VC_REBOOT_NOW(["Restart-Computer -Force"])
+    VC_OFFER_REBOOT -->|"No"| EXIT_REBOOT["Exit: re-run after reboot"]
+    VC_REBOOT -->|"No"| VCREDIST
+    VC_PROMPT -->|"Decline"| EXIT_VC["Exit: VC++ required"]
+    VCREDIST -->|"Yes"| CONFIG
+
+    %% ── Config & Path Resolution ──
+    CONFIG{"Saved config exists?"}
+    CONFIG -->|"Yes"| VALIDATE["Validate saved path<br/>— no spaces<br/>— derive all sub-paths"]
+    VALIDATE -->|"Invalid"| EXIT_PATH["Exit: fix config"]
+    VALIDATE -->|"Valid"| SYNC["Sync service state<br/>with reality"]
+    CONFIG -->|"No (first run)"| PROMPT_PATH["Prompt for install path<br/>default: ~/getphp"]
+    PROMPT_PATH --> SAVE_CONFIG["Save config.json"]
+    SAVE_CONFIG --> DERIVE["Derive all sub-paths"]
+    SYNC --> DASHBOARD
+    DERIVE --> DASHBOARD
+
+    %% ── Main Dashboard Loop ──
+    DASHBOARD["**Show Dashboard**<br/>Stack status · Service status<br/>Prerequisites · Commands"]
+    DASHBOARD --> CHECK_STACK{"Test-StackComplete<br/>(all 4 components?)"}
+    CHECK_STACK --> READ_CMD["Read-Host 'Enter command'"]
+
+    %% ── Command Router ──
+    READ_CMD --> ROUTE{"$cmd"}
+    ROUTE -->|"I (not installed)"| INSTALL
+    ROUTE -->|"I (installed)"| ERR_I["Error: already installed"]
+    ROUTE -->|"U (installed)"| UPDATE
+    ROUTE -->|"U (not installed)"| ERR_U["Error: not installed"]
+    ROUTE -->|"R"| RESTART
+    ROUTE -->|"S"| STOP
+    ROUTE -->|"T"| START
+    ROUTE -->|"D"| DELETE
+    ROUTE -->|"fu"| FORCED_UPDATE
+    ROUTE -->|"Q"| QUIT(["Write-Ok 'Goodbye!' → exit 0"])
+    ROUTE -->|"other"| ERR_CMD["Error: command not recognised"]
+    ERR_I --> PAUSE
+    ERR_U --> PAUSE
+    ERR_CMD --> PAUSE
+    PAUSE["Pause"] --> DASHBOARD
+
+    %% ══════════ INSTALL SUB-FLOW ══════════
+    INSTALL["**Invoke-InstallWebStack**"] --> INST_VC{"VC++ OK?"}
+    INST_VC -->|"No"| INST_FIX_VC["Offer install → install or abort"]
+    INST_FIX_VC -->|"Abort"| DASHBOARD
+    INST_FIX_VC -->|"Done"| INST_DIRS
+    INST_VC -->|"Yes"| INST_DIRS["Create directories<br/>base · www · logs · temp_downloads"]
+
+    INST_DIRS --> INST_MODE{"$Offline?"}
+    INST_MODE -->|"Online"| INST_RESOLVE["Resolve latest URLs<br/>Apache · PHP · MariaDB · phpMyAdmin"]
+    INST_RESOLVE --> INST_DL_EACH["For each component:<br/>skip if same version already installed<br/>else Invoke-DownloadAndExtract"]
+    INST_MODE -->|"Offline"| INST_SCAN["Scan $TEMP_DOWNLOADS for zips<br/>(needs 4: httpd*, php-*, mariadb*, phpmyadmin*)"]
+    INST_SCAN --> INST_OFFLINE_EXT["Identify & extract each zip"]
+
+    INST_DL_EACH --> INST_DLL["Copy PHP dependency DLLs<br/>to Apache bin\"]
+    INST_OFFLINE_EXT --> INST_DLL
+    INST_DLL --> INST_CFG_APACHE["Configure Apache<br/>httpd.conf · mod_rewrite · phpMyAdmin alias"]
+    INST_CFG_APACHE --> INST_CFG_PHP["Configure PHP<br/>php.ini · extensions · error log · OPCache"]
+    INST_CFG_PHP --> INST_SQLITE["Fix SQLite3 DLL<br/>(VS17 bundled version is broken)"]
+
+    INST_SQLITE --> INST_DB_BACKUP{"Orphaned data_backup?"}
+    INST_DB_BACKUP -->|"Yes"| INST_RESTORE["Offer restore → move to mariadb/data"]
+    INST_DB_BACKUP -->|"No"| INST_CFG_MDB
+    INST_RESTORE --> INST_CFG_MDB["Configure MariaDB<br/>my.ini · data init · blank root password"]
+
+    INST_CFG_MDB --> INST_PMA{"Offline mode?"}
+    INST_PMA -->|"Online"| INST_PMA_DL["Download & extract phpMyAdmin"]
+    INST_PMA_DL --> INST_CFG_PMA
+    INST_PMA -->|"Offline"| INST_CFG_PMA["Configure phpMyAdmin<br/>config.inc.php · blowfish secret"]
+
+    INST_CFG_PMA --> INST_PHPINFO["Create phpinfo.php test file"]
+    INST_PHPINFO --> INST_PATH["Add PHP + MariaDB to user PATH"]
+    INST_PATH --> INST_SVC{"Install as Windows services?"}
+    INST_SVC -->|"Yes"| INST_SVC_REG["Install-AsServices<br/>getPHP_Apache<br/>getPHP_MariaDB"]
+    INST_SVC -->|"No"| INST_START
+    INST_SVC_REG --> INST_START["Start services<br/>(service or process mode)"]
+
+    INST_START --> INST_PMA_STOR["Configure phpMyAdmin storage<br/>(pma_ tables)"]
+    INST_PMA_STOR --> INST_DONE["Save config.json<br/>Display 'Installation Complete!'"]
+    INST_DONE --> PAUSE
+
+    %% ══════════ UPDATE SUB-FLOW ══════════
+    UPDATE["**Invoke-UpdateWebStack**"] --> UPD_RESOLVE["Resolve latest URLs for all 4"]
+    UPD_RESOLVE --> UPD_COMPARE["Compare installed vs latest versions"]
+    UPD_COMPARE --> UPD_OUTDATED{"Any outdated?"}
+    UPD_OUTDATED -->|"No"| UPD_OK["Write-Ok 'Stack is up to date'"]
+    UPD_OK --> PAUSE
+    UPD_OUTDATED -->|"Yes"| UPD_CONFIRM{"Confirm update?"}
+    UPD_CONFIRM -->|"No"| PAUSE
+    UPD_CONFIRM -->|"Yes"| UPD_STOP["Stop all services"]
+    UPD_STOP --> UPD_EACH["For each outdated component:<br/>Remove old → Download new → Configure"]
+    UPD_EACH --> UPD_MDB_CHK{"MariaDB updated?"}
+    UPD_MDB_CHK -->|"Yes"| UPD_MDB_BACKUP["Backup data → Restore data"]
+    UPD_MDB_CHK -->|"No"| UPD_START
+    UPD_MDB_BACKUP --> UPD_START["Start services"]
+    UPD_START --> UPD_PMA_CHK{"phpMyAdmin updated?"}
+    UPD_PMA_CHK -->|"Yes"| UPD_PMA_STOR["Configure phpMyAdmin storage"]
+    UPD_PMA_CHK -->|"No"| UPD_SAVE
+    UPD_PMA_STOR --> UPD_SAVE["Save-PostUpdateConfig"]
+    UPD_SAVE --> PAUSE
+
+    %% ══════════ DELETE SUB-FLOW ══════════
+    DELETE["**Invoke-DeleteWebStack**"] --> DEL_CONFIRM{"Type 'DELETE' to confirm?"}
+    DEL_CONFIRM -->|"No"| DEL_ABORT["Nothing deleted"]
+    DEL_ABORT --> PAUSE
+    DEL_CONFIRM -->|"Yes"| DEL_STOP["Stop all services"]
+    DEL_STOP --> DEL_BACKUP["Backup mariadb\\data\\ → data_backup\\"]
+    DEL_BACKUP --> DEL_EXISTS{"Existing backup?"}
+    DEL_EXISTS -->|"Yes"| DEL_RENAME["Timestamp old backup<br/>data_backup_YYYYMMDD_HHmmss"]
+    DEL_EXISTS -->|"No"| DEL_REMOVE
+    DEL_RENAME --> DEL_REMOVE["Remove: Apache · PHP · MariaDB · phpMyAdmin · logs"]
+    DEL_REMOVE --> DEL_SVC["Unregister Windows services"]
+    DEL_SVC --> DEL_PATH["Remove from user PATH"]
+    DEL_PATH --> DEL_CONFIG["Clear-Config"]
+    DEL_CONFIG --> PAUSE
+
+    %% ══════════ RESTART / STOP / START ══════════
+    RESTART["Stop-WebStackServices → wait 2s → Start-WebStackServices"] --> PAUSE
+    STOP --> STOP_CHK{"Services registered?"}
+    STOP_CHK -->|"Yes"| STOP_OFFER["Offer to unregister"]
+    STOP_OFFER -->|"Yes"| STOP_UNREG["Remove-Services → Save config: false"]
+    STOP_OFFER -->|"No"| STOP_EXEC
+    STOP_CHK -->|"No"| STOP_EXEC["Stop-WebStackServices"]
+    STOP_UNREG --> PAUSE
+    STOP_EXEC --> PAUSE
+    START --> START_SVC["Request-ServiceRegistration<br/>(offer if not yet registered)"]
+    START_SVC --> START_START["Start-WebStackServices"]
+    START_START --> PAUSE
+
+    %% ══════════ FORCED UPDATE (offline) ══════════
+    FORCED_UPDATE["**Invoke-ForcedUpdate**"] --> FU_SCAN["Scan $TEMP_DOWNLOADS for cached zips"]
+    FU_SCAN --> FU_SHOW["Show installed vs cached versions"]
+    FU_SHOW --> FU_PICK["User picks version per component"]
+    FU_PICK --> FU_STOP["Stop services"]
+    FU_STOP --> FU_EACH["For each changed component:<br/>Remove old → Extract cached zip → Configure"]
+    FU_EACH --> FU_START["Start services"]
+    FU_START --> FU_SAVE["Save config with new versions"]
+    FU_SAVE --> PAUSE
+
+    %% ── Styling ──
+    style START fill:#0f0,color:#000
+    style QUIT fill:#f66,color:#fff
+    style EXIT_ADMIN fill:#f66,color:#fff
+    style EXIT_ARCH fill:#f66,color:#fff
+    style EXIT_VC fill:#f66,color:#fff
+    style EXIT_PATH fill:#f66,color:#fff
+    style DASHBOARD fill:#39f,color:#fff
+    style INSTALL fill:#3c3,color:#fff
+    style UPDATE fill:#3c3,color:#fff
+    style DELETE fill:#f93,color:#000
+    style FORCED_UPDATE fill:#93f,color:#fff
+    style ERR_I fill:#999,color:#fff
+    style ERR_U fill:#999,color:#fff
+    style ERR_CMD fill:#999,color:#fff
+```
 
 ## Known Quirks & Fixes
 
