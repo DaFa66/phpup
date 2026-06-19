@@ -119,7 +119,7 @@ function Get-VersionFromZipName([string]$filename, [string]$component) {
     $ver = $null
     switch ($component) {
         'apache'     { if ($filename -match 'httpd-([\d.]+)-') { $ver = $matches[1] } }
-        'php'        { if ($filename -match 'php-([\d.]+)-')  { $ver = $matches[1] } }
+        'php'        { if ($filename -match 'php-([\d.]+)(?:RC\d+)?-')  { $ver = $matches[1] } }
         'mariadb'    { if ($filename -match 'mariadb-([\d.]+)-') { $ver = $matches[1] } }
         'phpmyadmin' { if ($filename -match 'phpMyAdmin-([\d.]+)') { $ver = $matches[1] } }
     }
