@@ -4,8 +4,8 @@
 #  Github: https://github.com/getphporg/getphp
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-06-15
-#  Version: 1.0.5
+#  Date: 2026-06-20
+#  Version: 1.0.6
 # ============================================================
 
 param(
@@ -22,7 +22,7 @@ $BANNER_ART = @'
 │   __ _  ___| |_|  _ \| | | |  _ \  │
 │  / _` |/ _ \ __| |_) | |_| | |_) | │
 │ | (_| |  __/ |_|  __/|  _  |  __/  │
-│  \__, |\___|\__|_|   |_| |_|_|     │
+│  \__, |\___|\__|_|   |_| |_|_| pro │
 │  |___/              www.getPHP.org │
 └────────────────────────────────────┘
 '@
@@ -2410,10 +2410,6 @@ if ($cpu_arch -ne 'AMD64') {
     Pause
     exit 1
 }
-
-# ---- Banner ----
-Write-Host $BANNER_ART -ForegroundColor Cyan
-Write-Host ""
 
 # ---- VC++ Redistributable: system prerequisite (BLOCKING) ----
 Write-Host ""
