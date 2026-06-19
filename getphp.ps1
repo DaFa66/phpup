@@ -2412,11 +2412,6 @@ if ($cpu_arch -ne 'AMD64') {
 }
 
 # ---- VC++ Redistributable: system prerequisite (BLOCKING) ----
-Write-Host ""
-Write-Host "========================================" -ForegroundColor White
-Write-Host "  SYSTEM PREREQUISITE CHECK" -ForegroundColor White
-Write-Host "========================================" -ForegroundColor White
-Write-Host ""
 
 while (-not (Test-VcRedistInstalled)) {
     Write-Warn "Visual C++ Redistributable (VS 2017-2026) x64 is required."
