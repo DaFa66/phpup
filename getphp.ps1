@@ -34,7 +34,7 @@ $BANNER_ART = @'
 # Update these when bumping the pinned versions.
 $FALLBACK_URLS = @{
     Redist     = "https://aka.ms/vc14/vc_redist.x64.exe"
-    Apache     = "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.68-260610-Win64-VS18.zip"
+    Apache     = "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.68-260617-Win64-VS18.zip"
     PHP        = "https://windows.php.net/downloads/releases/php-8.5.7-Win32-vs17-x64.zip"
     MariaDB    = "https://archive.mariadb.org/mariadb-12.3.2/winx64-packages/mariadb-12.3.2-winx64.zip"
     phpMyAdmin = "https://files.phpmyadmin.net/phpMyAdmin/5.2.3/phpMyAdmin-5.2.3-all-languages.zip"
