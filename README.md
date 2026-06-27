@@ -2,9 +2,9 @@
 
 > **Acknowledgments**
 >
-> This project is a Windows x64 port inspired by the original [getPHP.org](https://getphp.org) project founded by Balázs Szabó. The original Mac/Linux shell script — a brilliantly concise 600-line installer that delivers a complete PHP stack with a single command — set the standard for simplicity and developer experience that this Windows port aspires to.
+> This project is a Windows x64 port inspired by the original [getPHP.org](https://getphp.org) project founded by Balázs Szabó. The original Mac/Linux shell script — a brilliantly concise 700-line installer that delivers a complete PHP stack with a single command — set the standard for simplicity and developer experience that this Windows port aspires to.
 >
-> Balázs has since launched his own Windows version using Winget as the installer — also under 600 lines — proving once again that less is more. Both projects share the same spirit: **no bloat, no desktop app, just a working PHP stack.**
+> Balázs has since launched his own Windows version using Winget as the installer — proving once again that less is more. Both projects share the same spirit: **no bloat, no desktop app, just a working PHP stack.**
 >
 > This PowerShell edition takes a different approach — native binary downloads, dynamic version resolution, and an interactive dashboard — but the mission is the same. Thank you, Balázs, for getphp.org and for supporting all three operating systems.
 
@@ -71,7 +71,7 @@ After running the script, you'll see the getPHP dashboard:
 │   __ _  ___| |_|  _ \| | | |  _ \  │
 │  / _` |/ _ \ __| |_) | |_| | |_) | │
 │ | (_| |  __/ |_|  __/|  _  |  __/  │
-│  \__, |\___|\__|_|   |_| |_|_|     │
+│  \__, |\___|\__|_|   |_| |_|_| pro │
 │  |___/              www.getPHP.org │
 └────────────────────────────────────┘
 
@@ -127,7 +127,7 @@ Q  Quit
 
 | Question                    | Answer                                 |
 | --------------------------- | -------------------------------------- |
-| Where to put website files? | `C:\getphp\www`             |
+| Where to put website files? | `C:\getphp\www`                        |
 | How to test your PHP setup? | http://localhost/phpinfo.php           |
 | Where to access phpMyAdmin? | http://localhost/phpmyadmin            |
 | How to log into phpMyAdmin? | Username: `root` / Password: _(blank)_ |
@@ -164,10 +164,7 @@ Example `config.json`:
     "mariadb": "12.3.2",
     "phpmyadmin": "5.2.3"
   },
-  "path_entries": [
-    "C:\\getphp\\php",
-    "C:\\getphp\\mariadb\\bin"
-  ]
+  "path_entries": ["C:\\getphp\\php", "C:\\getphp\\mariadb\\bin"]
 }
 ```
 
