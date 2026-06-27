@@ -6,7 +6,7 @@
 >
 > Balázs has since launched his own Windows version using Winget as the installer — proving once again that less is more. Both projects share the same spirit: **no bloat, no desktop app, just a working PHP stack.**
 >
-> This PowerShell edition takes a different approach — native binary downloads, dynamic version resolution, and an interactive dashboard — but the mission is the same. Thank you, Balázs, for getphp.org and for supporting all three operating systems.
+> This PowerShell edition takes a different approach — native binary downloads, dynamic version resolution, zip file caching, and an interactive dashboard — but the mission is the same. Thank you, Balázs, for getphp.org and for supporting all three operating systems.
 
 Launch your local PHP web stack on Windows 11 with a single PowerShell script.
 
