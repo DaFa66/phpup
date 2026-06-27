@@ -2,11 +2,11 @@
 
 > **Acknowledgments**
 >
-> This project is a Windows x64 port inspired by the original [getPHP.org](https://getphp.org) project founded by Balázs Szabó. The original Mac/Linux shell script — a brilliantly concise 700-line installer that delivers a complete PHP stack with a single command — set the standard for simplicity and developer experience that this Windows port aspires to.
+> This project is a Windows x64 port inspired by the original [getPHP.org](https://getphp.org) project founded by Balázs Szabó. The original Mac/Linux shell script — a brilliantly concise sub 300-line installer that delivers a complete PHP stack with a single command — set the standard for simplicity and developer experience that this Windows port aspires to.
 >
-> Balázs has since launched his own Windows version using Winget as the installer — proving once again that less is more. Both projects share the same spirit: **no bloat, no desktop app, just a working PHP stack.**
+> Balázs has since launched his own Windows version using Winget as the installer — proving once again that less is more in just under 700 lines of code. Both projects share the same spirit: **no bloat, no desktop app, just a working PHP stack.**
 >
-> This PowerShell edition takes a different approach — native binary downloads, dynamic version resolution, zip file caching, and an interactive dashboard — but the mission is the same. Thank you, Balázs, for getphp.org and for supporting all three operating systems.
+> This PowerShell edition takes a different approach — native binary downloads, dynamic version resolution, zip file caching and an interactive dashboard — but the mission is the same. Thank you, Balázs, for getphp.org and for supporting all three operating systems.
 
 Launch your local PHP web stack on Windows 11 with a single PowerShell script.
 
