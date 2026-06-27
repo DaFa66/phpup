@@ -1,11 +1,12 @@
 # ============================================================
 #  getPHP — Windows 11 x64 Web Stack Installer & Dashboard
-#  Inspired by getphp.org (Mac & Linux) — PowerShell Edition
+#  Inspired by getphp.org (Mac, Linux & Windows) — PowerShell Edition
 #  Github: https://github.com/getphporg/getphp
+#  My Github: https://github.com/dafa66/getphp
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-06-20
-#  Version: 1.0.6
+#  Date: 2026-06-28
+#  Version: 1.0.7
 # ============================================================
 
 param(
@@ -13,6 +14,7 @@ param(
 )
 
 # ---- Config -------------------------------------------------
+$BASE = "C:\getphp"
 $TEMP_DOWNLOADS  = "$env:TEMP\webstack_downloads"
 
 # ---- Banner -------------------------------------------------
@@ -174,7 +176,7 @@ function Save-Config {
             php        = "$InstallPath\php"
             mariadb    = "$InstallPath\mariadb"
             www        = "$InstallPath\www"
-            phpmyadmin = "$InstallPath\www\phpmyadmin"
+            phpmyadmin = "$InstallPath\phpmyadmin"
         }
     }
 
@@ -2493,10 +2495,10 @@ else {
     Write-Info "Press Enter to accept the default, or type a custom path."
     Write-Host ""
 
-    $userPath = Read-Host "Install path [%USERPROFILE%\getphp]"
+    $userPath = Read-Host "Install path [C:\getphp]"
 
     if ([string]::IsNullOrWhiteSpace($userPath)) {
-        $BASE = "$env:USERPROFILE\getphp"
+        $BASE = "C:\getphp"
     }
     else {
         # Strip trailing backslash if present
@@ -2524,7 +2526,7 @@ $PHP_PATH        = "$BASE\php"
 $MARIADB_PATH    = "$BASE\mariadb"
 $WWW_PATH        = "$BASE\www"
 $LOGS_PATH       = "$BASE\logs"
-$PHPMYADMIN_PATH = "$WWW_PATH\phpmyadmin"
+$PHPMYADMIN_PATH = "$BASE\phpmyadmin"
 
 if (-not $config) {
     Write-Info "  Websites:  $WWW_PATH"
@@ -2608,7 +2610,7 @@ while ($true) {
             Write-Host ""
             Write-Ok "Goodbye!"
             Write-Host ""
-            exit 0
+            return
         }
         "fu" {
             if ($stackComplete) { Invoke-ForcedUpdate }
