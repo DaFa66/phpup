@@ -1,4 +1,4 @@
-# getPHP for Windows x64 — Local Web Stack. One Script. Done.
+# phpup — Local PHP Web Stack. One Script. Done.
 
 > **Acknowledgments**
 >
@@ -16,7 +16,7 @@ Right-click PowerShell → Run as Administrator, then:
 
 ```powershell
 
-irm https://raw.githubusercontent.com/DaFa66/getphp/HEAD/getphp.ps1 | iex
+irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.ps1 | iex
 ```
 
 Press **I** to install. That's it.
@@ -32,12 +32,12 @@ On subsequent runs the script remembers your install path and goes straight to t
 | **MariaDB**    | [mariadb.org](https://downloads.mariadb.org/rest-api/mariadb/) | ✅ Queries REST API for latest Stable (Rolling > LTS)               |
 | **phpMyAdmin** | [phpmyadmin.net](https://www.phpmyadmin.net/downloads/)        | ✅ Scrapes downloads page for latest stable                         |
 
-All installed to `C:\getphp\` by default — matching the root-level convention of other Windows web stacks. No system-wide changes, no cruft. Optionally register as Windows services for auto-start on boot.
+All installed to `C:\phpup\` by default. No system-wide changes, no cruft. Optionally register as Windows services for auto-start on boot.
 
 ## Directory Layout
 
 ```
-C:\getphp\
+C:\phpup\
 ├── apache\          # Apache Lounge (VS18, port 80)
 │   ├── bin\
 │   ├── conf\
@@ -63,17 +63,18 @@ C:\getphp\
 
 ## Dashboard Commands
 
-After running the script, you'll see the getPHP dashboard:
+After running the script, you'll see the phpup dashboard:
 
 ```
-┌────────────────────────────────────┐
-│             _   ____  _   _ ____   │
-│   __ _  ___| |_|  _ \| | | |  _ \  │
-│  / _` |/ _ \ __| |_) | |_| | |_) | │
-│ | (_| |  __/ |_|  __/|  _  |  __/  │
-│  \__, |\___|\__|_|   |_| |_|_| pro │
-│  |___/              www.getPHP.org │
-└────────────────────────────────────┘
+┌─────────────────────────────┐
+│    ____  _   _ ____         │
+│   |  _ \| | | |  _ \  /\    │
+│   | |_) | |_| | |_) | || |  │
+│   |  __/|  _  |  __/| || |  │
+│   |_|   |_| |_|_|    ||_|   │
+│         ▲ ▲ ▲               │
+│        phpup                │
+└─────────────────────────────┘
 
 Your Web Stack:
 ~~~~~~~~~~~~~~~
@@ -94,10 +95,10 @@ VC++ Redist ---> 14.51.36247.0
 
 Windows Services:
 ~~~~~~~~~~~~~~~~
-getPHP_Apache   registered
-getPHP_MariaDB  registered
+phpup_Apache   registered
+phpup_MariaDB  registered
 
-Where to put website files? C:\getphp\www
+Where to put website files? C:\phpup\www
 How to test your PHP setup? http://localhost/phpinfo.php
 Where to access phpMyAdmin? http://localhost/phpmyadmin
 How to log into phpMyAdmin? Username: root | Password: [blank]
@@ -127,7 +128,7 @@ Q  Quit
 
 | Question                    | Answer                                 |
 | --------------------------- | -------------------------------------- |
-| Where to put website files? | `C:\getphp\www`                        |
+| Where to put website files? | `C:\phpup\www`                        |
 | How to test your PHP setup? | http://localhost/phpinfo.php           |
 | Where to access phpMyAdmin? | http://localhost/phpmyadmin            |
 | How to log into phpMyAdmin? | Username: `root` / Password: _(blank)_ |
@@ -135,7 +136,7 @@ Q  Quit
 
 ## Persistent Config
 
-The script saves your install path and component versions to `%APPDATA%\getphp\config.json`. This means:
+The script saves your install path and component versions to `%APPDATA%\phpup\config.json`. This means:
 
 - **One-time path prompt** — asked only on first run; subsequent runs go straight to the dashboard
 - **Version tracking** — Apache, PHP, MariaDB, and phpMyAdmin versions are recorded after each install/update
@@ -147,16 +148,16 @@ Example `config.json`:
 
 ```json
 {
-  "install_path": "C:\\getphp",
+  "install_path": "C:\\phpup",
   "installed_at": "2026-06-05T20:45:00",
   "services_registered": true,
   "paths": {
-    "apache": "C:\\getphp\\apache",
-    "php": "C:\\getphp\\php",
-    "mariadb": "C:\\getphp\\mariadb",
-    "www": "C:\\getphp\\www",
-    "logs": "C:\\getphp\\logs",
-    "phpmyadmin": "C:\\getphp\\phpmyadmin"
+    "apache": "C:\\phpup\\apache",
+    "php": "C:\\phpup\\php",
+    "mariadb": "C:\\phpup\\mariadb",
+    "www": "C:\\phpup\\www",
+    "logs": "C:\\phpup\\logs",
+    "phpmyadmin": "C:\\phpup\\phpmyadmin"
   },
   "versions": {
     "apache": "2.4.67",
@@ -164,7 +165,7 @@ Example `config.json`:
     "mariadb": "12.3.2",
     "phpmyadmin": "5.2.3"
   },
-  "path_entries": ["C:\\getphp\\php", "C:\\getphp\\mariadb\\bin"]
+  "path_entries": ["C:\\phpup\\php", "C:\\phpup\\mariadb\\bin"]
 }
 ```
 
@@ -229,7 +230,7 @@ The delete command (`D`) preserves your data:
 When you reinstall (`I`), the script detects the orphaned `data_backup\` and offers to restore your databases:
 
 ```
-Found database backup from a previous install: C:\getphp\data_backup
+Found database backup from a previous install: C:\phpup\data_backup
 Restore previous databases? [Y/n]
 ```
 
@@ -243,7 +244,7 @@ During install, the script asks whether to register Apache and MariaDB as Window
 Install as Windows services (auto-start on boot)? [y/N]
 ```
 
-Say **yes** and two services are created — `getPHP_Apache` and `getPHP_MariaDB` — set to auto-start. After a reboot your stack is running without opening the script. The config file records the choice so the dashboard always reflects current state.
+Say **yes** and two services are created — `phpup_Apache` and `phpup_MariaDB` — set to auto-start. After a reboot your stack is running without opening the script. The config file records the choice so the dashboard always reflects current state.
 
 If you skip registration during install, the **T** (Start) command will offer to register them on first use. The hint `(offers Windows service registration)` appears next to **T** in the dashboard until services are installed — then it disappears. A **Windows Services** block always appears below Service Status, showing `registered` or `not registered` for each service.
 
@@ -253,15 +254,15 @@ Services are automatically removed when you delete the stack (`D`).
 
 ## Zero Footprint
 
-The `getphp.ps1` script runs entirely in-memory and never installs itself on your machine. Only the web stack is added to `C:\getphp\` if you choose to install it, plus a small config file at `%APPDATA%\getphp\config.json`. To manage services, update, or uninstall the stack, simply re-run the script at any time.
+The `phpup.ps1` script runs entirely in-memory and never installs itself on your machine. Only the web stack is added to `C:\phpup\` if you choose to install it, plus a small config file at `%APPDATA%\phpup\config.json`. To manage services, update, or uninstall the stack, simply re-run the script at any time.
 
 ## Uninstalling
 
-Run the script and press **D** (Delete). This removes Apache, PHP, MariaDB, and phpMyAdmin but **preserves** your website files in `www\` and your MariaDB data in `data_backup\`. PATH entries are removed and the config is cleared. To perform a complete wipe, delete the install directory and `%APPDATA%\getphp\` manually after running Delete.
+Run the script and press **D** (Delete). This removes Apache, PHP, MariaDB, and phpMyAdmin but **preserves** your website files in `www\` and your MariaDB data in `data_backup\`. PATH entries are removed and the config is cleared. To perform a complete wipe, delete the install directory and `%APPDATA%\phpup\` manually after running Delete.
 
 ## How It Resolves Latest Versions
 
-Unlike most installers that hardcode version numbers, `getphp.ps1` dynamically resolves the latest stable version of every component every time you install or update:
+Unlike most installers that hardcode version numbers, `phpup.ps1` dynamically resolves the latest stable version of every component every time you install or update:
 
 - **Apache** — Scrapes the Apache Lounge download page, finds all VS## x64 zips, picks the highest VS version × Apache version combination
 - **PHP** — Queries the `releases.json` API from windows.php.net, filters for PHP 8.x thread-safe x64, prefers VS17 builds over VS16
@@ -273,7 +274,7 @@ Unlike most installers that hardcode version numbers, `getphp.ps1` dynamically r
 Run the script with `-Offline` to skip all URL resolution and downloading:
 
 ```powershell
-.\getphp.ps1 -Offline
+.\\phpup.ps1 -Offline
 ```
 
 Offline mode requires four pre-downloaded zip files in `%TEMP%\webstack_downloads\` (Apache, PHP, MariaDB, phpMyAdmin) — run the script online once to populate the cache, then subsequent installs skip downloads entirely.
@@ -291,7 +292,7 @@ Once you have multiple versions cached, the hidden **`fu`** (forced update) comm
 ```mermaid
 flowchart TD
     %% ── Entry Point ──
-    START(["irm getphp.ps1 | iex"]) --> PARAM{"-Offline?"}
+    START(["irm phpup.ps1 | iex"]) --> PARAM{"-Offline?"}
     PARAM -->|"Yes"| OFFLINE_FLAG["Set $Offline = $true"]
     PARAM -->|"No"| ADMIN
     OFFLINE_FLAG --> ADMIN
@@ -319,7 +320,7 @@ flowchart TD
     CONFIG -->|"Yes"| VALIDATE["Validate saved path<br/>— no spaces<br/>— derive all sub-paths"]
     VALIDATE -->|"Invalid"| EXIT_PATH["Exit: fix config"]
     VALIDATE -->|"Valid"| SYNC["Sync service state<br/>with reality"]
-    CONFIG -->|"No (first run)"| PROMPT_PATH["Prompt for install path<br/>default: C:\getphp"]
+    CONFIG -->|"No (first run)"| PROMPT_PATH["Prompt for install path<br/>default: C:\phpup"]
     PROMPT_PATH --> SAVE_CONFIG["Save config.json"]
     SAVE_CONFIG --> DERIVE["Derive all sub-paths"]
     SYNC --> DASHBOARD
@@ -380,7 +381,7 @@ flowchart TD
     INST_CFG_PMA --> INST_PHPINFO["Create phpinfo.php test file"]
     INST_PHPINFO --> INST_PATH["Add PHP + MariaDB to user PATH"]
     INST_PATH --> INST_SVC{"Install as Windows services?"}
-    INST_SVC -->|"Yes"| INST_SVC_REG["Install-AsServices<br/>getPHP_Apache<br/>getPHP_MariaDB"]
+    INST_SVC -->|"Yes"| INST_SVC_REG["Install-AsServices<br/>phpup_Apache<br/>phpup_MariaDB"]
     INST_SVC -->|"No"| INST_START
     INST_SVC_REG --> INST_START["Start services<br/>(service or process mode)"]
 
@@ -467,14 +468,14 @@ flowchart TD
 
 ### ARM64 / Snapdragon / Apple Silicon (Windows VM)
 
-Not supported. getPHP requires x64 (Intel/AMD 64-bit) — Apache Lounge and MariaDB do not provide native ARM64 Windows binaries. The script detects ARM64 at startup and exits with a clear message.
+Not supported. phpup requires x64 (Intel/AMD 64-bit) — Apache Lounge and MariaDB do not provide native ARM64 Windows binaries. The script detects ARM64 at startup and exits with a clear message.
 
 ## Support & Contributions
 
-If you run into any errors or bugs, please open an [issue](https://github.com/DaFa66/getphp/issues) or send a [pull request](https://github.com/DaFa66/getphp/pulls).
+If you run into any errors or bugs, please open an [issue](https://github.com/DaFa66/phpup/issues) or send a [pull request](https://github.com/DaFa66/phpup/pulls).
 
 You can also contact Balázs Szabó through his [Support Page](https://getphp.org/support.php) at [getPHP.org](https://getphp.org).
 
 ---
 
-> **Disclaimer:** getPHP is an independent, open-source tool and is not affiliated with, sponsored by, or endorsed by the PHP Group, the PHP Foundation, Apache Lounge, MariaDB Foundation, or phpMyAdmin.
+> **Disclaimer:** phpup is an independent, open-source tool and is not affiliated with, sponsored by, or endorsed by the PHP Group, the PHP Foundation, Apache Lounge, MariaDB Foundation, or phpMyAdmin.

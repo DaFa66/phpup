@@ -1,12 +1,11 @@
 # ============================================================
-#  getPHP — Windows 11 x64 Web Stack Installer & Dashboard
-#  Inspired by getphp.org (Mac, Linux & Windows) — PowerShell Edition
-#  Github: https://github.com/getphporg/getphp
-#  My Github: https://github.com/dafa66/getphp
+#  phpup — Windows 11 x64 Web Stack Installer & Dashboard
+#  Inspired by getphp.org (Mac, Linux & Windows) by Balázs Szabó
+#  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-06-28
-#  Version: 1.0.7
+#  Version: 2.0.0
 # ============================================================
 
 param(
@@ -14,19 +13,20 @@ param(
 )
 
 # ---- Config -------------------------------------------------
-$BASE = "C:\getphp"
+$BASE = "C:\phpup"
 $TEMP_DOWNLOADS  = "$env:TEMP\webstack_downloads"
 
 # ---- Banner -------------------------------------------------
 $BANNER_ART = @'
-┌────────────────────────────────────┐
-│             _   ____  _   _ ____   │
-│   __ _  ___| |_|  _ \| | | |  _ \  │
-│  / _` |/ _ \ __| |_) | |_| | |_) | │
-│ | (_| |  __/ |_|  __/|  _  |  __/  │
-│  \__, |\___|\__|_|   |_| |_|_| pro │
-│  |___/              www.getPHP.org │
-└────────────────────────────────────┘
+┌─────────────────────────────┐
+│    ____  _   _ ____         │
+│   |  _ \| | | |  _ \  /\    │
+│   | |_) | |_| | |_) | || |  │
+│   |  __/|  _  |  __/| || |  │
+│   |_|   |_| |_|_|    ||_|   │
+│         ▲ ▲ ▲               │
+│        phpup                │
+└─────────────────────────────┘
 '@
 
 # Pinned fallback URLs — used when live scraping/API resolution fails.
@@ -135,7 +135,7 @@ function Get-VersionFromZipName([string]$filename, [string]$component) {
 
 # ---- Config Persistence --------------------------------------
 
-$CONFIG_FILE = "$env:APPDATA\getphp\config.json"
+$CONFIG_FILE = "$env:APPDATA\phpup\config.json"
 
 function Get-Config {
     if (-not (Test-Path $CONFIG_FILE)) { return $null }
@@ -916,7 +916,7 @@ function Invoke-ConfigureApache {
     if ($conf -notmatch 'php_module') {
         $phpBlock = @"
 
-# PHP integration (getPHP)
+# PHP integration (phpup)
 LoadModule php_module "$phpModuleUnix"
 AddHandler application/x-httpd-php .php
 PHPIniDir "$phpIniUnix"
@@ -930,7 +930,7 @@ PHPIniDir "$phpIniUnix"
         $pmaUnix = $PHPMYADMIN_PATH -replace '\\', '/'
         $pmaBlock = @"
 
-# phpMyAdmin (getPHP)
+# phpMyAdmin (phpup)
 Alias /phpmyadmin "$pmaUnix"
 <Directory "$pmaUnix">
     Options Indexes FollowSymLinks MultiViews
@@ -1186,7 +1186,7 @@ function Invoke-ConfigurePhpMyAdmin {
 
     $config = @"
 <?php
-/* getPHP - phpMyAdmin configuration */
+/* phpup - phpMyAdmin configuration */
 `$i = 1;
 `$cfg['blowfish_secret'] = '$blowfishSecret';
 `$cfg['Servers'][`$i]['host']          = '127.0.0.1';
@@ -1429,8 +1429,8 @@ function Stop-WebStackServices {
 
 # ---- Windows Service Helpers ---------------------------------
 
-$SERVICE_APACHE  = "getPHP_Apache"
-$SERVICE_MARIADB = "getPHP_MariaDB"
+$SERVICE_APACHE  = "phpup_Apache"
+$SERVICE_MARIADB = "phpup_MariaDB"
 
 function Test-ServicesInstalled {
     $service = Get-Service -Name $SERVICE_APACHE -ErrorAction SilentlyContinue
@@ -2231,7 +2231,25 @@ function Show-Dashboard {
     Clear-Host
 
     Write-Host ""
-    Write-Host $BANNER_ART -ForegroundColor Cyan
+    # Render banner with multi-colour: white text, coloured arrows, cyan "phpup"
+    $bannerLines = $BANNER_ART -split "`n"
+    foreach ($line in $bannerLines) {
+        if ($line -match '^\│\s+▲') {
+            Write-Host "│         " -NoNewline -ForegroundColor White
+            Write-Host "▲" -NoNewline -ForegroundColor Yellow
+            Write-Host " " -NoNewline -ForegroundColor White
+            Write-Host "▲" -NoNewline -ForegroundColor Green
+            Write-Host " " -NoNewline -ForegroundColor White
+            Write-Host "▲" -NoNewline -ForegroundColor Cyan
+            Write-Host "               │" -ForegroundColor White
+        }
+        elseif ($line -match 'phpup') {
+            Write-Host $line -ForegroundColor Cyan
+        }
+        else {
+            Write-Host $line -ForegroundColor White
+        }
+    }
     Write-Host ""
 
     # ---- Stack Status ----
@@ -2323,14 +2341,14 @@ function Show-Dashboard {
     Write-Host "Windows Services:" -ForegroundColor White
     Write-Host "~~~~~~~~~~~~~~~~"
     $svcRegistered = Test-ServicesInstalled
-    Write-Host "getPHP_Apache   " -NoNewline
+    Write-Host "phpup_Apache   " -NoNewline
     if ($svcRegistered) {
         Write-Host "registered" -ForegroundColor DarkGray
     }
     else {
         Write-Host "not registered" -ForegroundColor DarkGray
     }
-    Write-Host "getPHP_MariaDB  " -NoNewline
+    Write-Host "phpup_MariaDB  " -NoNewline
     if ($svcRegistered) {
         Write-Host "registered" -ForegroundColor DarkGray
     }
@@ -2349,6 +2367,8 @@ function Show-Dashboard {
         Write-Host "http://localhost/phpmyadmin" -ForegroundColor Cyan
         Write-Host "How to log into phpMyAdmin? " -NoNewline
         Write-Host "Username: root | Password: [blank]" -ForegroundColor Cyan
+        Write-Host "Where is the download cache? " -NoNewline
+        Write-Host $TEMP_DOWNLOADS -ForegroundColor Cyan
     }
 
     # ---- Commands ----
@@ -2405,7 +2425,7 @@ if ($cpu_arch -ne 'AMD64') {
     Write-Host ""
     Write-Err "Unsupported CPU architecture: $cpu_arch"
     Write-Host ""
-    Write-Info "getPHP for Windows currently only supports x64 (Intel/AMD 64-bit)."
+    Write-Info "phpup currently only supports x64 (Intel/AMD 64-bit)."
     Write-Info "ARM64 (Snapdragon, Apple Silicon running Windows, etc.) is not supported."
     Write-Info "Apache Lounge and MariaDB do not currently provide native ARM64 Windows binaries."
     Write-Host ""
@@ -2488,17 +2508,17 @@ else {
     # First run — prompt for install location
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "  getPHP Web Stack Install Location" -ForegroundColor Cyan
+    Write-Host "  phpup Install Location" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Info "Where should the web stack be installed?"
     Write-Info "Press Enter to accept the default, or type a custom path."
     Write-Host ""
 
-    $userPath = Read-Host "Install path [C:\getphp]"
+    $userPath = Read-Host "Install path [C:\phpup]"
 
     if ([string]::IsNullOrWhiteSpace($userPath)) {
-        $BASE = "C:\getphp"
+        $BASE = "C:\phpup"
     }
     else {
         # Strip trailing backslash if present
@@ -2507,7 +2527,7 @@ else {
         # Reject paths with spaces (can break mysqld --datadir)
         if ($BASE -match '\s') {
             Write-Err "Paths containing spaces are not supported (can cause issues with MariaDB)."
-            Write-Info "Please use a path without spaces, e.g. C:\getphp"
+            Write-Info "Please use a path without spaces, e.g. C:\phpup"
             Write-Host ""
             Pause
             exit 1
