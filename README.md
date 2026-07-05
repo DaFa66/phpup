@@ -76,6 +76,10 @@ After running the script, you'll see the phpup dashboard:
 │         phpup               │
 └─────────────────────────────┘
 
+System Prerequisites:
+~~~~~~~~~~~~~~~~~~~~~
+VC++ Redist --> 14.51.36247.0
+
 Your Web Stack:
 ~~~~~~~~~~~~~~~
 Apache -------> 2.4.68
@@ -83,15 +87,11 @@ MariaDB ------> 12.3.2
 PHP ----------> 8.5.7
 phpMyAdmin ---> 5.2.3
 
-Service Status:
+Process Status:
 ~~~~~~~~~~~~~~~
 Apache -------> running
 MariaDB ------> running
 PHP ----------> CLI available
-
-System Prerequisites:
-~~~~~~~~~~~~~~~~~~~~~
-VC++ Redist ---> 14.51.36247.0
 
 Windows Services:
 ~~~~~~~~~~~~~~~~
@@ -107,28 +107,26 @@ Stack Commands:
 ~~~~~~~~~~~~~~~
 U  Update outdated components
 R  Restart all services
-S  Stop all services
-T  Start all services (offers Windows service registration)
+S  Start / Stop services (add service registration when not installed)
 D  Delete the web stack
 Q  Quit
 ```
 
-| Key    | Action                                                                                                                              |
-| ------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| **I**  | Install the web stack (download + configure + start)                                                                                |
-| **U**  | Update outdated components (compares installed vs latest online versions)                                                           |
-| **fu** | _(hidden)_ Forced update — switch components to any cached version from `%TEMP%\\webstack_downloads\\` without touching the network |
-| **R**  | Restart Apache + MariaDB                                                                                                            |
-| **S**  | Stop all services (offers to unregister if Windows services installed)                                                              |
-| **T**  | Start all services (offers Windows service registration if not installed)                                                           |
-| **D**  | Delete the web stack (preserves `www\\` files and MariaDB data)                                                                     |
-| **Q**  | Quit                                                                                                                                |
+| Key    | Action                                                                                                                                           |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **I**  | Install the web stack (download + configure + start)                                                                                             |
+| **U**  | Update outdated components (compares installed vs latest online versions)                                                                        |
+| **fu** | _(hidden)_ Forced update — switch components to any cached version from `%TEMP%\\webstack_downloads\\` without touching the network              |
+| **R**  | Restart Apache + MariaDB                                                                                                                         |
+| **S**  | Toggle services: stops if running (offers to unregister if Windows services installed), starts if stopped (offers registration if not installed) |
+| **D**  | Delete the web stack (preserves `www\\` files and MariaDB data)                                                                                  |
+| **Q**  | Quit                                                                                                                                             |
 
 ## After Installation
 
 | Question                    | Answer                                 |
 | --------------------------- | -------------------------------------- |
-| Where to put website files? | `C:\phpup\www`                        |
+| Where to put website files? | `C:\phpup\www`                         |
 | How to test your PHP setup? | http://localhost/phpinfo.php           |
 | Where to access phpMyAdmin? | http://localhost/phpmyadmin            |
 | How to log into phpMyAdmin? | Username: `root` / Password: _(blank)_ |
@@ -246,9 +244,9 @@ Install as Windows services (auto-start on boot)? [y/N]
 
 Say **yes** and two services are created — `phpup_Apache` and `phpup_MariaDB` — set to auto-start. After a reboot your stack is running without opening the script. The config file records the choice so the dashboard always reflects current state.
 
-If you skip registration during install, the **T** (Start) command will offer to register them on first use. The hint `(offers Windows service registration)` appears next to **T** in the dashboard until services are installed — then it disappears. A **Windows Services** block always appears below Service Status, showing `registered` or `not registered` for each service.
+If you skip registration during install, the **S** (Start / Stop) toggle will offer to register them on first use when services are stopped. The hint `(add service registration)` appears next to **S** in the dashboard until services are registered — then it disappears. A **Windows Services** block always appears below Process Status, showing `registered` or `not registered` for each service.
 
-**S** (Stop) works in reverse — if services are registered, it offers to unregister them. Say yes to remove the Windows service entries and revert to process mode.
+**S** works in both directions: if services are running and registered, it offers to unregister them after stopping. If they're running but not registered, it stops them and hints to press S again to register. Say yes to the unregister prompt to remove the Windows service entries and revert to process mode.
 
 Services are automatically removed when you delete the stack (`D`).
 
@@ -327,7 +325,7 @@ flowchart TD
     DERIVE --> DASHBOARD
 
     %% ── Main Dashboard Loop ──
-    DASHBOARD["**Show Dashboard**<br/>Stack status · Service status<br/>Prerequisites · Commands"]
+    DASHBOARD["**Show Dashboard**<br/>Prerequisites · Stack status<br/>Process Status · Services · Commands"]
     DASHBOARD --> CHECK_STACK{"Test-StackComplete<br/>(all 4 components?)"}
     CHECK_STACK --> READ_CMD["Read-Host 'Enter command'"]
 
@@ -338,8 +336,7 @@ flowchart TD
     ROUTE -->|"U (installed)"| UPDATE
     ROUTE -->|"U (not installed)"| ERR_U["Error: not installed"]
     ROUTE -->|"R"| RESTART
-    ROUTE -->|"S"| STOP
-    ROUTE -->|"T"| START
+    ROUTE -->|"S"| TOGGLE
     ROUTE -->|"D"| DELETE
     ROUTE -->|"fu"| FORCED_UPDATE
     ROUTE -->|"Q"| QUIT(["Write-Ok 'Goodbye!' → return"])
@@ -424,18 +421,24 @@ flowchart TD
     DEL_PATH --> DEL_CONFIG["Clear-Config"]
     DEL_CONFIG --> PAUSE
 
-    %% ══════════ RESTART / STOP / START ══════════
+    %% ══════════ RESTART / TOGGLE ══════════
     RESTART["Stop-WebStackServices → wait 2s → Start-WebStackServices"] --> PAUSE
-    STOP --> STOP_CHK{"Services registered?"}
-    STOP_CHK -->|"Yes"| STOP_OFFER["Offer to unregister"]
-    STOP_OFFER -->|"Yes"| STOP_UNREG["Remove-Services → Save config: false"]
-    STOP_OFFER -->|"No"| STOP_EXEC
-    STOP_CHK -->|"No"| STOP_EXEC["Stop-WebStackServices"]
-    STOP_UNREG --> PAUSE
-    STOP_EXEC --> PAUSE
-    START --> START_SVC["Request-ServiceRegistration<br/>(offer if not yet registered)"]
-    START_SVC --> START_START["Start-WebStackServices"]
-    START_START --> PAUSE
+    TOGGLE --> TOGGLE_RUN{"Running?"}
+    TOGGLE_RUN -->|"Yes"| TOGGLE_STOP["Stop-WebStackServices"]
+    TOGGLE_STOP --> TOGGLE_REG_CHK{"Registered?"}
+    TOGGLE_REG_CHK -->|"Yes"| TOGGLE_OFFER["Offer to unregister"]
+    TOGGLE_OFFER -->|"Yes"| TOGGLE_UNREG["Remove-Services"]
+    TOGGLE_OFFER -->|"No"| PAUSE
+    TOGGLE_UNREG --> PAUSE
+    TOGGLE_REG_CHK -->|"No"| TOGGLE_HINT["Hint: press S again to register"]
+    TOGGLE_HINT --> PAUSE
+    TOGGLE_RUN -->|"No"| TOGGLE_REG2{"Registered?"}
+    TOGGLE_REG2 -->|"No"| TOGGLE_OFFER2["Offer to register"]
+    TOGGLE_OFFER2 -->|"Yes"| TOGGLE_INSTALL["Install-AsServices"]
+    TOGGLE_OFFER2 -->|"No"| TOGGLE_START
+    TOGGLE_INSTALL --> PAUSE
+    TOGGLE_REG2 -->|"Yes"| TOGGLE_START["Start-WebStackServices"]
+    TOGGLE_START --> PAUSE
 
     %% ══════════ FORCED UPDATE (offline) ══════════
     FORCED_UPDATE["**Invoke-ForcedUpdate**"] --> FU_SCAN["Scan $TEMP_DOWNLOADS for cached zips"]
@@ -448,7 +451,7 @@ flowchart TD
     FU_SAVE --> PAUSE
 
     %% ── Styling ──
-    style START fill:#0f0,color:#000
+    style TOGGLE fill:#0f0,color:#000
     style QUIT fill:#f66,color:#fff
     style EXIT_ADMIN fill:#f66,color:#fff
     style EXIT_ARCH fill:#f66,color:#fff

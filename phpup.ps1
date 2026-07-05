@@ -4,8 +4,8 @@
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-06-28
-#  Version: 2.0.0
+#  Date: 2026-07-05
+#  Version: 2.1.0
 # ============================================================
 
 param(
@@ -1442,7 +1442,9 @@ function Install-AsServices {
     Write-Info "Registering Windows services (auto-start on boot)..."
 
     # Stop any running process-mode instances first
-    Stop-WebStackServices
+    if ((Test-ApacheRunning) -or (Test-MariaDbRunning)) {
+        Stop-WebStackServices
+    }
 
     # --- Apache ---
     if (Get-Service -Name $SERVICE_APACHE -ErrorAction SilentlyContinue) {
@@ -1480,23 +1482,6 @@ function Install-AsServices {
     # Start services
     Start-Sleep -Seconds 1
     Start-WebStackServices
-}
-
-function Request-ServiceRegistration {
-    if (Test-ServicesInstalled) { return }
-
-    Write-Host ""
-    Write-Warn "Services are not registered as Windows services."
-    Write-Info "  Without service registration, Apache and MariaDB won't auto-start on boot."
-    Write-Info "  You'll need to run this script and press 'T' after every reboot."
-
-    $choice = Read-Host "Register as Windows services now? [y/N]"
-    if ($choice -match "^[Yy]") {
-        Install-AsServices
-
-        # Update config to reflect registered services
-        Save-Config -InstallPath $BASE -ServicesRegistered:$true
-    }
 }
 
 function Remove-Services {
@@ -2254,7 +2239,26 @@ function Show-Dashboard {
     }
     Write-Host ""
 
+    # ---- System Prerequisites ----
+    Write-Host "System Prerequisites:" -ForegroundColor White
+    Write-Host "~~~~~~~~~~~~~~~~~~~~~"
+    Write-Host "VC++ Redist --> " -NoNewline
+    $vcVer = Get-VcRedistVersion
+    if ($vcVer) {
+        $minVc = [version]"14.51.36231"
+        if ($vcVer -ge $minVc) {
+            Write-Host "$vcVer" -ForegroundColor Green
+        }
+        else {
+            Write-Host "$vcVer (update recommended -- press V)" -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Host "not installed (press V to install)" -ForegroundColor Red
+    }
+
     # ---- Stack Status ----
+    Write-Host ""
     Write-Host "Your Web Stack:" -ForegroundColor White
     Write-Host "~~~~~~~~~~~~~~~"
 
@@ -2290,9 +2294,9 @@ function Show-Dashboard {
         Write-Host "not installed" -ForegroundColor Red
     }
 
-    # ---- Service Status ----
+    # ---- Process Status ----
     Write-Host ""
-    Write-Host "Service Status:" -ForegroundColor White
+    Write-Host "Process Status:" -ForegroundColor White
     Write-Host "~~~~~~~~~~~~~~~"
 
     Write-Host "Apache -------> " -NoNewline
@@ -2319,25 +2323,6 @@ function Show-Dashboard {
         Write-Host "not available" -ForegroundColor Red
     }
 
-    # ---- System Prerequisites ----
-    Write-Host ""
-    Write-Host "System Prerequisites:" -ForegroundColor White
-    Write-Host "~~~~~~~~~~~~~~~~~~~~~"
-    Write-Host "VC++ Redist ---> " -NoNewline
-    $vcVer = Get-VcRedistVersion
-    if ($vcVer) {
-        $minVc = [version]"14.51.36231"
-        if ($vcVer -ge $minVc) {
-            Write-Host "$vcVer" -ForegroundColor Green
-        }
-        else {
-            Write-Host "$vcVer (update recommended -- press V)" -ForegroundColor Yellow
-        }
-    }
-    else {
-        Write-Host "not installed (press V to install)" -ForegroundColor Red
-    }
-
     # Windows Services (always shown when stack is complete)
     Write-Host ""
     Write-Host "Windows Services:" -ForegroundColor White
@@ -2345,14 +2330,14 @@ function Show-Dashboard {
     $svcRegistered = Test-ServicesInstalled
     Write-Host "phpup_Apache   " -NoNewline
     if ($svcRegistered) {
-        Write-Host "registered" -ForegroundColor DarkGray
+        Write-Host "registered" -ForegroundColor Green
     }
     else {
         Write-Host "not registered" -ForegroundColor DarkGray
     }
     Write-Host "phpup_MariaDB  " -NoNewline
     if ($svcRegistered) {
-        Write-Host "registered" -ForegroundColor DarkGray
+        Write-Host "registered" -ForegroundColor Green
     }
     else {
         Write-Host "not registered" -ForegroundColor DarkGray
@@ -2384,8 +2369,7 @@ function Show-Dashboard {
     else {
         Write-Host "U  Update all components" -ForegroundColor Cyan
         Write-Host "R  Restart all services" -ForegroundColor Cyan
-        Write-Host "S  Stop all services" -ForegroundColor Cyan
-        Write-Host "T  Start all services" -NoNewline -ForegroundColor Cyan
+        Write-Host "S  Start / Stop services" -NoNewline -ForegroundColor Cyan
         if (-not (Test-ServicesInstalled)) {
             Write-Host " (add service registration)" -ForegroundColor DarkGray
         }
@@ -2599,28 +2583,41 @@ while ($true) {
         }
         "s" {
             if ($stackComplete) {
-                if (Test-ServicesInstalled) {
-                    $choice = Read-Host "Remove Windows service registration? [y/N]"
-                    if ($choice -match "^[Yy]") {
-                        Stop-WebStackServices
-                        Remove-Services
-                        Save-Config -InstallPath $BASE -ServicesRegistered:$false
-                        Write-Ok "Windows services removed — run 'T' to register again"
+                if ((Test-ApacheRunning) -or (Test-MariaDbRunning)) {
+                    # Services are running — stop them
+                    Stop-WebStackServices
+                    if (Test-ServicesInstalled) {
+                        $choice = Read-Host "Remove Windows service registration? [y/N]"
+                        if ($choice -match "^[Yy]") {
+                            Remove-Services
+                            Save-Config -InstallPath $BASE -ServicesRegistered:$false
+                            Write-Ok "Windows services removed"
+                        }
                     }
                     else {
-                        Stop-WebStackServices
+                        Write-Info "Not registered as Windows services — press S again to register"
                     }
                 }
                 else {
-                    Stop-WebStackServices
+                    # Services are stopped — start them
+                    if (-not (Test-ServicesInstalled)) {
+                        Write-Host ""
+                        Write-Warn "Services are not registered as Windows services."
+                        Write-Info "  Without service registration, Apache and MariaDB won't auto-start on boot."
+                        Write-Info "  You'll need to run this script and press 'S' after every reboot."
+                        $choice = Read-Host "Register as Windows services now? [y/N]"
+                        if ($choice -match "^[Yy]") {
+                            Install-AsServices
+                            Save-Config -InstallPath $BASE -ServicesRegistered:$true
+                        }
+                        else {
+                            Start-WebStackServices
+                        }
+                    }
+                    else {
+                        Start-WebStackServices
+                    }
                 }
-            }
-            else { Write-Err "Stack not installed." }
-        }
-        "t" {
-            if ($stackComplete) {
-                Request-ServiceRegistration
-                Start-WebStackServices
             }
             else { Write-Err "Stack not installed." }
         }
