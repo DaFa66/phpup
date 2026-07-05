@@ -23,6 +23,27 @@ Press **I** to install. That's it.
 
 On subsequent runs the script remembers your install path and goes straight to the dashboard — no prompts.
 
+### PowerShell Alias (Optional)
+
+To avoid copy-pasting the URL each time, add a function to your PowerShell profile:
+
+1. Open your profile in Notepad: `notepad $PROFILE`
+2. Add the following code, then save and restart PowerShell:
+
+```powershell
+function phpup {
+    $command = "irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.ps1 | iex"
+
+    Start-Process pwsh `
+        -Verb RunAs `
+        -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $command
+}
+```
+
+**How it works:** typing `phpup` launches a fresh **elevated** PowerShell window (`-Verb RunAs`) that downloads and executes the script. `-NoProfile` keeps the launch clean, `-ExecutionPolicy Bypass` avoids any execution policy friction. After the UAC prompt, the dashboard appears — same as the one-liner, but now it's just `phpup`.
+
+> **Note:** `pwsh` refers to PowerShell 7+. If you're using Windows PowerShell 5.1, replace `pwsh` with `powershell`.
+
 ## What It Installs
 
 | Component      | Source                                                         | Latest?                                                             |
