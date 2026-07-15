@@ -1786,13 +1786,13 @@ function Restore-MariaDbData {
     }
 }
 
-function Save-PostUpdateConfig($needsApache, $needsPhp, $needsMariadb, $needsPma) {
+function Save-PostUpdateConfig {
     $existingConfig = Get-Config
     $versions = @{
-        apache     = $(if ($needsApache)  { Get-ApacheVersion }     else { $existingConfig.versions.apache })
-        php        = $(if ($needsPhp)     { Get-PhpVersion }        else { $existingConfig.versions.php })
-        mariadb    = $(if ($needsMariadb) { Get-MariaDbVersion }    else { $existingConfig.versions.mariadb })
-        phpmyadmin = $(if ($needsPma)     { Get-PhpMyAdminVersion } else { $existingConfig.versions.phpmyadmin })
+        apache     = Get-ApacheVersion
+        php        = Get-PhpVersion
+        mariadb    = Get-MariaDbVersion
+        phpmyadmin = Get-PhpMyAdminVersion
     }
     $pathEntries = $existingConfig.path_entries
 
@@ -1912,7 +1912,7 @@ function Invoke-UpdateWebStack {
 
     Write-Ok "Update complete"
 
-    Save-PostUpdateConfig $needsApache $needsPhp $needsMariadb $needsPma
+    Save-PostUpdateConfig
 }
 
 # ============================================================
@@ -2117,7 +2117,7 @@ function Invoke-ForcedUpdate {
     Write-Host ""
     Write-Host "Forced update complete"
 
-    Save-PostUpdateConfig $needsApache $needsPhp $needsMariadb $needsPma
+    Save-PostUpdateConfig
 }
 
 # ============================================================
@@ -2590,7 +2590,7 @@ while ($true) {
                         $choice = Read-Host "Remove Windows service registration? [y/N]"
                         if ($choice -match "^[Yy]") {
                             Remove-Services
-                            Save-Config -InstallPath $BASE -ServicesRegistered:$false
+                            Save-Config -InstallPath $BASE -ServicesRegistered:$false -Versions $config.versions -PathEntries $config.path_entries
                             Write-Ok "Windows services removed"
                         }
                     }
@@ -2608,7 +2608,7 @@ while ($true) {
                         $choice = Read-Host "Register as Windows services now? [y/N]"
                         if ($choice -match "^[Yy]") {
                             Install-AsServices
-                            Save-Config -InstallPath $BASE -ServicesRegistered:$true
+                            Save-Config -InstallPath $BASE -ServicesRegistered:$true -Versions $config.versions -PathEntries $config.path_entries
                         }
                         else {
                             Start-WebStackServices
