@@ -986,6 +986,10 @@ cmd_install() {
         fi
     fi
 
+    # Create phpinfo.php (before chown takes ownership from user)
+    printf "<?php phpinfo(); ?>\n" > "${DOC_ROOT}/phpinfo.php"
+    print_ok "Created: ${DOC_ROOT}/phpinfo.php"
+
     # Configure components
     configure_apache
     configure_php
@@ -994,10 +998,6 @@ cmd_install() {
 
     # Check for database backup from previous install
     check_restore_data
-
-    # Create phpinfo.php
-    printf "<?php phpinfo(); ?>\n" > "${DOC_ROOT}/phpinfo.php"
-    print_ok "Created: ${DOC_ROOT}/phpinfo.php"
 
     # PATH management
     manage_path
