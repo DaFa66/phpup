@@ -488,7 +488,7 @@ start_services() {
         [[ $MARIADB == 1 ]] && sudo systemctl start mariadb 2>/dev/null
         [[ $PHP == 1 ]] && sudo systemctl start php*-fpm 2>/dev/null
     else
-        [[ $APACHE == 1 ]] && brew services start httpd 2>/dev/null
+        [[ $APACHE == 1 ]] && sudo "${BREW_PREFIX}/bin/apachectl" start 2>/dev/null
         [[ $MARIADB == 1 ]] && brew services start mariadb 2>/dev/null
         [[ $PHP == 1 ]] && brew services start php 2>/dev/null
     fi
@@ -503,7 +503,7 @@ stop_services() {
         [[ $MARIADB == 1 ]] && sudo systemctl stop mariadb 2>/dev/null
         [[ $PHP == 1 ]] && sudo systemctl stop php*-fpm 2>/dev/null
     else
-        [[ $APACHE == 1 ]] && brew services stop httpd 2>/dev/null
+        [[ $APACHE == 1 ]] && sudo "${BREW_PREFIX}/bin/apachectl" stop 2>/dev/null
         [[ $MARIADB == 1 ]] && brew services stop mariadb 2>/dev/null
         [[ $PHP == 1 ]] && brew services stop php 2>/dev/null
     fi
@@ -1254,7 +1254,7 @@ cmd_forced_update() {
             print_info "Switching PHP to ${formula}..."
 
             # Stop services
-            brew services stop httpd 2>/dev/null
+            sudo "${BREW_PREFIX}/bin/apachectl" stop 2>/dev/null
             brew services stop php 2>/dev/null
 
             # Unlink current, install and link target
@@ -1270,7 +1270,7 @@ cmd_forced_update() {
 
             # Start services
             brew services start php 2>/dev/null
-            brew services start httpd 2>/dev/null
+            sudo "${BREW_PREFIX}/bin/apachectl" start 2>/dev/null
 
             detect_all
             save_config "$BASE_DIR" "$APACHE_VERSION" "$MARIADB_VERSION" "$PHP_VERSION" "$PHPMYADMIN_VERSION"
