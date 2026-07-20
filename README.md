@@ -5,7 +5,7 @@
 | Platform          | Approach                                                                                      |
 | ----------------- | --------------------------------------------------------------------------------------------- |
 | **Windows**       | Native binary downloads, dynamic version resolution, and an interactive PowerShell dashboard. |
-| **macOS & Linux** | Homebrew-powered — same dashboard experience, one bash script.                                |
+| **macOS & Linux** | Homebrew-powered — same dashboard experience, one bash script. Intel & Apple Silicon supported. |
 
 ## Quick Start
 
