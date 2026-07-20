@@ -662,7 +662,9 @@ configure_apache_apt() {
     fi
 
     # Ensure www directory is accessible (Apache runs as www-data)
+    sudo chown -R www-data:www-data "$DOC_ROOT" 2>/dev/null || true
     sudo chmod 755 "$DOC_ROOT" 2>/dev/null || true
+    print_ok "Set ownership of ${DOC_ROOT} to www-data"
 
     # Reload Apache to apply changes
     sudo systemctl reload apache2 2>/dev/null || sudo systemctl start apache2 2>/dev/null
