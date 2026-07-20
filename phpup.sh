@@ -518,7 +518,7 @@ stop_services() {
         [[ $MARIADB == 1 ]] && brew services stop mariadb 2>/dev/null
         [[ $PHP == 1 ]] && brew services stop php 2>/dev/null
     fi
-    sleep 2
+    sleep 3
     print_ok "Services stopped"
 }
 
@@ -531,6 +531,7 @@ toggle_services() {
     local any_running=0
     is_service_running apache && any_running=1
     is_service_running mariadb && any_running=1
+    is_service_running php && any_running=1
 
     if [[ $any_running == 1 ]]; then
         stop_services
