@@ -38,6 +38,7 @@ if [[ "${OS_TYPE}" == "darwin"* ]]; then
     OS_MAJOR=$(echo "$OS_VERSION" | cut -d. -f1)
     SHELL_PROFILE="${HOME}/.zshrc"
     HTTPD_USER="_www"
+    USE_APT=0
 elif [[ "${OS_TYPE}" == "linux-gnu"* ]]; then
     OS_NAME="Linux"
     if command -v lsb_release &>/dev/null; then
@@ -49,11 +50,13 @@ elif [[ "${OS_TYPE}" == "linux-gnu"* ]]; then
     fi
     SHELL_PROFILE="${HOME}/.bashrc"
     HTTPD_USER="www-data"
+    USE_APT=1
 else
     OS_NAME="Unknown"
     OS_VERSION="unknown"
     SHELL_PROFILE="${HOME}/.bashrc"
     HTTPD_USER="www-data"
+    USE_APT=0
 fi
 
 # ---- Homebrew Detection -------------------------------------
@@ -134,7 +137,15 @@ clear_config() {
 
 # ---- Component Detection ------------------------------------
 detect_apache() {
-    if [[ -d "${BREW_PREFIX}/Cellar/httpd" ]]; then
+    if [[ $USE_APT == 1 ]]; then
+        if dpkg -l apache2 &>/dev/null 2>&1 && dpkg -s apache2 &>/dev/null 2>&1; then
+            APACHE=1
+            APACHE_VERSION=$(dpkg -s apache2 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1)
+        else
+            APACHE=0
+            APACHE_VERSION=""
+        fi
+    elif [[ -d "${BREW_PREFIX}/Cellar/httpd" ]]; then
         APACHE=1
         APACHE_VERSION=$(find "${BREW_PREFIX}/Cellar/httpd" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
     else
@@ -144,7 +155,15 @@ detect_apache() {
 }
 
 detect_mariadb() {
-    if [[ -d "${BREW_PREFIX}/Cellar/mariadb" ]]; then
+    if [[ $USE_APT == 1 ]]; then
+        if dpkg -l mariadb-server &>/dev/null 2>&1 && dpkg -s mariadb-server &>/dev/null 2>&1; then
+            MARIADB=1
+            MARIADB_VERSION=$(dpkg -s mariadb-server 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
+        else
+            MARIADB=0
+            MARIADB_VERSION=""
+        fi
+    elif [[ -d "${BREW_PREFIX}/Cellar/mariadb" ]]; then
         MARIADB=1
         MARIADB_VERSION=$(find "${BREW_PREFIX}/Cellar/mariadb" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
     else
@@ -154,7 +173,15 @@ detect_mariadb() {
 }
 
 detect_php() {
-    if [[ -d "${BREW_PREFIX}/Cellar/php" ]]; then
+    if [[ $USE_APT == 1 ]]; then
+        if dpkg -l php &>/dev/null 2>&1 && dpkg -s php &>/dev/null 2>&1; then
+            PHP=1
+            PHP_VERSION=$(dpkg -s php 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
+        else
+            PHP=0
+            PHP_VERSION=""
+        fi
+    elif [[ -d "${BREW_PREFIX}/Cellar/php" ]]; then
         PHP=1
         PHP_VERSION=$(find "${BREW_PREFIX}/Cellar/php" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
     else
@@ -164,7 +191,15 @@ detect_php() {
 }
 
 detect_phpmyadmin() {
-    if [[ -d "${BREW_PREFIX}/Cellar/phpmyadmin" ]]; then
+    if [[ $USE_APT == 1 ]]; then
+        if dpkg -l phpmyadmin &>/dev/null 2>&1 && dpkg -s phpmyadmin &>/dev/null 2>&1; then
+            PHPMYADMIN=1
+            PHPMYADMIN_VERSION=$(dpkg -s phpmyadmin 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
+        else
+            PHPMYADMIN=0
+            PHPMYADMIN_VERSION=""
+        fi
+    elif [[ -d "${BREW_PREFIX}/Cellar/phpmyadmin" ]]; then
         PHPMYADMIN=1
         PHPMYADMIN_VERSION=$(find "${BREW_PREFIX}/Cellar/phpmyadmin" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
     else
@@ -175,24 +210,37 @@ detect_phpmyadmin() {
 
 is_service_running() {
     local svc="$1"
-    case "$svc" in
-        apache|httpd)
-            pgrep -x "httpd" &>/dev/null && return 0 || return 1
-            ;;
-        mariadb)
-            pgrep -x "mariadbd" &>/dev/null && return 0 || return 1
-            ;;
-        php)
-            pgrep -f "(^|/)php-fpm" &>/dev/null && return 0 || return 1
-            ;;
-        *)
-            return 1
-            ;;
-    esac
+    if [[ $USE_APT == 1 ]]; then
+        case "$svc" in
+            apache|httpd)
+                systemctl is-active --quiet apache2 2>/dev/null && return 0 || return 1
+                ;;
+            mariadb)
+                systemctl is-active --quiet mariadb 2>/dev/null && return 0 || return 1
+                ;;
+            php)
+                systemctl is-active --quiet php*-fpm 2>/dev/null && return 0 || return 1
+                ;;
+            *) return 1 ;;
+        esac
+    else
+        case "$svc" in
+            apache|httpd)
+                pgrep -x "httpd" &>/dev/null && return 0 || return 1
+                ;;
+            mariadb)
+                pgrep -x "mariadbd" &>/dev/null && return 0 || return 1
+                ;;
+            php)
+                pgrep -f "(^|/)php-fpm" &>/dev/null && return 0 || return 1
+                ;;
+            *) return 1 ;;
+        esac
+    fi
 }
 
 detect_all() {
-    if [[ $HOMEBREW == 0 ]]; then
+    if [[ $USE_APT == 0 ]] && [[ $HOMEBREW == 0 ]]; then
         return
     fi
     detect_apache
@@ -289,6 +337,12 @@ install_homebrew() {
 
 # ---- PATH Management ----------------------------------------
 manage_path() {
+    # On Linux/apt, binaries are already in standard system paths (/usr/bin)
+    if [[ $USE_APT == 1 ]]; then
+        print_ok "php and mysql available via system PATH"
+        return
+    fi
+
     # On macOS, brew is already in PATH. On Linux, ensure shellenv is in profile.
     if [[ "${OS_TYPE}" == "linux-gnu"* ]]; then
         if ! grep -q 'linuxbrew/bin/brew shellenv' "$SHELL_PROFILE" 2>/dev/null; then
@@ -328,8 +382,13 @@ show_dashboard() {
     show_banner
 
     # Architecture line
-    printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Homebrew: ${CYAN}%s${RESET}\n" \
-        "$ARCH" "$OS_NAME" "$OS_VERSION" "$BREW_PREFIX"
+    if [[ $USE_APT == 1 ]]; then
+        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}apt${RESET}\n" \
+            "$ARCH" "$OS_NAME" "$OS_VERSION"
+    else
+        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Homebrew: ${CYAN}%s${RESET}\n" \
+            "$ARCH" "$OS_NAME" "$OS_VERSION" "$BREW_PREFIX"
+    fi
     printf "\n"
 
     # Stack Status
@@ -424,18 +483,30 @@ show_dashboard() {
 # ---- Service Management -------------------------------------
 start_services() {
     print_info "Starting services..."
-    [[ $APACHE == 1 ]] && brew services start httpd 2>/dev/null
-    [[ $MARIADB == 1 ]] && brew services start mariadb 2>/dev/null
-    [[ $PHP == 1 ]] && brew services start php 2>/dev/null
+    if [[ $USE_APT == 1 ]]; then
+        [[ $APACHE == 1 ]] && sudo systemctl start apache2 2>/dev/null
+        [[ $MARIADB == 1 ]] && sudo systemctl start mariadb 2>/dev/null
+        [[ $PHP == 1 ]] && sudo systemctl start php*-fpm 2>/dev/null
+    else
+        [[ $APACHE == 1 ]] && brew services start httpd 2>/dev/null
+        [[ $MARIADB == 1 ]] && brew services start mariadb 2>/dev/null
+        [[ $PHP == 1 ]] && brew services start php 2>/dev/null
+    fi
     sleep 2
     print_ok "Services started"
 }
 
 stop_services() {
     print_info "Stopping services..."
-    [[ $APACHE == 1 ]] && brew services stop httpd 2>/dev/null
-    [[ $MARIADB == 1 ]] && brew services stop mariadb 2>/dev/null
-    [[ $PHP == 1 ]] && brew services stop php 2>/dev/null
+    if [[ $USE_APT == 1 ]]; then
+        [[ $APACHE == 1 ]] && sudo systemctl stop apache2 2>/dev/null
+        [[ $MARIADB == 1 ]] && sudo systemctl stop mariadb 2>/dev/null
+        [[ $PHP == 1 ]] && sudo systemctl stop php*-fpm 2>/dev/null
+    else
+        [[ $APACHE == 1 ]] && brew services stop httpd 2>/dev/null
+        [[ $MARIADB == 1 ]] && brew services stop mariadb 2>/dev/null
+        [[ $PHP == 1 ]] && brew services stop php 2>/dev/null
+    fi
     sleep 2
     print_ok "Services stopped"
 }
@@ -460,6 +531,11 @@ toggle_services() {
 
 # ---- Apache Configuration -----------------------------------
 configure_apache() {
+    if [[ $USE_APT == 1 ]]; then
+        configure_apache_apt
+        return
+    fi
+
     local conf="${BREW_PREFIX}/etc/httpd/httpd.conf"
 
     if [[ ! -f "$conf" ]]; then
@@ -542,8 +618,64 @@ PMAALIAS
     rm -f "${conf}.bak"
 }
 
+# ---- Apache Configuration (apt) ------------------------------
+configure_apache_apt() {
+    local site_conf="/etc/apache2/sites-available/000-default.conf"
+    local main_conf="/etc/apache2/apache2.conf"
+
+    print_info "Configuring Apache (apt)..."
+
+    # Enable mod_rewrite
+    sudo a2enmod rewrite 2>/dev/null
+    print_ok "Enabled mod_rewrite"
+
+    # Configure 000-default.conf — the default site
+    if [[ -f "$site_conf" ]]; then
+        if [[ ! -f "${site_conf}.phpup.bak" ]]; then
+            sudo cp "$site_conf" "${site_conf}.phpup.bak"
+        fi
+
+        # DocumentRoot
+        sudo sed -i "s@DocumentRoot /var/www/html@DocumentRoot ${DOC_ROOT}@" "$site_conf"
+        print_ok "Set DocumentRoot to ${DOC_ROOT}"
+
+        # AllowOverride All for .htaccess
+        sudo sed -i "s/AllowOverride None/AllowOverride All/g" "$site_conf"
+        print_ok "Set AllowOverride All"
+
+        # DirectoryIndex
+        sudo sed -i "s/DirectoryIndex index.html/DirectoryIndex index.php index.html/" "$site_conf"
+        print_ok "Added index.php to DirectoryIndex"
+
+        # Log files — redirect to phpup logs
+        sudo sed -i "s@\${APACHE_LOG_DIR}/error.log@${LOGS_DIR}/apache_error.log@" "$site_conf"
+        sudo sed -i "s@\${APACHE_LOG_DIR}/access.log@${LOGS_DIR}/apache_access.log@" "$site_conf"
+        print_ok "Routed logs to ${LOGS_DIR}"
+    fi
+
+    # ServerName in apache2.conf
+    if [[ -f "$main_conf" ]]; then
+        if ! grep -q "ServerName localhost" "$main_conf"; then
+            echo "ServerName localhost:80" | sudo tee -a "$main_conf" > /dev/null
+            print_ok "Set ServerName to localhost:80"
+        fi
+    fi
+
+    # Ensure www directory is accessible (Apache runs as www-data)
+    sudo chmod 755 "$DOC_ROOT" 2>/dev/null || true
+
+    # Reload Apache to apply changes
+    sudo systemctl reload apache2 2>/dev/null || sudo systemctl start apache2 2>/dev/null
+    print_ok "Apache configured"
+}
+
 # ---- PHP Configuration --------------------------------------
 configure_php() {
+    if [[ $USE_APT == 1 ]]; then
+        configure_php_apt
+        return
+    fi
+
     local php_ini="${BREW_PREFIX}/etc/php/$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)/php.ini"
 
     # Fallback: search for php.ini
@@ -600,8 +732,61 @@ configure_php() {
     rm -f "${php_ini}.bak"
 }
 
+# ---- PHP Configuration (apt) ---------------------------------
+configure_php_apt() {
+    print_info "Configuring PHP (apt)..."
+
+    # Find the Apache PHP ini
+    local php_ver
+    php_ver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+    local php_ini="/etc/php/${php_ver}/apache2/php.ini"
+
+    if [[ ! -f "$php_ini" ]]; then
+        # Fallback: try CLI ini
+        php_ini=$(php -r 'echo php_ini_loaded_file();' 2>/dev/null)
+    fi
+
+    if [[ ! -f "$php_ini" ]]; then
+        print_warn "Could not locate php.ini — skipping PHP configuration"
+        return
+    fi
+
+    if [[ ! -f "${php_ini}.phpup.bak" ]]; then
+        sudo cp "$php_ini" "${php_ini}.phpup.bak"
+    fi
+
+    # Display errors
+    sudo sed -i "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
+    print_ok "Enabled display_errors"
+
+    # Error log
+    if ! grep -q "^error_log" "$php_ini" 2>/dev/null; then
+        echo "error_log = ${LOGS_DIR}/php_errors.log" | sudo tee -a "$php_ini" > /dev/null
+    else
+        sudo sed -i "s@^error_log.*@error_log = ${LOGS_DIR}/php_errors.log@" "$php_ini"
+    fi
+    print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
+
+    # OPCache
+    if grep -q "^;*opcache.enable=" "$php_ini" 2>/dev/null; then
+        sudo sed -i "s/^;*opcache.enable=.*/opcache.enable=1/" "$php_ini"
+        sudo sed -i "s/^;*opcache.memory_consumption=.*/opcache.memory_consumption=256/" "$php_ini"
+        sudo sed -i "s/^;*opcache.interned_strings_buffer=.*/opcache.interned_strings_buffer=16/" "$php_ini"
+        sudo sed -i "s/^;*opcache.max_accelerated_files=.*/opcache.max_accelerated_files=20000/" "$php_ini"
+        print_ok "Configured OPCache (256MB, JIT-ready)"
+    fi
+
+    # Extensions should already be enabled via apt package dependencies
+    print_ok "PHP configured"
+}
+
 # ---- MariaDB Configuration ----------------------------------
 configure_mariadb() {
+    if [[ $USE_APT == 1 ]]; then
+        configure_mariadb_apt
+        return
+    fi
+
     print_info "Configuring MariaDB..."
 
     # Start MariaDB to initialise data directory
@@ -643,8 +828,44 @@ configure_mariadb() {
     fi
 }
 
+# ---- MariaDB Configuration (apt) -----------------------------
+configure_mariadb_apt() {
+    print_info "Configuring MariaDB (apt)..."
+
+    # Ensure MariaDB is running
+    sudo systemctl start mariadb 2>/dev/null || true
+    sleep 2
+
+    # Set blank root password via Unix socket (default on Debian/Ubuntu)
+    if sudo mysql -u root -e "SELECT 1" &>/dev/null 2>&1; then
+        # Set blank password for TCP connections
+        sudo mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
+        print_ok "MariaDB root access confirmed (no password via socket)"
+    else
+        print_warn "Could not connect to MariaDB as root — you may need to set a password manually"
+    fi
+
+    # Configure error log
+    local mariadb_conf="/etc/mysql/mariadb.conf.d/50-server.cnf"
+    if [[ -f "$mariadb_conf" ]]; then
+        if ! grep -q "log_error" "$mariadb_conf" 2>/dev/null; then
+            echo "log_error = ${LOGS_DIR}/mariadb_error.log" | sudo tee -a "$mariadb_conf" > /dev/null
+            print_ok "Set MariaDB error log to ${LOGS_DIR}/mariadb_error.log"
+        fi
+    else
+        print_warn "Could not configure MariaDB error log — config file not found"
+    fi
+
+    print_ok "MariaDB configured"
+}
+
 # ---- phpMyAdmin Configuration -------------------------------
 configure_phpmyadmin() {
+    if [[ $USE_APT == 1 ]]; then
+        configure_phpmyadmin_apt
+        return
+    fi
+
     local pma_conf="${BREW_PREFIX}/etc/phpmyadmin.config.inc.php"
 
     if [[ ! -f "$pma_conf" ]]; then
@@ -670,6 +891,32 @@ configure_phpmyadmin() {
     rm -f "${pma_conf}.bak"
 }
 
+# ---- phpMyAdmin Configuration (apt) --------------------------
+configure_phpmyadmin_apt() {
+    local pma_conf="/etc/phpmyadmin/config.inc.php"
+
+    if [[ ! -f "$pma_conf" ]]; then
+        print_warn "phpMyAdmin config not found — skipping"
+        return
+    fi
+
+    if [[ ! -f "${pma_conf}.phpup.bak" ]]; then
+        sudo cp "$pma_conf" "${pma_conf}.phpup.bak"
+    fi
+
+    print_info "Configuring phpMyAdmin (apt)..."
+
+    # Blowfish secret
+    sudo sed -i "s/\\$cfg\\['blowfish_secret'\\] = '';/\\$cfg\\['blowfish_secret'\\] = '12345678901234567890123456789012';/" "$pma_conf"
+    print_ok "Set blowfish secret"
+
+    # Allow passwordless root login
+    sudo sed -i "s/\\$cfg\\['Servers'\\]\\[\\$i\\]\\['AllowNoPassword'\\] = false;/\\$cfg\\['Servers'\\]\\[\\$i\\]\\['AllowNoPassword'\\] = true;/" "$pma_conf"
+    print_ok "Enabled passwordless root login"
+
+    print_ok "phpMyAdmin configured"
+}
+
 # ---- Install Command ----------------------------------------
 cmd_install() {
     if [[ $STACK == 1 ]]; then
@@ -691,39 +938,45 @@ cmd_install() {
     mkdir -p "$LOGS_DIR"
     print_ok "Created directory: ${LOGS_DIR}"
 
-    # Install Homebrew
-    install_homebrew
+    # Install packages (apt or brew)
+    if [[ $USE_APT == 1 ]]; then
+        printf "\n"
+        print_info "Installing packages via apt..."
+        printf "\n"
+        sudo apt update -qq
+        [[ $APACHE == 0 ]] && sudo apt install -y apache2 && APACHE=1
+        [[ $MARIADB == 0 ]] && sudo apt install -y mariadb-server && MARIADB=1
+        [[ $PHP == 0 ]] && sudo apt install -y php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 php-sodium libapache2-mod-php && PHP=1
+        [[ $PHPMYADMIN == 0 ]] && sudo apt install -y phpmyadmin && PHPMYADMIN=1
 
-    # Linux: setcap for port 80
-    if [[ "${OS_TYPE}" == "linux-gnu"* ]]; then
-        if ! command -v httpd &>/dev/null; then
-            print_warn "httpd not yet installed — setcap will run after install"
-        fi
-    fi
+        detect_all
+    else
+        # Install Homebrew
+        install_homebrew
 
-    # Install packages
-    printf "\n"
-    print_info "Installing packages via Homebrew..."
-    printf "\n"
+        printf "\n"
+        print_info "Installing packages via Homebrew..."
+        printf "\n"
 
-    [[ $APACHE == 0 ]] && brew install httpd && APACHE=1
-    [[ $MARIADB == 0 ]] && brew install mariadb && MARIADB=1
-    [[ $PHP == 0 ]] && brew install php && PHP=1
-    [[ $PHPMYADMIN == 0 ]] && brew install phpmyadmin && PHPMYADMIN=1
+        [[ $APACHE == 0 ]] && brew install httpd && APACHE=1
+        [[ $MARIADB == 0 ]] && brew install mariadb && MARIADB=1
+        [[ $PHP == 0 ]] && brew install php && PHP=1
+        [[ $PHPMYADMIN == 0 ]] && brew install phpmyadmin && PHPMYADMIN=1
 
-    # Refresh detection
-    check_brew_path
-    BREW_PREFIX=$(brew --prefix)
-    detect_all
+        # Refresh detection
+        check_brew_path
+        BREW_PREFIX=$(brew --prefix)
+        detect_all
 
-    # Linux: setcap for port 80
-    if [[ "${OS_TYPE}" == "linux-gnu"* ]]; then
-        if command -v httpd &>/dev/null; then
-            local httpd_path
-            httpd_path=$(readlink -f "$(which httpd)")
-            sudo setcap 'cap_net_bind_service=+ep' "$httpd_path" 2>/dev/null && \
-                print_ok "Enabled port 80 binding for httpd (setcap)" || \
-                print_warn "Could not set port 80 capability — Apache may fail to bind port 80"
+        # Linux: setcap for port 80
+        if [[ "${OS_TYPE}" == "linux-gnu"* ]]; then
+            if command -v httpd &>/dev/null; then
+                local httpd_path
+                httpd_path=$(readlink -f "$(which httpd)")
+                sudo setcap 'cap_net_bind_service=+ep' "$httpd_path" 2>/dev/null && \
+                    print_ok "Enabled port 80 binding for httpd (setcap)" || \
+                    print_warn "Could not set port 80 capability — Apache may fail to bind port 80"
+            fi
         fi
     fi
 
@@ -782,50 +1035,77 @@ cmd_update() {
 
     printf "\n${BOLD}phpup — Update Web Stack${RESET}\n\n"
 
-    # Refresh formula index
+    # Check for updates
     print_info "Checking for updates..."
-    brew update
+    if [[ $USE_APT == 1 ]]; then
+        sudo apt update -qq
+        local outdated
+        outdated=$(apt list --upgradable 2>/dev/null | grep -E '^(apache2|mariadb-server|php|phpmyadmin)/' || true)
 
-    # Check outdated
-    local outdated
-    outdated=$(brew outdated --formula httpd mariadb php phpmyadmin 2>/dev/null)
+        if [[ -z "$outdated" ]]; then
+            print_ok "All components are up to date"
+            printf "\n"
+            read -r -p "Press Enter to continue..."
+            return
+        fi
 
-    if [[ -z "$outdated" ]]; then
-        print_ok "All components are up to date"
+        printf "\n${CYAN}Updates available:${RESET}\n"
+        printf "%s\n" "$outdated"
         printf "\n"
-        read -r -p "Press Enter to continue..."
-        return
-    fi
 
-    printf "\n${CYAN}Updates available:${RESET}\n"
-    printf "%s\n" "$outdated"
-    printf "\n"
+        printf "${BOLD}Apply these updates? [y/N]:${RESET} "
+        read -r confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" && "$confirm" != "yes" && "$confirm" != "Yes" ]]; then
+            print_info "Update cancelled."
+            printf "\n"
+            read -r -p "Press Enter to continue..."
+            return
+        fi
 
-    printf "${BOLD}Apply these updates? [y/N]:${RESET} "
-    read -r confirm
-    if [[ "$confirm" != "y" && "$confirm" != "Y" && "$confirm" != "yes" && "$confirm" != "Yes" ]]; then
-        print_info "Update cancelled."
+        stop_services
         printf "\n"
-        read -r -p "Press Enter to continue..."
-        return
+        print_info "Upgrading packages via apt..."
+        sudo apt upgrade -y apache2 mariadb-server php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 php-sodium libapache2-mod-php phpmyadmin
+        detect_all
+        configure_apache
+        configure_php
+        configure_phpmyadmin
+        start_services
+    else
+        brew update
+        local outdated
+        outdated=$(brew outdated --formula httpd mariadb php phpmyadmin 2>/dev/null)
+
+        if [[ -z "$outdated" ]]; then
+            print_ok "All components are up to date"
+            printf "\n"
+            read -r -p "Press Enter to continue..."
+            return
+        fi
+
+        printf "\n${CYAN}Updates available:${RESET}\n"
+        printf "%s\n" "$outdated"
+        printf "\n"
+
+        printf "${BOLD}Apply these updates? [y/N]:${RESET} "
+        read -r confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" && "$confirm" != "yes" && "$confirm" != "Yes" ]]; then
+            print_info "Update cancelled."
+            printf "\n"
+            read -r -p "Press Enter to continue..."
+            return
+        fi
+
+        stop_services
+        printf "\n"
+        print_info "Upgrading packages via Homebrew..."
+        brew upgrade httpd mariadb php phpmyadmin
+        detect_all
+        configure_apache
+        configure_php
+        configure_phpmyadmin
+        start_services
     fi
-
-    # Stop services
-    stop_services
-
-    # Upgrade
-    printf "\n"
-    print_info "Upgrading packages..."
-    brew upgrade httpd mariadb php phpmyadmin
-
-    # Re-apply configuration (brew upgrade may reset config files)
-    detect_all
-    configure_apache
-    configure_php
-    configure_phpmyadmin
-
-    # Start services
-    start_services
 
     # Save new versions
     detect_all
@@ -868,13 +1148,16 @@ cmd_delete() {
     printf "\n"
 
     # Stop services
-    brew services stop httpd 2>/dev/null || true
-    brew services stop mariadb 2>/dev/null || true
-    brew services stop php 2>/dev/null || true
+    stop_services
     print_ok "Stopped all services"
 
     # Backup MariaDB data
-    local mariadb_data="${BREW_PREFIX}/var/mysql"
+    local mariadb_data
+    if [[ $USE_APT == 1 ]]; then
+        mariadb_data="/var/lib/mysql"
+    else
+        mariadb_data="${BREW_PREFIX}/var/mysql"
+    fi
 
     if [[ -d "$mariadb_data" ]] && [[ "$(ls -A "$mariadb_data" 2>/dev/null)" ]]; then
         # Handle existing backup
@@ -885,24 +1168,27 @@ cmd_delete() {
             mv "$DATA_BACKUP_DIR" "$archived_backup"
             print_ok "Archived existing backup to ${archived_backup}"
         fi
-        cp -r "$mariadb_data" "$DATA_BACKUP_DIR"
+        sudo cp -r "$mariadb_data" "$DATA_BACKUP_DIR" 2>/dev/null || cp -r "$mariadb_data" "$DATA_BACKUP_DIR"
         print_ok "Backed up MariaDB data to ${DATA_BACKUP_DIR}"
     else
         print_info "No MariaDB data to back up"
     fi
 
     # Uninstall packages
-    brew uninstall httpd 2>/dev/null || true
-    brew uninstall mariadb 2>/dev/null || true
-    brew uninstall php 2>/dev/null || true
-    brew uninstall phpmyadmin 2>/dev/null || true
-    brew autoremove 2>/dev/null || true
-    brew cleanup 2>/dev/null || true
+    if [[ $USE_APT == 1 ]]; then
+        sudo apt remove -y apache2 mariadb-server php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 php-sodium libapache2-mod-php phpmyadmin 2>/dev/null || true
+        sudo apt autoremove -y 2>/dev/null || true
+    else
+        brew uninstall httpd 2>/dev/null || true
+        brew uninstall mariadb 2>/dev/null || true
+        brew uninstall php 2>/dev/null || true
+        brew uninstall phpmyadmin 2>/dev/null || true
+        brew autoremove 2>/dev/null || true
+        brew cleanup 2>/dev/null || true
+    fi
     print_ok "Uninstalled packages"
 
     # Remove remaining config files
-    rm -rf "${BREW_PREFIX}/etc/httpd/httpd.conf" 2>/dev/null || true
-    rm -rf "${BREW_PREFIX}/etc/phpmyadmin.config.inc.php" 2>/dev/null || true
     rm -rf "$LOGS_DIR" 2>/dev/null || true
     print_ok "Removed config files and logs"
 
@@ -1002,13 +1288,24 @@ check_restore_data() {
 
         if [[ "$restore" != "n" && "$restore" != "N" && "$restore" != "no" && "$restore" != "No" ]]; then
             # Stop MariaDB, replace data dir, start
-            brew services stop mariadb 2>/dev/null
-            sleep 1
-            local mariadb_data="${BREW_PREFIX}/var/mysql"
-            rm -rf "$mariadb_data" 2>/dev/null || true
-            cp -r "$DATA_BACKUP_DIR" "$mariadb_data"
-            rm -rf "$DATA_BACKUP_DIR" 2>/dev/null || true
-            brew services start mariadb 2>/dev/null
+            if [[ $USE_APT == 1 ]]; then
+                sudo systemctl stop mariadb 2>/dev/null
+                sleep 1
+                local mariadb_data="/var/lib/mysql"
+                sudo rm -rf "$mariadb_data" 2>/dev/null || true
+                sudo cp -r "$DATA_BACKUP_DIR" "$mariadb_data"
+                sudo rm -rf "$DATA_BACKUP_DIR" 2>/dev/null || true
+                sudo chown -R mysql:mysql "$mariadb_data" 2>/dev/null || true
+                sudo systemctl start mariadb 2>/dev/null
+            else
+                brew services stop mariadb 2>/dev/null
+                sleep 1
+                local mariadb_data="${BREW_PREFIX}/var/mysql"
+                rm -rf "$mariadb_data" 2>/dev/null || true
+                cp -r "$DATA_BACKUP_DIR" "$mariadb_data"
+                rm -rf "$DATA_BACKUP_DIR" 2>/dev/null || true
+                brew services start mariadb 2>/dev/null
+            fi
             sleep 2
             print_ok "Databases restored from backup"
         else
@@ -1043,20 +1340,20 @@ check_offline() {
 
 # ---- Main Entry Point ---------------------------------------
 main() {
-    # Attempt to load brew into PATH (critical on Linux)
-    check_brew_path
-
-    # Refresh Homebrew status
-    if brew --version &>/dev/null; then
-        HOMEBREW=1
-        BREW_PREFIX=$(brew --prefix)
+    # Homebrew detection (macOS and legacy Linux only)
+    if [[ $USE_APT == 0 ]]; then
+        check_brew_path
+        if brew --version &>/dev/null; then
+            HOMEBREW=1
+            BREW_PREFIX=$(brew --prefix)
+        fi
     fi
 
     # Detect installed components
     detect_all
 
-    # Show offline/cache info
-    if [[ $HOMEBREW == 1 ]]; then
+    # Show offline/cache info (brew only)
+    if [[ $USE_APT == 0 ]] && [[ $HOMEBREW == 1 ]]; then
         check_offline
     fi
 
@@ -1072,20 +1369,24 @@ main() {
         case "${command}" in
             [iI]|[iI]nstall)
                 cmd_install
-                # Re-detect and loop (dashboard refreshes)
-                check_brew_path
-                if brew --version &>/dev/null; then
-                    HOMEBREW=1
-                    BREW_PREFIX=$(brew --prefix)
+                # Re-detect for dashboard refresh
+                if [[ $USE_APT == 0 ]]; then
+                    check_brew_path
+                    if brew --version &>/dev/null; then
+                        HOMEBREW=1
+                        BREW_PREFIX=$(brew --prefix)
+                    fi
                 fi
                 detect_all
                 ;;
             [uU]|[uU]pdate)
                 cmd_update
-                check_brew_path
-                if brew --version &>/dev/null; then
-                    HOMEBREW=1
-                    BREW_PREFIX=$(brew --prefix)
+                if [[ $USE_APT == 0 ]]; then
+                    check_brew_path
+                    if brew --version &>/dev/null; then
+                        HOMEBREW=1
+                        BREW_PREFIX=$(brew --prefix)
+                    fi
                 fi
                 detect_all
                 ;;
@@ -1115,7 +1416,13 @@ main() {
                 cmd_delete
                 ;;
             fu|FU|fU|Fu)
-                cmd_forced_update
+                if [[ $USE_APT == 1 ]]; then
+                    print_err "Forced update (version switching) is not available with apt. Use U to update."
+                    printf "\n"
+                    read -r -p "Press Enter to continue..."
+                else
+                    cmd_forced_update
+                fi
                 ;;
             [qQ]|[qQ]uit)
                 printf "[${GREEN}  OK  ${RESET}] Goodbye!\n\n"
