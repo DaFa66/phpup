@@ -24,7 +24,7 @@ Press **I** to install. That's it.
 Open Terminal and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh | bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)"
 ```
 
 Press **I** to install. That's it.
@@ -34,7 +34,7 @@ Press **I** to install. That's it.
 Open Terminal and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh | bash
+if ! command -v curl &> /dev/null; then sudo apt install -y curl; fi && source <(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)
 ```
 
 Press **I** to install. That's it.
