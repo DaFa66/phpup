@@ -913,6 +913,7 @@ configure_phpmyadmin() {
     # Create phpMyAdmin tmp directory (required for template cache)
     local pma_tmp="${BREW_PREFIX}/share/phpmyadmin/tmp"
     sudo mkdir -p "$pma_tmp" 2>/dev/null || mkdir -p "$pma_tmp" 2>/dev/null || true
+    sudo chgrp _www "$pma_tmp" 2>/dev/null || true
     sudo chmod 775 "$pma_tmp" 2>/dev/null || chmod 775 "$pma_tmp" 2>/dev/null || true
     print_ok "Created phpMyAdmin tmp directory"
 
@@ -945,6 +946,7 @@ configure_phpmyadmin_apt() {
     # Create phpMyAdmin tmp directory (required for template cache)
     local pma_tmp="/usr/share/phpmyadmin/tmp"
     sudo mkdir -p "$pma_tmp" 2>/dev/null || true
+    sudo chgrp www-data "$pma_tmp" 2>/dev/null || true
     sudo chmod 775 "$pma_tmp" 2>/dev/null || true
     print_ok "Created phpMyAdmin tmp directory"
 
