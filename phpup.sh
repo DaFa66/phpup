@@ -716,11 +716,14 @@ configure_php() {
 
     print_info "Configuring PHP..."
 
-    # Enable common extensions
+    # Enable extensions only if the .so file exists (Homebrew PHP 8.x compiles most statically)
+    local ext_dir
+    ext_dir=$(php -r 'echo PHP_EXTENSION_DIR;' 2>/dev/null)
     local extensions=("curl" "fileinfo" "gd" "intl" "mbstring" "mysqli" "openssl" "pdo_mysql" "pdo_sqlite" "sodium" "sqlite3")
     for ext in "${extensions[@]}"; do
-        # Uncomment the extension line if it exists commented out
-        sed -i.bak "s/^; *extension=${ext}/extension=${ext}/" "$php_ini" 2>/dev/null || true
+        if [[ -f "${ext_dir}/${ext}.so" ]]; then
+            sed -i.bak "s/^; *extension=${ext}/extension=${ext}/" "$php_ini" 2>/dev/null || true
+        fi
     done
     print_ok "Enabled PHP extensions"
 
