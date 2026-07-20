@@ -488,7 +488,7 @@ start_services() {
         [[ $MARIADB == 1 ]] && sudo systemctl start mariadb 2>/dev/null
         [[ $PHP == 1 ]] && sudo systemctl start php*-fpm 2>/dev/null
     else
-        [[ $APACHE == 1 ]] && sudo "${BREW_PREFIX}/bin/apachectl" start 2>/dev/null
+        [[ $APACHE == 1 ]] && sudo "${BREW_PREFIX}/bin/apachectl" restart 2>/dev/null
         [[ $MARIADB == 1 ]] && brew services start mariadb 2>/dev/null
         [[ $PHP == 1 ]] && brew services start php 2>/dev/null
     fi
@@ -965,10 +965,10 @@ cmd_install() {
         print_info "Installing packages via Homebrew..."
         printf "\n"
 
-        [[ $APACHE == 0 ]] && HOMEBREW_NO_AUTO_UPDATE=1 yes | brew install httpd && APACHE=1
-        [[ $MARIADB == 0 ]] && { HOMEBREW_NO_AUTO_UPDATE=1 yes | brew install mariadb || true; }
-        [[ $PHP == 0 ]] && HOMEBREW_NO_AUTO_UPDATE=1 yes | brew install php && PHP=1
-        [[ $PHPMYADMIN == 0 ]] && HOMEBREW_NO_AUTO_UPDATE=1 yes | brew install phpmyadmin && PHPMYADMIN=1
+        [[ $APACHE == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 brew install httpd && APACHE=1
+        [[ $MARIADB == 0 ]] && { printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 brew install mariadb || true; }
+        [[ $PHP == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 brew install php && PHP=1
+        [[ $PHPMYADMIN == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 brew install phpmyadmin && PHPMYADMIN=1
 
         # Refresh detection
         check_brew_path
@@ -1106,7 +1106,7 @@ cmd_update() {
         stop_services
         printf "\n"
         print_info "Upgrading packages via Homebrew..."
-        HOMEBREW_NO_AUTO_UPDATE=1 yes | brew upgrade httpd mariadb php phpmyadmin
+        HOMEBREW_NO_AUTO_UPDATE=1 printf 'y\n' | brew upgrade httpd mariadb php phpmyadmin
         detect_all
         configure_apache
         configure_php
@@ -1270,7 +1270,7 @@ cmd_forced_update() {
 
             # Start services
             brew services start php 2>/dev/null
-            sudo "${BREW_PREFIX}/bin/apachectl" start 2>/dev/null
+            sudo "${BREW_PREFIX}/bin/apachectl" restart 2>/dev/null
 
             detect_all
             save_config "$BASE_DIR" "$APACHE_VERSION" "$MARIADB_VERSION" "$PHP_VERSION" "$PHPMYADMIN_VERSION"
