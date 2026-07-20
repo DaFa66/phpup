@@ -910,6 +910,12 @@ configure_phpmyadmin() {
     sed -i.bak "s/\$cfg\['Servers'\]\[\$i\]\['AllowNoPassword'\] = false;/\$cfg\['Servers'\]\[\$i\]\['AllowNoPassword'\] = true;/" "$pma_conf"
     print_ok "Enabled passwordless root login"
 
+    # Create phpMyAdmin tmp directory (required for template cache)
+    local pma_tmp="${BREW_PREFIX}/share/phpmyadmin/tmp"
+    sudo mkdir -p "$pma_tmp" 2>/dev/null || mkdir -p "$pma_tmp" 2>/dev/null || true
+    sudo chmod 775 "$pma_tmp" 2>/dev/null || chmod 775 "$pma_tmp" 2>/dev/null || true
+    print_ok "Created phpMyAdmin tmp directory"
+
     rm -f "${pma_conf}.bak"
 }
 
@@ -935,6 +941,12 @@ configure_phpmyadmin_apt() {
     # Allow passwordless root login
     sudo sed -i "s/\\$cfg\\['Servers'\\]\\[\\$i\\]\\['AllowNoPassword'\\] = false;/\\$cfg\\['Servers'\\]\\[\\$i\\]\\['AllowNoPassword'\\] = true;/" "$pma_conf"
     print_ok "Enabled passwordless root login"
+
+    # Create phpMyAdmin tmp directory (required for template cache)
+    local pma_tmp="/usr/share/phpmyadmin/tmp"
+    sudo mkdir -p "$pma_tmp" 2>/dev/null || true
+    sudo chmod 775 "$pma_tmp" 2>/dev/null || true
+    print_ok "Created phpMyAdmin tmp directory"
 
     print_ok "phpMyAdmin configured"
 }
