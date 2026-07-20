@@ -488,7 +488,16 @@ start_services() {
         [[ $MARIADB == 1 ]] && sudo systemctl start mariadb 2>/dev/null
         [[ $PHP == 1 ]] && sudo systemctl start php*-fpm 2>/dev/null
     else
-        [[ $APACHE == 1 ]] && sudo "${BREW_PREFIX}/bin/apachectl" restart 2>/dev/null
+        if [[ $APACHE == 1 ]]; then
+            sudo "${BREW_PREFIX}/bin/apachectl" restart 2>/dev/null
+            sleep 1
+            if pgrep -x httpd &>/dev/null; then
+                print_ok "Apache started on port 80"
+            else
+                print_err "Apache may have failed to start — check ${LOGS_DIR}/apache_error.log"
+                sudo "${BREW_PREFIX}/bin/apachectl" configtest 2>&1 | tail -3
+            fi
+        fi
         [[ $MARIADB == 1 ]] && brew services start mariadb 2>/dev/null
         [[ $PHP == 1 ]] && brew services start php 2>/dev/null
     fi
