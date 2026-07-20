@@ -1,22 +1,40 @@
 # phpup — Local PHP Web Stack. One Script. Done.
 
-> **Acknowledgments**
->
-> This project is a Windows x64 port inspired by the original [getPHP.org](https://getphp.org) project founded by Balázs Zatik. The original Mac/Linux shell script — a brilliantly concise sub 300-line installer that delivers a complete PHP stack with a single command — set the standard for simplicity and developer experience that this Windows port aspires to.
->
-> Balázs has since launched his own Windows version using Winget as the installer — proving once again that less is more in just under 700 lines of code. Both projects share the same spirit: **no bloat, no desktop app, just a working PHP stack.**
->
-> This PowerShell edition takes a different approach — native binary downloads, dynamic version resolution, zip file caching and an interactive dashboard — but the mission is the same. Thank you, Balázs, for getphp.org and for supporting all three operating systems.
+> **Inspired by** [getPHP.org](https://getphp.org)
 
-Launch your local PHP web stack on Windows 11 with a single PowerShell script.
+| Platform          | Approach                                                                                      |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| **Windows**       | Native binary downloads, dynamic version resolution, and an interactive PowerShell dashboard. |
+| **macOS & Linux** | Homebrew-powered — same dashboard experience, one bash script.                                |
 
 ## Quick Start
+
+### Windows
 
 Right-click PowerShell → Run as Administrator, then:
 
 ```powershell
-
 irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.ps1 | iex
+```
+
+Press **I** to install. That's it.
+
+### macOS
+
+Open Terminal and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh | bash
+```
+
+Press **I** to install. That's it.
+
+### Linux
+
+Open Terminal and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh | bash
 ```
 
 Press **I** to install. That's it.
@@ -105,7 +123,7 @@ Your Web Stack:
 ~~~~~~~~~~~~~~~
 Apache -------> 2.4.68
 MariaDB ------> 12.3.2
-PHP ----------> 8.5.7
+PHP ----------> 8.5.8
 phpMyAdmin ---> 5.2.3
 
 Process Status:
@@ -306,186 +324,45 @@ All downloaded files are cached permanently in `%TEMP%\webstack_downloads\`:
 
 Once you have multiple versions cached, the hidden **`fu`** (forced update) command lets you switch between them interactively without touching the network. Type `fu` at the dashboard prompt and you'll see a summary of installed vs cached versions, then choose which version to install per component — upgrades, downgrades, or snapshots. MariaDB databases are automatically backed up and restored across version changes.
 
-## Program Flow Diagram
+## Program Flow
 
 ```mermaid
 flowchart TD
-    %% ── Entry Point ──
-    START(["irm phpup.ps1 | iex"]) --> PARAM{"-Offline?"}
-    PARAM -->|"Yes"| OFFLINE_FLAG["Set $Offline = $true"]
-    PARAM -->|"No"| ADMIN
-    OFFLINE_FLAG --> ADMIN
+    START(["irm phpup.ps1 | iex"]) --> GUARDS["Admin & x64 checks"]
+    GUARDS --> VC{"VC++ Redist ≥ 14.51?"}
+    VC -->|"No"| VC_FIX["Install/update → reboot"]
+    VC_FIX --> VC
+    VC -->|"Yes"| CONFIG{"Saved config?"}
+    CONFIG -->|"Yes"| DASHBOARD
+    CONFIG -->|"No"| PROMPT["Choose install path → save config"]
+    PROMPT --> DASHBOARD
 
-    %% ── Pre-flight Guards ──
-    ADMIN{"Run as Admin?"} -->|"No"| EXIT_ADMIN["Exit: Admin required"]
-    ADMIN -->|"Yes"| ARCH{"x64 (AMD64)?"}
-    ARCH -->|"No"| EXIT_ARCH["Exit: ARM / 32-bit unsupported"]
-    ARCH -->|"Yes"| BANNER["Display Banner"]
+    DASHBOARD(["<b>Dashboard Loop</b><br/>Show status · versions · services · commands"])
+    DASHBOARD --> INPUT["Read command"]
 
-    %% ── VC++ Redist Check (blocking) ──
-    BANNER --> VCREDIST{"VC++ Redist ≥ 14.51?"}
-    VCREDIST -->|"No"| VC_PROMPT["Offer install/update"]
-    VC_PROMPT -->|"Accept"| VC_INSTALL["Download & run VC++ installer"]
-    VC_INSTALL --> VC_REBOOT{"Reboot needed?"}
-    VC_REBOOT -->|"Yes"| VC_OFFER_REBOOT["Offer reboot"]
-    VC_OFFER_REBOOT -->|"Yes"| VC_REBOOT_NOW(["Restart-Computer -Force"])
-    VC_OFFER_REBOOT -->|"No"| EXIT_REBOOT["Exit: re-run after reboot"]
-    VC_REBOOT -->|"No"| VCREDIST
-    VC_PROMPT -->|"Decline"| EXIT_VC["Exit: VC++ required"]
-    VCREDIST -->|"Yes"| CONFIG
+    INPUT --> CMD{"Command?"}
+    CMD -->|"I"| INSTALL["<b>Install</b><br/>Download all 4 components<br/>Configure Apache · PHP<br/>MariaDB · phpMyAdmin<br/>Start services"]
+    CMD -->|"U"| UPDATE["<b>Update</b><br/>Resolve latest versions<br/>Replace outdated components<br/>Restart services"]
+    CMD -->|"S"| TOGGLE["<b>Start / Stop</b><br/>Toggle services on/off<br/>Offer service registration"]
+    CMD -->|"R"| RESTART["<b>Restart</b><br/>Stop → wait 2s → Start"]
+    CMD -->|"D"| DELETE["<b>Delete</b><br/>Stop services → backup data<br/>Remove stack → clear config"]
+    CMD -->|"Q"| QUIT(["Exit"])
+    CMD -->|"fu"| FORCE["<b>Force Update</b> (offline)<br/>Switch to cached versions<br/>without network"]
 
-    %% ── Config & Path Resolution ──
-    CONFIG{"Saved config exists?"}
-    CONFIG -->|"Yes"| VALIDATE["Validate saved path<br/>— no spaces<br/>— derive all sub-paths"]
-    VALIDATE -->|"Invalid"| EXIT_PATH["Exit: fix config"]
-    VALIDATE -->|"Valid"| SYNC["Sync service state<br/>with reality"]
-    CONFIG -->|"No (first run)"| PROMPT_PATH["Prompt for install path<br/>default: C:\phpup"]
-    PROMPT_PATH --> SAVE_CONFIG["Save config.json"]
-    SAVE_CONFIG --> DERIVE["Derive all sub-paths"]
-    SYNC --> DASHBOARD
-    DERIVE --> DASHBOARD
+    INSTALL --> DASHBOARD
+    UPDATE --> DASHBOARD
+    TOGGLE --> DASHBOARD
+    RESTART --> DASHBOARD
+    DELETE --> DASHBOARD
+    FORCE --> DASHBOARD
 
-    %% ── Main Dashboard Loop ──
-    DASHBOARD["**Show Dashboard**<br/>Prerequisites · Stack status<br/>Process Status · Services · Commands"]
-    DASHBOARD --> CHECK_STACK{"Test-StackComplete<br/>(all 4 components?)"}
-    CHECK_STACK --> READ_CMD["Read-Host 'Enter command'"]
-
-    %% ── Command Router ──
-    READ_CMD --> ROUTE{"$cmd"}
-    ROUTE -->|"I (not installed)"| INSTALL
-    ROUTE -->|"I (installed)"| ERR_I["Error: already installed"]
-    ROUTE -->|"U (installed)"| UPDATE
-    ROUTE -->|"U (not installed)"| ERR_U["Error: not installed"]
-    ROUTE -->|"R"| RESTART
-    ROUTE -->|"S"| TOGGLE
-    ROUTE -->|"D"| DELETE
-    ROUTE -->|"fu"| FORCED_UPDATE
-    ROUTE -->|"Q"| QUIT(["Write-Ok 'Goodbye!' → return"])
-    ROUTE -->|"other"| ERR_CMD["Error: command not recognised"]
-    ERR_I --> PAUSE
-    ERR_U --> PAUSE
-    ERR_CMD --> PAUSE
-    PAUSE["Pause"] --> DASHBOARD
-
-    %% ══════════ INSTALL SUB-FLOW ══════════
-    INSTALL["**Invoke-InstallWebStack**"] --> INST_VC{"VC++ OK?"}
-    INST_VC -->|"No"| INST_FIX_VC["Offer install → install or abort"]
-    INST_FIX_VC -->|"Abort"| DASHBOARD
-    INST_FIX_VC -->|"Done"| INST_DIRS
-    INST_VC -->|"Yes"| INST_DIRS["Create directories<br/>base · www · logs · temp_downloads"]
-
-    INST_DIRS --> INST_MODE{"$Offline?"}
-    INST_MODE -->|"Online"| INST_RESOLVE["Resolve latest URLs<br/>Apache · PHP · MariaDB · phpMyAdmin"]
-    INST_RESOLVE --> INST_DL_EACH["For each component:<br/>skip if same version already installed<br/>else Invoke-DownloadAndExtract"]
-    INST_MODE -->|"Offline"| INST_SCAN["Scan $TEMP_DOWNLOADS for zips<br/>(needs 4: httpd*, php-*, mariadb*, phpmyadmin*)"]
-    INST_SCAN --> INST_OFFLINE_EXT["Identify & extract each zip"]
-
-    INST_DL_EACH --> INST_DLL["Copy PHP dependency DLLs<br/>to Apache bin\"]
-    INST_OFFLINE_EXT --> INST_DLL
-    INST_DLL --> INST_CFG_APACHE["Configure Apache<br/>httpd.conf · mod_rewrite · phpMyAdmin alias"]
-    INST_CFG_APACHE --> INST_CFG_PHP["Configure PHP<br/>php.ini · extensions · error log · OPCache"]
-    INST_CFG_PHP --> INST_SQLITE["Fix SQLite3 DLL<br/>(VS17 bundled version is broken)"]
-
-    INST_SQLITE --> INST_DB_BACKUP{"Orphaned data_backup?"}
-    INST_DB_BACKUP -->|"Yes"| INST_RESTORE["Offer restore → move to mariadb/data"]
-    INST_DB_BACKUP -->|"No"| INST_CFG_MDB
-    INST_RESTORE --> INST_CFG_MDB["Configure MariaDB<br/>my.ini · data init · blank root password"]
-
-    INST_CFG_MDB --> INST_PMA{"Offline mode?"}
-    INST_PMA -->|"Online"| INST_PMA_DL["Download & extract phpMyAdmin"]
-    INST_PMA_DL --> INST_CFG_PMA
-    INST_PMA -->|"Offline"| INST_CFG_PMA["Configure phpMyAdmin<br/>config.inc.php · blowfish secret"]
-
-    INST_CFG_PMA --> INST_PHPINFO["Create phpinfo.php test file"]
-    INST_PHPINFO --> INST_PATH["Add PHP + MariaDB to user PATH"]
-    INST_PATH --> INST_SVC{"Install as Windows services?"}
-    INST_SVC -->|"Yes"| INST_SVC_REG["Install-AsServices<br/>phpup_Apache<br/>phpup_MariaDB"]
-    INST_SVC -->|"No"| INST_START
-    INST_SVC_REG --> INST_START["Start services<br/>(service or process mode)"]
-
-    INST_START --> INST_PMA_STOR["Configure phpMyAdmin storage<br/>(pma_ tables)"]
-    INST_PMA_STOR --> INST_DONE["Save config.json<br/>Display 'Installation Complete!'"]
-    INST_DONE --> PAUSE
-
-    %% ══════════ UPDATE SUB-FLOW ══════════
-    UPDATE["**Invoke-UpdateWebStack**"] --> UPD_RESOLVE["Resolve latest URLs for all 4"]
-    UPD_RESOLVE --> UPD_COMPARE["Compare installed vs latest versions"]
-    UPD_COMPARE --> UPD_OUTDATED{"Any outdated?"}
-    UPD_OUTDATED -->|"No"| UPD_OK["Write-Ok 'Stack is up to date'"]
-    UPD_OK --> PAUSE
-    UPD_OUTDATED -->|"Yes"| UPD_CONFIRM{"Confirm update?"}
-    UPD_CONFIRM -->|"No"| PAUSE
-    UPD_CONFIRM -->|"Yes"| UPD_STOP["Stop all services"]
-    UPD_STOP --> UPD_EACH["For each outdated component:<br/>Remove old → Download new → Configure"]
-    UPD_EACH --> UPD_MDB_CHK{"MariaDB updated?"}
-    UPD_MDB_CHK -->|"Yes"| UPD_MDB_BACKUP["Backup data → Restore data"]
-    UPD_MDB_CHK -->|"No"| UPD_START
-    UPD_MDB_BACKUP --> UPD_START["Start services"]
-    UPD_START --> UPD_PMA_CHK{"phpMyAdmin updated?"}
-    UPD_PMA_CHK -->|"Yes"| UPD_PMA_STOR["Configure phpMyAdmin storage"]
-    UPD_PMA_CHK -->|"No"| UPD_SAVE
-    UPD_PMA_STOR --> UPD_SAVE["Save-PostUpdateConfig"]
-    UPD_SAVE --> PAUSE
-
-    %% ══════════ DELETE SUB-FLOW ══════════
-    DELETE["**Invoke-DeleteWebStack**"] --> DEL_CONFIRM{"Type 'DELETE' to confirm?"}
-    DEL_CONFIRM -->|"No"| DEL_ABORT["Nothing deleted"]
-    DEL_ABORT --> PAUSE
-    DEL_CONFIRM -->|"Yes"| DEL_STOP["Stop all services"]
-    DEL_STOP --> DEL_BACKUP["Backup mariadb\\data\\ → data_backup\\"]
-    DEL_BACKUP --> DEL_EXISTS{"Existing backup?"}
-    DEL_EXISTS -->|"Yes"| DEL_RENAME["Timestamp old backup<br/>data_backup_YYYYMMDD_HHmmss"]
-    DEL_EXISTS -->|"No"| DEL_REMOVE
-    DEL_RENAME --> DEL_REMOVE["Remove: Apache · PHP · MariaDB · phpMyAdmin · logs"]
-    DEL_REMOVE --> DEL_SVC["Unregister Windows services"]
-    DEL_SVC --> DEL_PATH["Remove from user PATH"]
-    DEL_PATH --> DEL_CONFIG["Clear-Config"]
-    DEL_CONFIG --> PAUSE
-
-    %% ══════════ RESTART / TOGGLE ══════════
-    RESTART["Stop-WebStackServices → wait 2s → Start-WebStackServices"] --> PAUSE
-    TOGGLE --> TOGGLE_RUN{"Running?"}
-    TOGGLE_RUN -->|"Yes"| TOGGLE_STOP["Stop-WebStackServices"]
-    TOGGLE_STOP --> TOGGLE_REG_CHK{"Registered?"}
-    TOGGLE_REG_CHK -->|"Yes"| TOGGLE_OFFER["Offer to unregister"]
-    TOGGLE_OFFER -->|"Yes"| TOGGLE_UNREG["Remove-Services"]
-    TOGGLE_OFFER -->|"No"| PAUSE
-    TOGGLE_UNREG --> PAUSE
-    TOGGLE_REG_CHK -->|"No"| TOGGLE_HINT["Hint: press S again to register"]
-    TOGGLE_HINT --> PAUSE
-    TOGGLE_RUN -->|"No"| TOGGLE_REG2{"Registered?"}
-    TOGGLE_REG2 -->|"No"| TOGGLE_OFFER2["Offer to register"]
-    TOGGLE_OFFER2 -->|"Yes"| TOGGLE_INSTALL["Install-AsServices"]
-    TOGGLE_OFFER2 -->|"No"| TOGGLE_START
-    TOGGLE_INSTALL --> PAUSE
-    TOGGLE_REG2 -->|"Yes"| TOGGLE_START["Start-WebStackServices"]
-    TOGGLE_START --> PAUSE
-
-    %% ══════════ FORCED UPDATE (offline) ══════════
-    FORCED_UPDATE["**Invoke-ForcedUpdate**"] --> FU_SCAN["Scan $TEMP_DOWNLOADS for cached zips"]
-    FU_SCAN --> FU_SHOW["Show installed vs cached versions"]
-    FU_SHOW --> FU_PICK["User picks version per component"]
-    FU_PICK --> FU_STOP["Stop services"]
-    FU_STOP --> FU_EACH["For each changed component:<br/>Remove old → Extract cached zip → Configure"]
-    FU_EACH --> FU_START["Start services"]
-    FU_START --> FU_SAVE["Save config with new versions"]
-    FU_SAVE --> PAUSE
-
-    %% ── Styling ──
-    style TOGGLE fill:#0f0,color:#000
-    style QUIT fill:#f66,color:#fff
-    style EXIT_ADMIN fill:#f66,color:#fff
-    style EXIT_ARCH fill:#f66,color:#fff
-    style EXIT_VC fill:#f66,color:#fff
-    style EXIT_PATH fill:#f66,color:#fff
     style DASHBOARD fill:#39f,color:#fff
     style INSTALL fill:#3c3,color:#fff
     style UPDATE fill:#3c3,color:#fff
+    style TOGGLE fill:#0f0,color:#000
     style DELETE fill:#f93,color:#000
-    style FORCED_UPDATE fill:#93f,color:#fff
-    style ERR_I fill:#999,color:#fff
-    style ERR_U fill:#999,color:#fff
-    style ERR_CMD fill:#999,color:#fff
+    style FORCE fill:#93f,color:#fff
+    style QUIT fill:#f66,color:#fff
 ```
 
 ## Known Quirks & Fixes
@@ -497,8 +374,6 @@ Not supported. phpup requires x64 (Intel/AMD 64-bit) — Apache Lounge and Maria
 ## Support & Contributions
 
 If you run into any errors or bugs, please open an [issue](https://github.com/DaFa66/phpup/issues) or send a [pull request](https://github.com/DaFa66/phpup/pulls).
-
-You can also contact Balázs Zatik through his [Support Page](https://getphp.org/support.php) at [getPHP.org](https://getphp.org).
 
 ---
 
