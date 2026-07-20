@@ -614,9 +614,10 @@ PMAALIAS
     fi
     print_ok "Created phpMyAdmin alias"
 
-    # Ensure www directory is writable by Apache (_www user)
-    sudo chown -R _www "$DOC_ROOT" 2>/dev/null || chown -R _www "$DOC_ROOT" 2>/dev/null || true
-    print_ok "Set ownership of ${DOC_ROOT} to _www"
+    # Ensure www directory is writable by both user and Apache
+    sudo chgrp -R _www "$DOC_ROOT" 2>/dev/null || chgrp -R _www "$DOC_ROOT" 2>/dev/null || true
+    sudo chmod -R 775 "$DOC_ROOT" 2>/dev/null || chmod -R 775 "$DOC_ROOT" 2>/dev/null || true
+    print_ok "Set ${DOC_ROOT} group to _www (775)"
 
     # Clean up sed backup files
     rm -f "${conf}.bak"
@@ -665,10 +666,10 @@ configure_apache_apt() {
         fi
     fi
 
-    # Ensure www directory is accessible (Apache runs as www-data)
-    sudo chown -R www-data:www-data "$DOC_ROOT" 2>/dev/null || true
-    sudo chmod 755 "$DOC_ROOT" 2>/dev/null || true
-    print_ok "Set ownership of ${DOC_ROOT} to www-data"
+    # Ensure www directory is writable by both user and Apache
+    sudo chgrp -R www-data "$DOC_ROOT" 2>/dev/null || true
+    sudo chmod -R 775 "$DOC_ROOT" 2>/dev/null || true
+    print_ok "Set ${DOC_ROOT} group to www-data (775)"
 
     # Reload Apache to apply changes
     sudo systemctl reload apache2 2>/dev/null || sudo systemctl start apache2 2>/dev/null
@@ -964,10 +965,10 @@ cmd_install() {
         print_info "Installing packages via Homebrew..."
         printf "\n"
 
-        [[ $APACHE == 0 ]] && brew install httpd && APACHE=1
-        [[ $MARIADB == 0 ]] && brew install mariadb && MARIADB=1
-        [[ $PHP == 0 ]] && brew install php && PHP=1
-        [[ $PHPMYADMIN == 0 ]] && brew install phpmyadmin && PHPMYADMIN=1
+        [[ $APACHE == 0 ]] && HOMEBREW_NO_AUTO_UPDATE=1 yes | brew install httpd && APACHE=1
+        [[ $MARIADB == 0 ]] && { HOMEBREW_NO_AUTO_UPDATE=1 yes | brew install mariadb || true; }
+        [[ $PHP == 0 ]] && HOMEBREW_NO_AUTO_UPDATE=1 yes | brew install php && PHP=1
+        [[ $PHPMYADMIN == 0 ]] && HOMEBREW_NO_AUTO_UPDATE=1 yes | brew install phpmyadmin && PHPMYADMIN=1
 
         # Refresh detection
         check_brew_path
@@ -1105,7 +1106,7 @@ cmd_update() {
         stop_services
         printf "\n"
         print_info "Upgrading packages via Homebrew..."
-        brew upgrade httpd mariadb php phpmyadmin
+        HOMEBREW_NO_AUTO_UPDATE=1 yes | brew upgrade httpd mariadb php phpmyadmin
         detect_all
         configure_apache
         configure_php
