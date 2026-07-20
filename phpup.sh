@@ -1346,6 +1346,9 @@ check_offline() {
 
 # ---- Main Entry Point ---------------------------------------
 main() {
+    # Reconnect stdin to terminal (needed when piped via curl | bash)
+    exec < /dev/tty
+
     # Homebrew detection (macOS and legacy Linux only)
     if [[ $USE_APT == 0 ]]; then
         check_brew_path
