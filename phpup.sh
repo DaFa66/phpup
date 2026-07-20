@@ -614,6 +614,10 @@ PMAALIAS
     fi
     print_ok "Created phpMyAdmin alias"
 
+    # Ensure www directory is writable by Apache (_www user)
+    sudo chown -R _www "$DOC_ROOT" 2>/dev/null || chown -R _www "$DOC_ROOT" 2>/dev/null || true
+    print_ok "Set ownership of ${DOC_ROOT} to _www"
+
     # Clean up sed backup files
     rm -f "${conf}.bak"
 }
