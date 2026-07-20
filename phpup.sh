@@ -503,7 +503,9 @@ stop_services() {
         [[ $MARIADB == 1 ]] && sudo systemctl stop mariadb 2>/dev/null
         [[ $PHP == 1 ]] && sudo systemctl stop php*-fpm 2>/dev/null
     else
+        # Kill any httpd process, then stop the launchd service to prevent restart
         [[ $APACHE == 1 ]] && sudo "${BREW_PREFIX}/bin/apachectl" stop 2>/dev/null
+        [[ $APACHE == 1 ]] && brew services stop httpd 2>/dev/null
         [[ $MARIADB == 1 ]] && brew services stop mariadb 2>/dev/null
         [[ $PHP == 1 ]] && brew services stop php 2>/dev/null
     fi
