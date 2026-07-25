@@ -4,8 +4,8 @@
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-07-05
-#  Version: 2.1.1
+#  Date: 2026-07-25
+#  Version: 2.2.0
 # ============================================================
 
 param(
@@ -14,7 +14,7 @@ param(
 
 # ---- Config -------------------------------------------------
 $BASE = "C:\phpup"
-$TEMP_DOWNLOADS  = "$env:TEMP\webstack_downloads"
+$DOWNLOAD_CACHE  = "$BASE\downloads"
 
 # ---- Banner -------------------------------------------------
 $BANNER_ART = @'
@@ -120,7 +120,7 @@ function Get-VersionFromZipName([string]$filename, [string]$component) {
     $ver = $null
     switch ($component) {
         'apache'     { if ($filename -match 'httpd-([\d.]+)-') { $ver = $matches[1] } }
-        'php'        { if ($filename -match 'php-([\d.]+)(?:RC\d+)?-')  { $ver = $matches[1] } }
+        'php'        { if ($filename -match 'php-([\d.]+)(?:RC\d+|alpha\d+|beta\d+)?-')  { $ver = $matches[1] } }
         'mariadb'    { if ($filename -match 'mariadb-([\d.]+)-') { $ver = $matches[1] } }
         'phpmyadmin' { if ($filename -match 'phpMyAdmin-([\d.]+)') { $ver = $matches[1] } }
     }
@@ -351,8 +351,8 @@ function Install-VcRedist {
     }
 
     # Fallback: direct download (for systems without winget)
-    $installer = "$TEMP_DOWNLOADS\vc_redist.x64.exe"
-    New-Item -ItemType Directory -Force -Path $TEMP_DOWNLOADS | Out-Null
+    $installer = "$DOWNLOAD_CACHE\vc_redist.x64.exe"
+    New-Item -ItemType Directory -Force -Path $DOWNLOAD_CACHE | Out-Null
 
     if (Test-Path $installer) {
         Write-Ok "VC++ Redistributable installer already cached — using $installer"
@@ -684,11 +684,11 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
     Write-Host "Downloading $label..." -ForegroundColor Yellow
     Write-Info "  $url"
 
-    New-Item -ItemType Directory -Force -Path $TEMP_DOWNLOADS | Out-Null
+    New-Item -ItemType Directory -Force -Path $DOWNLOAD_CACHE | Out-Null
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
     $filename = [IO.Path]::GetFileName($url)
-    $zipPath  = Join-Path $TEMP_DOWNLOADS $filename
+    $zipPath  = Join-Path $DOWNLOAD_CACHE $filename
 
     # Check if we already have this exact version cached
     if (Test-Path $zipPath) {
@@ -1033,6 +1033,33 @@ function Invoke-ConfigurePhp {
     }
     Write-Ok "OPCache enabled (256 MB, JIT tracing, production-ready)"
 
+    # File upload limits (50 MB import for phpMyAdmin, etc.)
+    if ($ini -match 'upload_max_filesize\\s*=') {
+        $ini = $ini -replace 'upload_max_filesize\\s*=\\s*\\S+', 'upload_max_filesize = 50M'
+    }
+    else {
+        $ini += "`nupload_max_filesize = 50M"
+    }
+    if ($ini -match 'post_max_size\\s*=') {
+        $ini = $ini -replace 'post_max_size\\s*=\\s*\\S+', 'post_max_size = 55M'
+    }
+    else {
+        $ini += "`npost_max_size = 55M"
+    }
+    if ($ini -match 'max_execution_time\\s*=') {
+        $ini = $ini -replace 'max_execution_time\\s*=\\s*\\S+', 'max_execution_time = 300'
+    }
+    else {
+        $ini += "`nmax_execution_time = 300"
+    }
+    if ($ini -match 'max_input_time\\s*=') {
+        $ini = $ini -replace 'max_input_time\\s*=\\s*\\S+', 'max_input_time = 300'
+    }
+    else {
+        $ini += "`nmax_input_time = 300"
+    }
+    Write-Ok "Upload limits set: 50 MB files, 300s timeout"
+
     Set-Content -Path $iniPath -Value $ini
     Write-Ok "PHP extensions enabled: curl, fileinfo, gd, intl, mbstring, mysqli, openssl, pdo_mysql, pdo_sqlite, sodium, sqlite3"
 }
@@ -1056,16 +1083,14 @@ function Invoke-FixSqliteDll {
         if ($html.Content -match 'PRODUCT,\d+\.\d+\.\d+,(\d{4}/sqlite-dll-win-x64-\d+\.zip)') {
             $zipPath = $matches[1]
             $url = "https://www.sqlite.org/$zipPath"
-            $zipFile = "$TEMP_DOWNLOADS\sqlite3_dll.zip"
+            $zipFile = "$DOWNLOAD_CACHE\sqlite3_dll.zip"
 
-            Write-Info "Downloading latest SQLite3 DLL..."
+            Write-Info "Syncing latest SQLite3 DLL..."
             if (-not (Test-Path $zipFile)) {
                 Invoke-WebRequest $url -OutFile $zipFile -UseBasicParsing -Headers @{ "User-Agent" = $ua }
-            } else {
-                Write-Ok "SQLite3 DLL zip already cached — using $zipFile"
             }
 
-            $extractDir = "$TEMP_DOWNLOADS\sqlite3_dll_extract"
+            $extractDir = "$DOWNLOAD_CACHE\sqlite3_dll_extract"
             New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
             Expand-Archive $zipFile $extractDir -Force
 
@@ -1096,7 +1121,7 @@ function Invoke-CopyPhpDlls {
     Write-Warn "Copying PHP dependency DLLs to Apache bin..."
 
     $phpDlls = @(Get-ChildItem "$PHP_PATH\icu*.dll" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
-    $phpDlls += @('libssh2.dll', 'nghttp2.dll', 'libzstd.dll', 'libsodium.dll')
+    $phpDlls += @('libssh2.dll', 'nghttp2.dll', 'libsodium.dll')
 
     foreach ($dll in $phpDlls) {
         $src = "$PHP_PATH\$dll"
@@ -1104,8 +1129,6 @@ function Invoke-CopyPhpDlls {
         if (Test-Path $src) {
             Copy-Item $src $dst -Force
             Write-Ok "Copied $dll"
-        } else {
-            Write-Warn "$dll not found in PHP root - skipping"
         }
     }
 }
@@ -1571,17 +1594,17 @@ function Invoke-InstallWebStack {
     New-Item -ItemType Directory -Force -Path $BASE | Out-Null
     New-Item -ItemType Directory -Force -Path $WWW_PATH | Out-Null
     New-Item -ItemType Directory -Force -Path $LOGS_PATH | Out-Null
-    New-Item -ItemType Directory -Force -Path $TEMP_DOWNLOADS | Out-Null
+    New-Item -ItemType Directory -Force -Path $DOWNLOAD_CACHE | Out-Null
 
     # Resolve URLs (or use local zips in offline mode)
     Write-Host ""
     if ($Offline) {
-        Write-Bold "Offline mode — using pre-downloaded zips from: $TEMP_DOWNLOADS"
+        Write-Bold "Offline mode — using pre-downloaded zips from: $DOWNLOAD_CACHE"
         Write-Host ""
 
-        $zipFiles = Get-ChildItem -Path $TEMP_DOWNLOADS -Filter "*.zip" -ErrorAction SilentlyContinue
+        $zipFiles = Get-ChildItem -Path $DOWNLOAD_CACHE -Filter "*.zip" -ErrorAction SilentlyContinue
         if (-not $zipFiles -or $zipFiles.Count -lt 4) {
-            Write-Err "Offline mode requires 4 zip files in $TEMP_DOWNLOADS (Apache, PHP, MariaDB, phpMyAdmin)."
+            Write-Err "Offline mode requires 4 zip files in $DOWNLOAD_CACHE (Apache, PHP, MariaDB, phpMyAdmin)."
             Write-Info "  Run the script online once to download them, or place them manually."
             return
         }
@@ -1701,6 +1724,30 @@ function Invoke-InstallWebStack {
         Invoke-DownloadAndExtract $pmaUrl     $PHPMYADMIN_PATH "phpMyAdmin"
     }
     Invoke-ConfigurePhpMyAdmin
+
+    # Restore config files from previous install if available
+    $configBackupDir = "$BASE\config_backup"
+    if (Test-Path $configBackupDir) {
+        Write-Host ""
+        Write-Info "Found config backup from previous install:"
+        $restored = @()
+        $configMap = @(
+            @{ Src = "$configBackupDir\httpd.conf";    Dst = "$APACHE_PATH\conf\httpd.conf" },
+            @{ Src = "$configBackupDir\php.ini";        Dst = "$PHP_PATH\php.ini" },
+            @{ Src = "$configBackupDir\my.ini";         Dst = "$MARIADB_PATH\my.ini" },
+            @{ Src = "$configBackupDir\config.inc.php"; Dst = "$PHPMYADMIN_PATH\config.inc.php" }
+        )
+        foreach ($cfg in $configMap) {
+            if (Test-Path $cfg.Src) {
+                Copy-Item $cfg.Src $cfg.Dst -Force
+                $restored += [System.IO.Path]::GetFileName($cfg.Dst)
+            }
+        }
+        if ($restored.Count -gt 0) {
+            Write-Ok "Restored: $($restored -join ', ')"
+        }
+        Remove-Item $configBackupDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 
     # Create test file
     "<?php phpinfo(); ?>" | Out-File -FilePath "$WWW_PATH\phpinfo.php" -Encoding ASCII
@@ -1916,17 +1963,17 @@ function Invoke-UpdateWebStack {
 }
 
 # ============================================================
-#  FORCED UPDATE (offline — scans $TEMP_DOWNLOADS only)
+#  FORCED UPDATE (offline — scans $DOWNLOAD_CACHE only)
 # ============================================================
 
 function Invoke-ForcedUpdate {
     Write-Host ""
-    Write-Warn "Forced update (offline) — scanning $TEMP_DOWNLOADS for cached versions..."
+    Write-Warn "Forced update (offline) — scanning $DOWNLOAD_CACHE for cached versions..."
     Write-Host ""
 
-    $zipFiles = Get-ChildItem -Path $TEMP_DOWNLOADS -Filter "*.zip" -ErrorAction SilentlyContinue
+    $zipFiles = Get-ChildItem -Path $DOWNLOAD_CACHE -Filter "*.zip" -ErrorAction SilentlyContinue
     if (-not $zipFiles) {
-        Write-Err "No zip files found in $TEMP_DOWNLOADS"
+        Write-Err "No cached zip files found in $DOWNLOAD_CACHE"
         return
     }
 
@@ -1943,6 +1990,11 @@ function Invoke-ForcedUpdate {
             if ($ver) { $apacheVersions += @{ Path = $zip.FullName; Version = $ver } }
         }
         elseif ($name -like "*php-*" -and $name -notlike "*phpmyadmin*") {
+            if ($name -like "*-nts-*") {
+                Write-Info "Skipping non-thread-safe (NTS) PHP build (incompatible with Apache): $($zip.Name)"
+                Write-Host ""
+                continue
+            }
             $ver = Get-VersionFromZipName $name 'php'
             if ($ver) { $phpVersions += @{ Path = $zip.FullName; Version = $ver } }
         }
@@ -1969,7 +2021,7 @@ function Invoke-ForcedUpdate {
     $currentPmaVer     = Get-PhpMyAdminVersion
 
     # ---- Summary ----
-    Write-Host "Cached versions in $TEMP_DOWNLOADS`:" -ForegroundColor White
+    Write-Host "Cached versions in $DOWNLOAD_CACHE`:" -ForegroundColor White
     Write-Host ""
 
     function Show-ComponentSummary($label, $installed, $cachedList) {
@@ -2140,6 +2192,8 @@ function Invoke-DeleteWebStack {
     Write-Info "The following will NOT be deleted:"
     Write-Info "  - Your website files in $WWW_PATH"
     Write-Info "  - Your databases in $MARIADB_PATH\data (moved to $BASE\data_backup)"
+    Write-Info "  - Your config files (moved to $BASE\config_backup)"
+    Write-Info "  - Cached downloads in $DOWNLOAD_CACHE"
     Write-Host ""
 
     $confirm = Read-Host "Type 'DELETE' to confirm"
@@ -2171,6 +2225,22 @@ function Invoke-DeleteWebStack {
         Write-Ok "Database data preserved at $backupDir"
         Write-Host ""
     }
+
+    # Backup config files before removal
+    $configBackupDir = "$BASE\config_backup"
+    New-Item -ItemType Directory -Force -Path $configBackupDir | Out-Null
+    $configs = @(
+        @{ Src = "$APACHE_PATH\conf\httpd.conf";   Name = "httpd.conf" },
+        @{ Src = "$PHP_PATH\php.ini";               Name = "php.ini" },
+        @{ Src = "$MARIADB_PATH\my.ini";             Name = "my.ini" },
+        @{ Src = "$PHPMYADMIN_PATH\config.inc.php";  Name = "config.inc.php" }
+    )
+    foreach ($cfg in $configs) {
+        if (Test-Path $cfg.Src) {
+            Copy-Item $cfg.Src "$configBackupDir\$($cfg.Name)" -Force
+        }
+    }
+    Write-Ok "Config files backed up to $configBackupDir"
 
     Remove-Item $APACHE_PATH -Recurse -Force -ErrorAction SilentlyContinue
     Write-Ok "Apache removed"
@@ -2205,6 +2275,8 @@ function Invoke-DeleteWebStack {
     Write-Host ""
     Write-Info "Website files preserved: $WWW_PATH"
     Write-Info "Database backup:         $backupDir"
+    Write-Info "Config backup:           $configBackupDir"
+    Write-Info "Download cache:          $DOWNLOAD_CACHE"
     Write-Host ""
 }
 
@@ -2346,16 +2418,16 @@ function Show-Dashboard {
     # ---- Info ----
     if (Test-StackComplete) {
         Write-Host ""
-        Write-Host "Where to put website files? " -NoNewline
+        Write-Host "Where to put website files?  " -NoNewline
         Write-Host $WWW_PATH -ForegroundColor Cyan
-        Write-Host "How to test your PHP setup? " -NoNewline
+        Write-Host "How to test your PHP setup?  " -NoNewline
         Write-Host "http://localhost/phpinfo.php" -ForegroundColor Cyan
-        Write-Host "Where to access phpMyAdmin? " -NoNewline
+        Write-Host "Where to access phpMyAdmin?  " -NoNewline
         Write-Host "http://localhost/phpmyadmin" -ForegroundColor Cyan
-        Write-Host "How to log into phpMyAdmin? " -NoNewline
+        Write-Host "How to log into phpMyAdmin?  " -NoNewline
         Write-Host "Username: root | Password: [blank]" -ForegroundColor Cyan
         Write-Host "Where is the download cache? " -NoNewline
-        Write-Host $TEMP_DOWNLOADS -ForegroundColor Cyan
+        Write-Host $DOWNLOAD_CACHE -ForegroundColor Cyan
     }
 
     # ---- Commands ----

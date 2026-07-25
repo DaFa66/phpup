@@ -155,7 +155,7 @@ Q  Quit
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **I**  | Install the web stack (download + configure + start)                                                                                             |
 | **U**  | Update outdated components (compares installed vs latest online versions)                                                                        |
-| **fu** | _(hidden)_ Forced update — switch components to any cached version from `%TEMP%\\webstack_downloads\\` without touching the network              |
+| **fu** | _(hidden)_ Forced update — switch components to any cached version from `C:\\phpup\\downloads\\` without touching the network              |
 | **R**  | Restart Apache + MariaDB                                                                                                                         |
 | **S**  | Toggle services: stops if running (offers to unregister if Windows services installed), starts if stopped (offers registration if not installed) |
 | **D**  | Delete the web stack (preserves `www\\` files and MariaDB data)                                                                                  |
@@ -314,9 +314,9 @@ Run the script with `-Offline` to skip all URL resolution and downloading:
 .\\phpup.ps1 -Offline
 ```
 
-Offline mode requires four pre-downloaded zip files in `%TEMP%\webstack_downloads\` (Apache, PHP, MariaDB, phpMyAdmin) — run the script online once to populate the cache, then subsequent installs skip downloads entirely.
+Offline mode requires four pre-downloaded zip files in `C:\phpup\downloads\` (Apache, PHP, MariaDB, phpMyAdmin) — run the script online once to populate the cache, then subsequent installs skip downloads entirely.
 
-All downloaded files are cached permanently in `%TEMP%\webstack_downloads\`:
+All downloaded files are cached permanently in `C:\phpup\downloads\`:
 
 - Component zips (Apache, PHP, MariaDB, phpMyAdmin) — reused on re-install when the version hasn't changed
 - SQLite3 DLL zip — cached and reused
