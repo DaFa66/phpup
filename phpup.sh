@@ -5,8 +5,8 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-07-19
-#  Version: 1.0.0
+#  Date: 2026-07-25
+#  Version: 1.1.0
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -751,6 +751,29 @@ configure_php() {
         print_ok "Configured OPCache (256MB, JIT-ready)"
     fi
 
+    # File upload limits (50 MB import for phpMyAdmin, etc.)
+    if grep -q "^upload_max_filesize" "$php_ini" 2>/dev/null; then
+        sed -i.bak "s/^upload_max_filesize.*/upload_max_filesize = 50M/" "$php_ini"
+    else
+        echo "upload_max_filesize = 50M" >> "$php_ini"
+    fi
+    if grep -q "^post_max_size" "$php_ini" 2>/dev/null; then
+        sed -i.bak "s/^post_max_size.*/post_max_size = 55M/" "$php_ini"
+    else
+        echo "post_max_size = 55M" >> "$php_ini"
+    fi
+    if grep -q "^max_execution_time" "$php_ini" 2>/dev/null; then
+        sed -i.bak "s/^max_execution_time.*/max_execution_time = 300/" "$php_ini"
+    else
+        echo "max_execution_time = 300" >> "$php_ini"
+    fi
+    if grep -q "^max_input_time" "$php_ini" 2>/dev/null; then
+        sed -i.bak "s/^max_input_time.*/max_input_time = 300/" "$php_ini"
+    else
+        echo "max_input_time = 300" >> "$php_ini"
+    fi
+    print_ok "Upload limits set: 50 MB files, 300s timeout"
+
     rm -f "${php_ini}.bak"
 }
 
@@ -797,6 +820,29 @@ configure_php_apt() {
         sudo sed -i "s/^;*opcache.max_accelerated_files=.*/opcache.max_accelerated_files=20000/" "$php_ini"
         print_ok "Configured OPCache (256MB, JIT-ready)"
     fi
+
+    # File upload limits (50 MB import for phpMyAdmin, etc.)
+    if grep -q "^upload_max_filesize" "$php_ini" 2>/dev/null; then
+        sudo sed -i "s/^upload_max_filesize.*/upload_max_filesize = 50M/" "$php_ini"
+    else
+        echo "upload_max_filesize = 50M" | sudo tee -a "$php_ini" > /dev/null
+    fi
+    if grep -q "^post_max_size" "$php_ini" 2>/dev/null; then
+        sudo sed -i "s/^post_max_size.*/post_max_size = 55M/" "$php_ini"
+    else
+        echo "post_max_size = 55M" | sudo tee -a "$php_ini" > /dev/null
+    fi
+    if grep -q "^max_execution_time" "$php_ini" 2>/dev/null; then
+        sudo sed -i "s/^max_execution_time.*/max_execution_time = 300/" "$php_ini"
+    else
+        echo "max_execution_time = 300" | sudo tee -a "$php_ini" > /dev/null
+    fi
+    if grep -q "^max_input_time" "$php_ini" 2>/dev/null; then
+        sudo sed -i "s/^max_input_time.*/max_input_time = 300/" "$php_ini"
+    else
+        echo "max_input_time = 300" | sudo tee -a "$php_ini" > /dev/null
+    fi
+    print_ok "Upload limits set: 50 MB files, 300s timeout"
 
     # Extensions should already be enabled via apt package dependencies
     print_ok "PHP configured"
