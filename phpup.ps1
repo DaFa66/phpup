@@ -4,8 +4,8 @@
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-07-25
-#  Version: 2.2.0
+#  Date: 2026-07-26
+#  Version: 2.2.1
 # ============================================================
 
 param(
@@ -1060,6 +1060,15 @@ function Invoke-ConfigurePhp {
     }
     Write-Ok "Upload limits set: 50 MB files, 300s timeout"
 
+    # Session GC lifetime (match PMA LoginCookieValidity)
+    if ($ini -match 'session\.gc_maxlifetime\s*=') {
+        $ini = $ini -replace 'session\.gc_maxlifetime\s*=\s*\d+', 'session.gc_maxlifetime = 14400'
+    }
+    else {
+        $ini += "`nsession.gc_maxlifetime = 14400"
+    }
+    Write-Ok "Session GC lifetime: 4 hours"
+
     Set-Content -Path $iniPath -Value $ini
     Write-Ok "PHP extensions enabled: curl, fileinfo, gd, intl, mbstring, mysqli, openssl, pdo_mysql, pdo_sqlite, sodium, sqlite3"
 }
@@ -1222,10 +1231,21 @@ function Invoke-ConfigurePhpMyAdmin {
 `$cfg['UploadDir'] = '';
 `$cfg['SaveDir']   = '';
 `$cfg['DefaultConnectionCollation'] = 'utf8mb4_general_ci';
+`$cfg['VersionCheck'] = false;
+`$cfg['SendErrorReports'] = 'never';
+`$cfg['LoginCookieValidity'] = 14400;
+`$cfg['TempDir'] = '$PHPMYADMIN_PATH/tmp';
 "@
 
     Set-Content -Path $configPath -Value $config
     Write-Ok "phpMyAdmin configured (root / blank password)"
+
+    # Ensure tmp directory for Twig template cache
+    $pmaTmp = "$PHPMYADMIN_PATH\tmp"
+    if (-not (Test-Path $pmaTmp)) {
+        New-Item -ItemType Directory -Path $pmaTmp -Force | Out-Null
+        Write-Ok "phpMyAdmin tmp directory created"
+    }
 }
 
 function Invoke-ConfigurePmaStorage {
@@ -1233,7 +1253,7 @@ function Invoke-ConfigurePmaStorage {
 # Enables bookmarks, query history, table tracking, designer, etc.
 
     # Check if already configured
-    $testResult = & "$MARIADB_PATH\bin\mariadb.exe" -u root --skip-password -e "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA='phpmyadmin' AND TABLE_NAME='pma__bookmark'" 2>&1
+    $testResult = & "$MARIADB_PATH\bin\mariadb.exe" -u root --skip-password -e "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA='pma' AND TABLE_NAME='pma__bookmark'" 2>&1
     if ($LASTEXITCODE -eq 0 -and $testResult -match '1') {
         Write-Ok "phpMyAdmin storage already configured — skipping"
         # Still ensure config.inc.php has the storage directives
@@ -1260,15 +1280,15 @@ function Invoke-ConfigurePmaStorage {
     }
 
     # Create database and import schema
-    Write-Info "Creating phpmyadmin storage database..."
-    & "$MARIADB_PATH\bin\mariadb.exe" -u root --skip-password -e "CREATE DATABASE IF NOT EXISTS phpmyadmin" 2>&1 | Out-Null
+    Write-Info "Creating phpMyAdmin storage database (pma)..."
+    & "$MARIADB_PATH\bin\mariadb.exe" -u root --skip-password -e "CREATE DATABASE IF NOT EXISTS pma" 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Write-Err "Failed to create phpmyadmin database"
+        Write-Err "Failed to create pma database"
         return
     }
 
     Write-Info "Importing phpMyAdmin storage schema..."
-    Get-Content $sqlFile | & "$MARIADB_PATH\bin\mariadb.exe" -u root --skip-password phpmyadmin 2>&1 | Out-Null
+    Get-Content $sqlFile | & "$MARIADB_PATH\bin\mariadb.exe" -u root --skip-password pma 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-Err "Failed to import storage schema"
         return
@@ -1287,7 +1307,7 @@ function Get-PmaStorageConfig {
     return @"
 
 /* phpMyAdmin configuration storage */
-`$cfg['Servers'][`$i]['pmadb']           = 'phpmyadmin';
+`$cfg['Servers'][`$i]['pmadb']           = 'pma';
 `$cfg['Servers'][`$i]['bookmarktable']   = 'pma__bookmark';
 `$cfg['Servers'][`$i]['relation']        = 'pma__relation';
 `$cfg['Servers'][`$i]['table_info']      = 'pma__table_info';

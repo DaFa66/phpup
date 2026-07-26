@@ -5,8 +5,8 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-07-25
-#  Version: 1.1.0
+#  Date: 2026-07-26
+#  Version: 1.1.1
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -774,6 +774,14 @@ configure_php() {
     fi
     print_ok "Upload limits set: 50 MB files, 300s timeout"
 
+    # Session GC lifetime (match PMA LoginCookieValidity)
+    if grep -q "^session.gc_maxlifetime" "$php_ini" 2>/dev/null; then
+        sed -i.bak "s/^session.gc_maxlifetime.*/session.gc_maxlifetime = 14400/" "$php_ini"
+    else
+        echo "session.gc_maxlifetime = 14400" >> "$php_ini"
+    fi
+    print_ok "Session GC lifetime: 4 hours"
+
     rm -f "${php_ini}.bak"
 }
 
@@ -843,6 +851,14 @@ configure_php_apt() {
         echo "max_input_time = 300" | sudo tee -a "$php_ini" > /dev/null
     fi
     print_ok "Upload limits set: 50 MB files, 300s timeout"
+
+    # Session GC lifetime (match PMA LoginCookieValidity)
+    if grep -q "^session.gc_maxlifetime" "$php_ini" 2>/dev/null; then
+        sudo sed -i "s/^session.gc_maxlifetime.*/session.gc_maxlifetime = 14400/" "$php_ini"
+    else
+        echo "session.gc_maxlifetime = 14400" | sudo tee -a "$php_ini" > /dev/null
+    fi
+    print_ok "Session GC lifetime: 4 hours"
 
     # Extensions should already be enabled via apt package dependencies
     print_ok "PHP configured"
@@ -956,6 +972,22 @@ configure_phpmyadmin() {
     sed -i.bak "s/\$cfg\['Servers'\]\[\$i\]\['AllowNoPassword'\] = false;/\$cfg\['Servers'\]\[\$i\]\['AllowNoPassword'\] = true;/" "$pma_conf"
     print_ok "Enabled passwordless root login"
 
+    # Disable version check (speeds up login)
+    sed -i.bak "s/\$cfg\['VersionCheck'\] = true;/\$cfg\['VersionCheck'\] = false;/" "$pma_conf"
+    print_ok "Disabled version check"
+
+    # Disable error reporting
+    sed -i.bak "s/\$cfg\['SendErrorReports'\] = 'ask';/\$cfg\['SendErrorReports'\] = 'never';/" "$pma_conf"
+    print_ok "Disabled error reporting"
+
+    # Extend login cookie to 4 hours
+    sed -i.bak "s/\$cfg\['LoginCookieValidity'\] = 1440;/\$cfg\['LoginCookieValidity'\] = 14400;/" "$pma_conf"
+    print_ok "Extended login cookie to 4 hours"
+
+    # Template cache directory
+    sed -i.bak "s/\$cfg\['TempDir'\] = '\/tmp';/\$cfg\['TempDir'\] = '${BREW_PREFIX}\/share\/phpmyadmin\/tmp';/" "$pma_conf"
+    print_ok "Set TempDir for template cache"
+
     # Create phpMyAdmin tmp directory (required for template cache)
     local pma_tmp="${BREW_PREFIX}/share/phpmyadmin/tmp"
     sudo mkdir -p "$pma_tmp" 2>/dev/null || mkdir -p "$pma_tmp" 2>/dev/null || true
@@ -986,8 +1018,24 @@ configure_phpmyadmin_apt() {
     print_ok "Set blowfish secret"
 
     # Allow passwordless root login
-    sudo sed -i "s/\\$cfg\\['Servers'\\]\\[\\$i\\]\\['AllowNoPassword'\\] = false;/\\$cfg\\['Servers'\\]\\[\\$i\\]\\['AllowNoPassword'\\] = true;/" "$pma_conf"
+    sudo sed -i "s/\\\$cfg\\['Servers'\\]\\[\\\$i\\]\\['AllowNoPassword'\\] = false;/\\\$cfg\\['Servers'\\]\\[\\\$i\\]\\['AllowNoPassword'\\] = true;/" "$pma_conf"
     print_ok "Enabled passwordless root login"
+
+    # Disable version check (speeds up login)
+    sudo sed -i "s/\\\$cfg\\['VersionCheck'\\] = true;/\\\$cfg\\['VersionCheck'\\] = false;/" "$pma_conf"
+    print_ok "Disabled version check"
+
+    # Disable error reporting
+    sudo sed -i "s/\\\$cfg\\['SendErrorReports'\\] = 'ask';/\\\$cfg\\['SendErrorReports'\\] = 'never';/" "$pma_conf"
+    print_ok "Disabled error reporting"
+
+    # Extend login cookie to 4 hours
+    sudo sed -i "s/\\\$cfg\\['LoginCookieValidity'\\] = 1440;/\\\$cfg\\['LoginCookieValidity'\\] = 14400;/" "$pma_conf"
+    print_ok "Extended login cookie to 4 hours"
+
+    # Template cache directory
+    sudo sed -i "s/\\\$cfg\\['TempDir'\\] = '\\/tmp';/\\\$cfg\\['TempDir'\\] = '\\/usr\\/share\\/phpmyadmin\\/tmp';/" "$pma_conf"
+    print_ok "Set TempDir for template cache"
 
     # Create phpMyAdmin tmp directory (required for template cache)
     local pma_tmp="/usr/share/phpmyadmin/tmp"
