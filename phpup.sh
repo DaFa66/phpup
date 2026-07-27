@@ -20,10 +20,11 @@ DATA_BACKUP_DIR="${BASE_DIR}/data_backup"
 
 # ---- Colour Constants ---------------------------------------
 ESC='\033'
-RED="${ESC}[31m"
-GREEN="${ESC}[32m"
-YELLOW="${ESC}[33m"
-CYAN="${ESC}[36m"
+RED="${ESC}[91m"
+GREEN="${ESC}[92m"
+YELLOW="${ESC}[93m"
+BLUE="${ESC}[94m"
+CYAN="${ESC}[96m"
 BOLD="${ESC}[1m"
 UNDERLINE="${ESC}[4m"
 RESET="${ESC}[0m"
@@ -372,8 +373,12 @@ show_banner() {
     printf "│   | |_) | |_| | |_) | || |  │\n"
     printf "│   |  __/|  _  |  __/| || |  │\n"
     printf "│   |_|   |_| |_|_|    ||_|   │\n"
-    printf "│         ▲ ▲ ▲               │\n"
-    printf "│         phpup               │\n"
+    printf "│         "
+    printf "${YELLOW}▲${RESET} ${GREEN}▲${RESET} ${CYAN}▲${RESET}"
+    printf "               │\n"
+    printf "│         "
+    printf "${BLUE}phpup${RESET}"
+    printf "               │\n"
     printf "└─────────────────────────────┘\n"
     printf "\n"
 }
@@ -397,28 +402,28 @@ show_dashboard() {
 
     printf "Apache ${CYAN}------->${RESET} "
     if [[ $APACHE == 1 ]]; then
-        printf "%s\n" "$APACHE_VERSION"
+        printf "${GREEN}%s${RESET}\n" "$APACHE_VERSION"
     else
         printf "${RED}Not installed${RESET}\n"
     fi
 
     printf "MariaDB ${CYAN}------>${RESET} "
     if [[ $MARIADB == 1 ]]; then
-        printf "%s\n" "$MARIADB_VERSION"
+        printf "${GREEN}%s${RESET}\n" "$MARIADB_VERSION"
     else
         printf "${RED}Not installed${RESET}\n"
     fi
 
     printf "PHP ${CYAN}---------->${RESET} "
     if [[ $PHP == 1 ]]; then
-        printf "%s\n" "$PHP_VERSION"
+        printf "${GREEN}%s${RESET}\n" "$PHP_VERSION"
     else
         printf "${RED}Not installed${RESET}\n"
     fi
 
     printf "phpMyAdmin ${CYAN}--->${RESET} "
     if [[ $PHPMYADMIN == 1 ]]; then
-        printf "%s\n" "$PHPMYADMIN_VERSION"
+        printf "${GREEN}%s${RESET}\n" "$PHPMYADMIN_VERSION"
     else
         printf "${RED}Not installed${RESET}\n"
     fi
@@ -431,21 +436,21 @@ show_dashboard() {
 
     printf "Apache ${CYAN}------->${RESET} "
     if [[ $APACHE == 1 ]]; then
-        is_service_running apache && printf "Running\n" || printf "Stopped\n"
+        is_service_running apache && printf "${GREEN}Running${RESET}\n" || printf "${GREEN}Stopped${RESET}\n"
     else
         printf "${RED}Not available${RESET}\n"
     fi
 
     printf "MariaDB ${CYAN}------>${RESET} "
     if [[ $MARIADB == 1 ]]; then
-        is_service_running mariadb && printf "Running\n" || printf "Stopped\n"
+        is_service_running mariadb && printf "${GREEN}Running${RESET}\n" || printf "${GREEN}Stopped${RESET}\n"
     else
         printf "${RED}Not available${RESET}\n"
     fi
 
     printf "PHP-FPM ${CYAN}------>${RESET} "
     if [[ $PHP == 1 ]]; then
-        is_service_running php && printf "Running\n" || printf "Stopped\n"
+        is_service_running php && printf "${GREEN}Running${RESET}\n" || printf "${GREEN}Stopped${RESET}\n"
     else
         printf "${RED}Not available${RESET}\n"
     fi
@@ -1484,11 +1489,6 @@ main() {
 
     # Detect installed components
     detect_all
-
-    # Show offline/cache info (brew only)
-    if [[ $USE_APT == 0 ]] && [[ $HOMEBREW == 1 ]]; then
-        check_offline
-    fi
 
     # Main loop
     while true; do
