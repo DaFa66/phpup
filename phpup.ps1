@@ -4,8 +4,8 @@
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-07-26
-#  Version: 2.2.1
+#  Date: 2026-07-27
+#  Version: 2.2.2
 # ============================================================
 
 param(
@@ -2322,7 +2322,7 @@ function Show-Dashboard {
         }
         elseif ($line -match 'phpup') {
             Write-Host "│         " -NoNewline -ForegroundColor White
-            Write-Host "phpup" -NoNewline -ForegroundColor Cyan
+            Write-Host "phpup" -NoNewline -ForegroundColor Blue
             Write-Host "               │" -ForegroundColor White
         }
         else {
