@@ -200,7 +200,7 @@ detect_phpmyadmin() {
             PHPMYADMIN=0
             PHPMYADMIN_VERSION=""
         fi
-    elif [[ -d "${BREW_PREFIX}/Cellar/phpmyadmin" ]]; then
+    elif [[ -d "${BREW_PREFIX}/Cellar/phpmyadmin" ]] && [[ -f "${BREW_PREFIX}/share/phpmyadmin/index.php" ]]; then
         PHPMYADMIN=1
         PHPMYADMIN_VERSION=$(find "${BREW_PREFIX}/Cellar/phpmyadmin" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
     else
@@ -904,21 +904,36 @@ configure_mariadb() {
     brew services start mariadb 2>/dev/null
     sleep 3
 
-    # Set blank root password (Homebrew MariaDB often has no password by default)
-    if mysql -u root -h 127.0.0.1 -e "SELECT 1" &>/dev/null 2>&1; then
+    # Set blank root password with mysql_native_password plugin
+    # brew MariaDB 12.3.2 defaults to unix_socket auth — only the OS user
+    # named in the MariaDB account can connect.  PHP/PMA need native password.
+    local mysql_user="${USER}"
+    if mysql -u root -e "SELECT 1" &>/dev/null 2>&1; then
+        mysql_user="root"
+    elif mysql -u "${mysql_user}" -e "SELECT 1" &>/dev/null 2>&1; then
+        : # current user works — will use it to ALTER root
+    else
+        mysql_user=""
+    fi
+
+    if [[ -n "$mysql_user" ]]; then
+        mysql -u "${mysql_user}" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
+        print_ok "MariaDB root password set to blank (native auth)"
+    elif mysql -u root -h 127.0.0.1 -e "SELECT 1" &>/dev/null 2>&1; then
         print_ok "MariaDB root access confirmed (no password)"
     else
-        # Try to set blank password via safe mode
+        # Fallback: stop, wipe, and reinitialize
         brew services stop mariadb 2>/dev/null
         sleep 1
-        mysqld_safe --skip-grant-tables &
-        sleep 3
-        mysql -u root -e "FLUSH PRIVILEGES; ALTER USER 'root'@'localhost' IDENTIFIED BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
-        killall mysqld_safe 2>/dev/null || true
-        sleep 1
+        rm -rf "${BREW_PREFIX}/var/mysql" 2>/dev/null || true
         brew services start mariadb 2>/dev/null
-        sleep 2
-        print_ok "MariaDB root password set to blank"
+        sleep 5
+        if mysql -u root -e "SELECT 1" &>/dev/null 2>&1; then
+            mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
+            print_ok "MariaDB root password set to blank"
+        else
+            print_warn "Could not configure MariaDB root access — you may need to set it manually"
+        fi
     fi
 
     # Configure my.cnf with error log
@@ -991,28 +1006,44 @@ configure_phpmyadmin() {
 
     print_info "Configuring phpMyAdmin..."
 
-    # Blowfish secret
-    sed -i.bak "s/\$cfg\['blowfish_secret'\] = '';/\$cfg\['blowfish_secret'\] = '12345678901234567890123456789012';/" "$pma_conf"
+    # Blowfish secret (brew config has trailing comment after '';)
+    sed -i.bak "s/\$cfg\['blowfish_secret'\] = '';.*/\$cfg\['blowfish_secret'\] = '12345678901234567890123456789012';/" "$pma_conf"
     print_ok "Set blowfish secret"
 
     # Allow passwordless root login
     sed -i.bak "s/\$cfg\['Servers'\]\[\$i\]\['AllowNoPassword'\] = false;/\$cfg\['Servers'\]\[\$i\]\['AllowNoPassword'\] = true;/" "$pma_conf"
     print_ok "Enabled passwordless root login"
 
-    # Disable version check (speeds up login)
-    sed -i.bak "s/\$cfg\['VersionCheck'\] = true;/\$cfg\['VersionCheck'\] = false;/" "$pma_conf"
+    # Disable version check — append if missing (brew default omits this directive)
+    if grep -q "\$cfg\['VersionCheck'\]" "$pma_conf" 2>/dev/null; then
+        sed -i.bak "s/\$cfg\['VersionCheck'\] = true;/\$cfg\['VersionCheck'\] = false;/" "$pma_conf"
+    else
+        echo "\$cfg['VersionCheck'] = false;" >> "$pma_conf"
+    fi
     print_ok "Disabled version check"
 
-    # Disable error reporting
-    sed -i.bak "s/\$cfg\['SendErrorReports'\] = 'ask';/\$cfg\['SendErrorReports'\] = 'never';/" "$pma_conf"
+    # Disable error reporting — append if missing
+    if grep -q "\$cfg\['SendErrorReports'\]" "$pma_conf" 2>/dev/null; then
+        sed -i.bak "s/\$cfg\['SendErrorReports'\] = 'ask';/\$cfg\['SendErrorReports'\] = 'never';/" "$pma_conf"
+    else
+        echo "\$cfg['SendErrorReports'] = 'never';" >> "$pma_conf"
+    fi
     print_ok "Disabled error reporting"
 
-    # Extend login cookie to 4 hours
-    sed -i.bak "s/\$cfg\['LoginCookieValidity'\] = 1440;/\$cfg\['LoginCookieValidity'\] = 14400;/" "$pma_conf"
+    # Extend login cookie to 4 hours — append if missing
+    if grep -q "\$cfg\['LoginCookieValidity'\]" "$pma_conf" 2>/dev/null; then
+        sed -i.bak "s/\$cfg\['LoginCookieValidity'\] = 1440;/\$cfg\['LoginCookieValidity'\] = 14400;/" "$pma_conf"
+    else
+        echo "\$cfg['LoginCookieValidity'] = 14400;" >> "$pma_conf"
+    fi
     print_ok "Extended login cookie to 4 hours"
 
-    # Template cache directory
-    sed -i.bak "s|\$cfg\['TempDir'\] = '/tmp';|\$cfg\['TempDir'\] = '${BREW_PREFIX}/share/phpmyadmin/tmp';|" "$pma_conf"
+    # Template cache directory — append if missing
+    if grep -q "\$cfg\['TempDir'\]" "$pma_conf" 2>/dev/null; then
+        sed -i.bak "s|\$cfg\['TempDir'\] = '/tmp';|\$cfg\['TempDir'\] = '${BREW_PREFIX}/share/phpmyadmin/tmp';|" "$pma_conf"
+    else
+        echo "\$cfg['TempDir'] = '${BREW_PREFIX}/share/phpmyadmin/tmp';" >> "$pma_conf"
+    fi
     print_ok "Set TempDir for template cache"
 
     # Create phpMyAdmin tmp directory (required for template cache)
@@ -1345,6 +1376,10 @@ cmd_delete() {
         brew uninstall phpmyadmin 2>/dev/null || true
         brew autoremove 2>/dev/null || true
         brew cleanup 2>/dev/null || true
+        # Force-remove any lingering kegs (phpMyAdmin twig cache owned by _www can block rm -rf)
+        for f in httpd mariadb php phpmyadmin; do
+            brew uninstall --force --ignore-dependencies "$f" 2>/dev/null || true
+        done
     fi
     print_ok "Uninstalled packages"
 
@@ -1354,6 +1389,13 @@ cmd_delete() {
         local mariadb_data="${BREW_PREFIX}/var/mysql"
         rm -rf "$mariadb_data" 2>/dev/null || true
         print_ok "Removed MariaDB data directory"
+
+        # Warn if any Cellar skeletons remain (broken package state)
+        for cellar_dir in httpd mariadb php phpmyadmin; do
+            if [[ -d "${BREW_PREFIX}/Cellar/${cellar_dir}" ]]; then
+                print_warn "Cellar/${cellar_dir} still present — run: sudo rm -rf ${BREW_PREFIX}/Cellar/${cellar_dir}"
+            fi
+        done
 
         # Remove stale launchagent plists
         rm -f "${HOME}/Library/LaunchAgents/homebrew.mxcl.*.plist" 2>/dev/null || true
