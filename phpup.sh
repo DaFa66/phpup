@@ -1051,6 +1051,49 @@ configure_phpmyadmin() {
     sudo sh -c "mkdir -p '$pma_tmp' && chgrp _www '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null || mkdir -p "$pma_tmp" 2>/dev/null && chgrp _www "$pma_tmp" 2>/dev/null && chmod 775 "$pma_tmp" 2>/dev/null || true
     print_ok "Created phpMyAdmin tmp directory"
 
+    # Configure phpMyAdmin storage database (for bookmarks, relations, etc.)
+    local pma_sql="${BREW_PREFIX}/share/phpmyadmin/sql/create_tables.sql"
+    if [[ -f "$pma_sql" ]]; then
+        if ! mysql -u root -e "USE pma" &>/dev/null 2>&1; then
+            print_info "Setting up phpMyAdmin storage database..."
+            mysql -u root < "$pma_sql" 2>/dev/null || true
+            # Grant pma user limited privileges for the storage tables
+            mysql -u root -e "GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost' IDENTIFIED BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
+        fi
+        # Add storage config if not already present
+        if ! grep -q "Servers\[\\\$i\]\['pmadb'\]" "$pma_conf" 2>/dev/null; then
+            cat >> "$pma_conf" << 'PMASTORAGE'
+
+/**
+ * phpMyAdmin configuration storage settings.
+ */
+$cfg['Servers'][$i]['pmadb'] = 'pma';
+$cfg['Servers'][$i]['bookmarktable'] = 'pma__bookmark';
+$cfg['Servers'][$i]['relation'] = 'pma__relation';
+$cfg['Servers'][$i]['table_info'] = 'pma__table_info';
+$cfg['Servers'][$i]['table_coords'] = 'pma__table_coords';
+$cfg['Servers'][$i]['pdf_pages'] = 'pma__pdf_pages';
+$cfg['Servers'][$i]['column_info'] = 'pma__column_info';
+$cfg['Servers'][$i]['history'] = 'pma__history';
+$cfg['Servers'][$i]['table_uiprefs'] = 'pma__table_uiprefs';
+$cfg['Servers'][$i]['tracking'] = 'pma__tracking';
+$cfg['Servers'][$i]['userconfig'] = 'pma__userconfig';
+$cfg['Servers'][$i]['recent'] = 'pma__recent';
+$cfg['Servers'][$i]['favorite'] = 'pma__favorite';
+$cfg['Servers'][$i]['users'] = 'pma__users';
+$cfg['Servers'][$i]['usergroups'] = 'pma__usergroups';
+$cfg['Servers'][$i]['navigationhiding'] = 'pma__navigationhiding';
+$cfg['Servers'][$i]['savedsearches'] = 'pma__savedsearches';
+$cfg['Servers'][$i]['central_columns'] = 'pma__central_columns';
+$cfg['Servers'][$i]['designer_settings'] = 'pma__designer_settings';
+$cfg['Servers'][$i]['export_templates'] = 'pma__export_templates';
+PMASTORAGE
+            print_ok "Configured phpMyAdmin storage database"
+        fi
+    else
+        print_info "phpMyAdmin storage tables not found — skipping storage setup"
+    fi
+
     rm -f "${pma_conf}.bak"
 }
 
@@ -1116,7 +1159,7 @@ cmd_install() {
     check_prerequisites
 
     # Establish sudo credential early (extends 5-minute timeout)
-    sudo -v 2>/dev/null || true
+    sudo -v || true
 
     # Create directories
     mkdir -p "$DOC_ROOT"
@@ -1184,7 +1227,7 @@ cmd_install() {
     manage_path
 
     # Refresh sudo credential (brew installs may have taken 5+ minutes)
-    sudo -v 2>/dev/null || true
+    sudo -v || true
 
     # Start services
     printf "\n"
