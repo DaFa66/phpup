@@ -623,21 +623,25 @@ configure_apache() {
         print_ok "Set Apache user/group to www-data (Linux)"
     fi
 
-    # PHP module
+    # PHP module — skip if libphp.so doesn't exist (brew install may have failed)
     local php_module_path="${BREW_PREFIX}/opt/php/lib/httpd/modules/libphp.so"
-    if ! grep -q "LoadModule php_module" "$conf"; then
-        printf "\nLoadModule php_module %s\n" "$php_module_path" >> "$conf"
-    fi
+    if [[ -f "$php_module_path" ]]; then
+        if ! grep -q "LoadModule php_module" "$conf"; then
+            printf "\\nLoadModule php_module %s\\n" "$php_module_path" >> "$conf"
+        fi
 
-    if ! grep -q "<FilesMatch \\\.php\$>" "$conf"; then
-        cat >> "$conf" << 'PHPFILESMATCH'
+        if ! grep -q '<FilesMatch \\.php$>' "$conf"; then
+            cat >> "$conf" << 'PHPFILESMATCH'
 
 <FilesMatch \.php$>
     SetHandler application/x-httpd-php
 </FilesMatch>
 PHPFILESMATCH
+        fi
+        print_ok "Enabled php_module"
+    else
+        print_warn "PHP module not found (${php_module_path}) — PHP may not have installed correctly"
     fi
-    print_ok "Enabled php_module"
 
     # phpMyAdmin alias
     local pma_path="${BREW_PREFIX}/share/phpmyadmin"
@@ -719,6 +723,11 @@ configure_apache_apt() {
 configure_php() {
     if [[ $USE_APT == 1 ]]; then
         configure_php_apt
+        return
+    fi
+
+    if [[ $PHP == 0 ]]; then
+        print_warn "PHP not installed — skipping configuration"
         return
     fi
 
@@ -895,6 +904,11 @@ configure_php_apt() {
 configure_mariadb() {
     if [[ $USE_APT == 1 ]]; then
         configure_mariadb_apt
+        return
+    fi
+
+    if [[ $MARIADB == 0 ]]; then
+        print_warn "MariaDB not installed — skipping configuration"
         return
     fi
 
@@ -1148,12 +1162,18 @@ configure_phpmyadmin_apt() {
 cmd_install() {
     if [[ $STACK == 1 ]]; then
         print_err "Stack is already installed. Use U to update or D to delete first."
-        printf "\n"
+        printf "\\n"
         read -r -p "Press Enter to continue..."
         return
     fi
 
     printf "\n${BOLD}phpup — Install Web Stack${RESET}\n\n"
+
+    # macOS version check — pre-11 Big Sur compiles PHP from source
+    if [[ $OS_MAJOR -lt 11 && $OS_NAME == "macOS" ]]; then
+        printf "${YELLOW}ℹ  macOS ${OS_VERSION} detected — PHP will be compiled from source.${RESET}\n"
+        printf "${YELLOW}   This takes longer and needs Xcode CLT.  macOS 11+ has pre-built bottles.${RESET}\n\n"
+    fi
 
     # Prerequisites
     check_prerequisites
