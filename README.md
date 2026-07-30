@@ -17,11 +17,13 @@ Originally inspired by getPHP, **phpup** has evolved into an independent project
 
 ## Platform Support
 
-| Platform | Status      |
-| -------- | ----------- |
-| Windows  | ✅ Stable   |
-| macOS    | ⚠️ Beta     |
-| Linux    | 🧪 Untested |
+| Platform | Architecture         | Status      |
+| -------- | -------------------- | ----------- |
+| Windows  | x64                  | ✅ Stable   |
+| macOS    | x86_64 + arm64       | ⚠️ Beta     |
+| Linux    | x86_64 + arm64       | 🧪 Untested |
+
+> **macOS version note:** macOS 11 Big Sur or newer recommended. macOS 10.x works but PHP compiles from source (slower, needs full Xcode CLT). The script prints an info message on 10.x so you know what to expect.
 
 ## Quick Start
 
@@ -237,6 +239,12 @@ Config is cleared when you delete the stack. The next run prompts for a fresh in
 - **Windows 10/11** (x64 only — Intel/AMD 64-bit)
 - **Run as Administrator** (required for port 80)
 - **Visual C++ Redistributable** — [VC++ 2015–2022 x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170), minimum version 14.51.36231. The installer checks on startup and offers a one-click upgrade if needed.
+
+### macOS
+
+- **macOS 11 Big Sur+** recommended. macOS 10.x works but PHP is compiled from source (no pre-built bottle).
+- **Xcode Command Line Tools** — prompted to install automatically if missing (`xcode-select --install`).
+- **Homebrew** — installed automatically if missing.
 
 ## Uninstalling
 
