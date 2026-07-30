@@ -200,7 +200,7 @@ detect_phpmyadmin() {
             PHPMYADMIN=0
             PHPMYADMIN_VERSION=""
         fi
-    elif [[ -d "${BREW_PREFIX}/Cellar/phpmyadmin" ]] && [[ -f "${BREW_PREFIX}/share/phpmyadmin/index.php" ]]; then
+    elif [[ -d "${BREW_PREFIX}/Cellar/phpmyadmin" ]]; then
         PHPMYADMIN=1
         PHPMYADMIN_VERSION=$(find "${BREW_PREFIX}/Cellar/phpmyadmin" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
     else
@@ -1006,6 +1006,11 @@ configure_phpmyadmin() {
         return
     fi
 
+    if [[ $PHPMYADMIN == 0 ]]; then
+        print_warn "phpMyAdmin not installed — skipping configuration"
+        return
+    fi
+
     local pma_conf="${BREW_PREFIX}/etc/phpmyadmin.config.inc.php"
 
     if [[ ! -f "$pma_conf" ]]; then
@@ -1211,7 +1216,7 @@ cmd_install() {
         [[ $APACHE == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew install httpd && APACHE=1
         [[ $MARIADB == 0 ]] && { printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew install mariadb || true; }
         [[ $PHP == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew install php && PHP=1
-        [[ $PHPMYADMIN == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew install phpmyadmin && PHPMYADMIN=1
+        [[ $PHPMYADMIN == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew install phpmyadmin && brew link --overwrite --force phpmyadmin 2>/dev/null && PHPMYADMIN=1
 
         # Refresh detection
         check_brew_path
