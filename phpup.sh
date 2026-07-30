@@ -1075,7 +1075,8 @@ configure_phpmyadmin() {
     if [[ -f "$pma_sql" ]]; then
         if ! mysql -u root -e "USE pma" &>/dev/null 2>&1; then
             print_info "Setting up phpMyAdmin storage database..."
-            mysql -u root < "$pma_sql" 2>/dev/null || true
+            # Replace phpmyadmin with pma in the SQL so the db is named 'pma'
+            sed 's/`phpmyadmin`/`pma`/g' "$pma_sql" | mysql -u root 2>/dev/null || true
             # Grant pma user limited privileges for the storage tables
             mysql -u root -e "GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost' IDENTIFIED BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
         fi
