@@ -6,7 +6,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-07-30
-#  Version: 1.2.0
+#  Version: 0.4.0-beta
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -17,7 +17,6 @@ LOGS_DIR="${BASE_DIR}/logs"
 CONFIG_DIR="${HOME}/.config/phpup"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 DATA_BACKUP_DIR="${BASE_DIR}/data_backup"
-CONFIG_BACKUP_DIR="${BASE_DIR}/config_backup"
 
 # ---- Colour Constants ---------------------------------------
 ESC='\033'
@@ -656,8 +655,7 @@ PMAALIAS
     print_ok "Created phpMyAdmin alias"
 
     # Ensure www directory is writable by both user and Apache
-    sudo chgrp -R _www "$DOC_ROOT" 2>/dev/null || chgrp -R _www "$DOC_ROOT" 2>/dev/null || true
-    sudo chmod -R 775 "$DOC_ROOT" 2>/dev/null || chmod -R 775 "$DOC_ROOT" 2>/dev/null || true
+    sudo sh -c "chgrp -R _www '$DOC_ROOT' && chmod -R 775 '$DOC_ROOT'" 2>/dev/null || chgrp -R _www "$DOC_ROOT" && chmod -R 775 "$DOC_ROOT" 2>/dev/null || true
     print_ok "Set ${DOC_ROOT} group to _www (775)"
 
     # Clean up sed backup files
@@ -1014,14 +1012,12 @@ configure_phpmyadmin() {
     print_ok "Extended login cookie to 4 hours"
 
     # Template cache directory
-    sed -i.bak "s/\$cfg\['TempDir'\] = '\/tmp';/\$cfg\['TempDir'\] = '${BREW_PREFIX}\/share\/phpmyadmin\/tmp';/" "$pma_conf"
+    sed -i.bak "s|\$cfg\['TempDir'\] = '/tmp';|\$cfg\['TempDir'\] = '${BREW_PREFIX}/share/phpmyadmin/tmp';|" "$pma_conf"
     print_ok "Set TempDir for template cache"
 
     # Create phpMyAdmin tmp directory (required for template cache)
     local pma_tmp="${BREW_PREFIX}/share/phpmyadmin/tmp"
-    sudo mkdir -p "$pma_tmp" 2>/dev/null || mkdir -p "$pma_tmp" 2>/dev/null || true
-    sudo chgrp _www "$pma_tmp" 2>/dev/null || true
-    sudo chmod 775 "$pma_tmp" 2>/dev/null || chmod 775 "$pma_tmp" 2>/dev/null || true
+    sudo sh -c "mkdir -p '$pma_tmp' && chgrp _www '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null || mkdir -p "$pma_tmp" 2>/dev/null && chgrp _www "$pma_tmp" 2>/dev/null && chmod 775 "$pma_tmp" 2>/dev/null || true
     print_ok "Created phpMyAdmin tmp directory"
 
     rm -f "${pma_conf}.bak"
@@ -1047,30 +1043,28 @@ configure_phpmyadmin_apt() {
     print_ok "Set blowfish secret"
 
     # Allow passwordless root login
-    sudo sed -i "s/\\\$cfg\\['Servers'\\]\\[\\\$i\\]\\['AllowNoPassword'\\] = false;/\\\$cfg\\['Servers'\\]\\[\\\$i\\]\\['AllowNoPassword'\\] = true;/" "$pma_conf"
+    sudo sed -i "s/\\\\\\$cfg\\['Servers'\\]\\\\[\\\\\\$i\\]\\['AllowNoPassword'\\] = false;/\\\\\\$cfg\\['Servers'\\]\\\\[\\\\\\$i\\]\\['AllowNoPassword'\\] = true;/" "$pma_conf"
     print_ok "Enabled passwordless root login"
 
     # Disable version check (speeds up login)
-    sudo sed -i "s/\\\$cfg\\['VersionCheck'\\] = true;/\\\$cfg\\['VersionCheck'\\] = false;/" "$pma_conf"
+    sudo sed -i "s/\\\\\\$cfg\\['VersionCheck'\\] = true;/\\\\\\$cfg\\['VersionCheck'\\] = false;/" "$pma_conf"
     print_ok "Disabled version check"
 
     # Disable error reporting
-    sudo sed -i "s/\\\$cfg\\['SendErrorReports'\\] = 'ask';/\\\$cfg\\['SendErrorReports'\\] = 'never';/" "$pma_conf"
+    sudo sed -i "s/\\\\\\$cfg\\['SendErrorReports'\\] = 'ask';/\\\\\\$cfg\\['SendErrorReports'\\] = 'never';/" "$pma_conf"
     print_ok "Disabled error reporting"
 
     # Extend login cookie to 4 hours
-    sudo sed -i "s/\\\$cfg\\['LoginCookieValidity'\\] = 1440;/\\\$cfg\\['LoginCookieValidity'\\] = 14400;/" "$pma_conf"
+    sudo sed -i "s/\\\\\\$cfg\\['LoginCookieValidity'\\] = 1440;/\\\\\\$cfg\\['LoginCookieValidity'\\] = 14400;/" "$pma_conf"
     print_ok "Extended login cookie to 4 hours"
 
     # Template cache directory
-    sudo sed -i "s/\\\$cfg\\['TempDir'\\] = '\\/tmp';/\\\$cfg\\['TempDir'\\] = '\\/usr\\/share\\/phpmyadmin\\/tmp';/" "$pma_conf"
+    sudo sed -i "s|\\$cfg\['TempDir'\] = '/tmp';|\\$cfg\['TempDir'\] = '/usr/share/phpmyadmin/tmp';|" "$pma_conf"
     print_ok "Set TempDir for template cache"
 
     # Create phpMyAdmin tmp directory (required for template cache)
     local pma_tmp="/usr/share/phpmyadmin/tmp"
-    sudo mkdir -p "$pma_tmp" 2>/dev/null || true
-    sudo chgrp www-data "$pma_tmp" 2>/dev/null || true
-    sudo chmod 775 "$pma_tmp" 2>/dev/null || true
+    sudo sh -c "mkdir -p '$pma_tmp' && chgrp www-data '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null || true
     print_ok "Created phpMyAdmin tmp directory"
 
     print_ok "phpMyAdmin configured"
@@ -1089,6 +1083,9 @@ cmd_install() {
 
     # Prerequisites
     check_prerequisites
+
+    # Establish sudo credential early (extends 5-minute timeout)
+    sudo -v 2>/dev/null || true
 
     # Create directories
     mkdir -p "$DOC_ROOT"
@@ -1117,10 +1114,10 @@ cmd_install() {
         print_info "Installing packages via Homebrew..."
         printf "\n"
 
-        [[ $APACHE == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 brew install httpd && APACHE=1
-        [[ $MARIADB == 0 ]] && { printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 brew install mariadb || true; }
-        [[ $PHP == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 brew install php && PHP=1
-        [[ $PHPMYADMIN == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 brew install phpmyadmin && PHPMYADMIN=1
+        [[ $APACHE == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew install httpd && APACHE=1
+        [[ $MARIADB == 0 ]] && { printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew install mariadb || true; }
+        [[ $PHP == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew install php && PHP=1
+        [[ $PHPMYADMIN == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew install phpmyadmin && PHPMYADMIN=1
 
         # Refresh detection
         check_brew_path
@@ -1149,14 +1146,14 @@ cmd_install() {
     configure_mariadb
     configure_phpmyadmin
 
-    # Restore config files from previous install (if any)
-    restore_configs
-
     # Check for database backup from previous install
     check_restore_data
 
     # PATH management
     manage_path
+
+    # Refresh sudo credential (brew installs may have taken 5+ minutes)
+    sudo -v 2>/dev/null || true
 
     # Start services
     printf "\n"
@@ -1278,103 +1275,6 @@ cmd_update() {
     read -r -p "Press Enter to return to the dashboard..."
 }
 
-# ---- Config Backup / Restore ---------------------------------
-backup_configs() {
-    local count=0
-    mkdir -p "$CONFIG_BACKUP_DIR"
-
-    if [[ $USE_APT == 1 ]]; then
-        # Linux (apt) config files
-        [[ -f /etc/apache2/apache2.conf ]] && { cp /etc/apache2/apache2.conf "${CONFIG_BACKUP_DIR}/apache2.conf" 2>/dev/null; ((count++)); }
-        [[ -f /etc/apache2/sites-available/000-default.conf ]] && { cp /etc/apache2/sites-available/000-default.conf "${CONFIG_BACKUP_DIR}/000-default.conf" 2>/dev/null; ((count++)); }
-
-        # php.ini: find Apache SAPI ini
-        local php_ver
-        php_ver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
-        local php_ini="/etc/php/${php_ver}/apache2/php.ini"
-        [[ -f "$php_ini" ]] && { cp "$php_ini" "${CONFIG_BACKUP_DIR}/php.ini" 2>/dev/null; ((count++)); }
-
-        # MariaDB config
-        [[ -f /etc/mysql/mariadb.conf.d/50-server.cnf ]] && { cp /etc/mysql/mariadb.conf.d/50-server.cnf "${CONFIG_BACKUP_DIR}/50-server.cnf" 2>/dev/null; ((count++)); }
-        [[ -f /etc/mysql/my.cnf ]] && { cp /etc/mysql/my.cnf "${CONFIG_BACKUP_DIR}/my.cnf" 2>/dev/null; ((count++)); }
-
-        # phpMyAdmin config
-        [[ -f /etc/phpmyadmin/config.inc.php ]] && { cp /etc/phpmyadmin/config.inc.php "${CONFIG_BACKUP_DIR}/config.inc.php" 2>/dev/null; ((count++)); }
-    else
-        # macOS (brew) config files
-        [[ -f "${BREW_PREFIX}/etc/httpd/httpd.conf" ]] && { cp "${BREW_PREFIX}/etc/httpd/httpd.conf" "${CONFIG_BACKUP_DIR}/httpd.conf" 2>/dev/null; ((count++)); }
-
-        # php.ini: find via PHP runtime
-        local php_ini
-        php_ini=$(php -r 'echo php_ini_loaded_file();' 2>/dev/null)
-        [[ -z "$php_ini" ]] && php_ini=$(php -i 2>/dev/null | grep "Loaded Configuration File" | awk -F' => ' '{print $2}')
-        [[ -n "$php_ini" && -f "$php_ini" ]] && { cp "$php_ini" "${CONFIG_BACKUP_DIR}/php.ini" 2>/dev/null; ((count++)); }
-
-        # MariaDB config
-        [[ -f "${BREW_PREFIX}/etc/my.cnf" ]] && { cp "${BREW_PREFIX}/etc/my.cnf" "${CONFIG_BACKUP_DIR}/my.cnf" 2>/dev/null; ((count++)); }
-
-        # phpMyAdmin config
-        [[ -f "${BREW_PREFIX}/etc/phpmyadmin.config.inc.php" ]] && { cp "${BREW_PREFIX}/etc/phpmyadmin.config.inc.php" "${CONFIG_BACKUP_DIR}/config.inc.php" 2>/dev/null; ((count++)); }
-    fi
-
-    if [[ $count -gt 0 ]]; then
-        print_ok "Backed up ${count} config file(s) to ${CONFIG_BACKUP_DIR}"
-    else
-        print_info "No config files to back up"
-        rmdir "$CONFIG_BACKUP_DIR" 2>/dev/null || true
-    fi
-}
-
-restore_configs() {
-    if [[ ! -d "$CONFIG_BACKUP_DIR" ]]; then
-        return
-    fi
-
-    local has_backup=0
-    for f in "$CONFIG_BACKUP_DIR"/*; do
-        [[ -f "$f" ]] && { has_backup=1; break; }
-    done
-
-    if [[ $has_backup == 0 ]]; then
-        rmdir "$CONFIG_BACKUP_DIR" 2>/dev/null || true
-        return
-    fi
-
-    print_info "Restoring configuration files from backup..."
-
-    if [[ $USE_APT == 1 ]]; then
-        [[ -f "${CONFIG_BACKUP_DIR}/apache2.conf" ]] && { sudo cp "${CONFIG_BACKUP_DIR}/apache2.conf" /etc/apache2/apache2.conf 2>/dev/null; print_ok "Restored: apache2.conf"; }
-        [[ -f "${CONFIG_BACKUP_DIR}/000-default.conf" ]] && { sudo cp "${CONFIG_BACKUP_DIR}/000-default.conf" /etc/apache2/sites-available/000-default.conf 2>/dev/null; print_ok "Restored: 000-default.conf"; }
-
-        [[ -f "${CONFIG_BACKUP_DIR}/php.ini" ]] && {
-            local php_ver
-            php_ver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
-            [[ -n "$php_ver" ]] && sudo cp "${CONFIG_BACKUP_DIR}/php.ini" "/etc/php/${php_ver}/apache2/php.ini" 2>/dev/null && print_ok "Restored: php.ini"
-        }
-
-        [[ -f "${CONFIG_BACKUP_DIR}/50-server.cnf" ]] && { sudo cp "${CONFIG_BACKUP_DIR}/50-server.cnf" /etc/mysql/mariadb.conf.d/50-server.cnf 2>/dev/null; print_ok "Restored: 50-server.cnf"; }
-        [[ -f "${CONFIG_BACKUP_DIR}/my.cnf" ]] && { sudo cp "${CONFIG_BACKUP_DIR}/my.cnf" /etc/mysql/my.cnf 2>/dev/null; print_ok "Restored: my.cnf"; }
-        [[ -f "${CONFIG_BACKUP_DIR}/config.inc.php" ]] && { sudo cp "${CONFIG_BACKUP_DIR}/config.inc.php" /etc/phpmyadmin/config.inc.php 2>/dev/null; print_ok "Restored: config.inc.php"; }
-    else
-        [[ -f "${CONFIG_BACKUP_DIR}/httpd.conf" ]] && { cp "${CONFIG_BACKUP_DIR}/httpd.conf" "${BREW_PREFIX}/etc/httpd/httpd.conf" 2>/dev/null; print_ok "Restored: httpd.conf"; }
-
-        [[ -f "${CONFIG_BACKUP_DIR}/php.ini" ]] && {
-            local php_ini
-            php_ini=$(php -r 'echo php_ini_loaded_file();' 2>/dev/null)
-            [[ -z "$php_ini" ]] && php_ini=$(php -i 2>/dev/null | grep "Loaded Configuration File" | awk -F' => ' '{print $2}')
-            [[ -n "$php_ini" ]] && cp "${CONFIG_BACKUP_DIR}/php.ini" "$php_ini" 2>/dev/null && print_ok "Restored: php.ini"
-        }
-
-        [[ -f "${CONFIG_BACKUP_DIR}/my.cnf" ]] && { cp "${CONFIG_BACKUP_DIR}/my.cnf" "${BREW_PREFIX}/etc/my.cnf" 2>/dev/null; print_ok "Restored: my.cnf"; }
-
-        [[ -f "${CONFIG_BACKUP_DIR}/config.inc.php" ]] && { cp "${CONFIG_BACKUP_DIR}/config.inc.php" "${BREW_PREFIX}/etc/phpmyadmin.config.inc.php" 2>/dev/null; print_ok "Restored: config.inc.php"; }
-    fi
-
-    # Clean up backup directory after restore
-    rm -rf "$CONFIG_BACKUP_DIR" 2>/dev/null || true
-    print_ok "Config backup removed after restore"
-}
-
 # ---- Delete Command -----------------------------------------
 cmd_delete() {
     if [[ $STACK == 0 ]]; then
@@ -1389,10 +1289,9 @@ cmd_delete() {
     printf "${RED}- Apache, MariaDB, PHP, and phpMyAdmin.${RESET}\n"
     printf "${RED}- Services, config files, and logs.${RESET}\n\n"
     printf "${GREEN}THIS WILL NOT BE DELETED:${RESET}\n"
-    printf "${GREEN}- Your website files in %s${RESET}\n" "$DOC_ROOT"
-    printf "${GREEN}- Your MariaDB databases (backed up to %s)${RESET}\n" "$DATA_BACKUP_DIR"
-    printf "${GREEN}- Your config files (backed up to %s)${RESET}\n" "$CONFIG_BACKUP_DIR"
-    printf "\n"
+    printf "${GREEN}- Your website files in %s${RESET}\\n" "$DOC_ROOT"
+    printf "${GREEN}- Your MariaDB databases (backed up to %s)${RESET}\\n" "$DATA_BACKUP_DIR"
+    printf "\\n"
     printf "${BOLD}Type DELETE to confirm:${RESET} "
     read -r confirm_delete
 
@@ -1409,9 +1308,6 @@ cmd_delete() {
     # Stop services
     stop_services
     print_ok "Stopped all services"
-
-    # Backup config files
-    backup_configs
 
     # Backup MariaDB data
     local mariadb_data
@@ -1459,13 +1355,6 @@ cmd_delete() {
         rm -rf "$mariadb_data" 2>/dev/null || true
         print_ok "Removed MariaDB data directory"
 
-        # Remove leftover brew config files in /usr/local/etc
-        rm -f "${BREW_PREFIX}/etc/my.cnf" 2>/dev/null || true
-        rm -f "${BREW_PREFIX}/etc/phpmyadmin.config.inc.php" 2>/dev/null || true
-        rm -rf "${BREW_PREFIX}/etc/httpd" 2>/dev/null || true
-        rm -rf "${BREW_PREFIX}/etc/php" 2>/dev/null || true
-        print_ok "Removed leftover brew configuration files"
-
         # Remove stale launchagent plists
         rm -f "${HOME}/Library/LaunchAgents/homebrew.mxcl.*.plist" 2>/dev/null || true
         print_ok "Removed stale LaunchAgent plists"
@@ -1486,7 +1375,6 @@ cmd_delete() {
     print_ok "DELETION COMPLETE!"
     printf "${GREEN}Your website files are preserved in: %s${RESET}\n" "$DOC_ROOT"
     printf "${GREEN}Your databases are preserved in:   %s${RESET}\n" "$DATA_BACKUP_DIR"
-    printf "${GREEN}Your config files are preserved in: %s${RESET}\n" "$CONFIG_BACKUP_DIR"
     printf "\n"
     read -r -p "Press Enter to continue..."
 }
