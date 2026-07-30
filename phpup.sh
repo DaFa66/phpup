@@ -20,11 +20,11 @@ DATA_BACKUP_DIR="${BASE_DIR}/data_backup"
 
 # ---- Colour Constants ---------------------------------------
 ESC='\033'
-RED="${ESC}[91m"
-GREEN="${ESC}[92m"
-YELLOW="${ESC}[93m"
-BLUE="${ESC}[94m"
-CYAN="${ESC}[96m"
+RED="${ESC}[31m"
+GREEN="${ESC}[32m"
+YELLOW="${ESC}[33m"
+BLUE="${ESC}[34m"
+CYAN="${ESC}[36m"
 BOLD="${ESC}[1m"
 UNDERLINE="${ESC}[4m"
 RESET="${ESC}[0m"
@@ -494,7 +494,7 @@ start_services() {
         [[ $PHP == 1 ]] && sudo systemctl start php*-fpm 2>/dev/null
     else
         if [[ $APACHE == 1 ]]; then
-            sudo "${BREW_PREFIX}/bin/apachectl" restart 2>/dev/null
+            sudo "${BREW_PREFIX}/bin/apachectl" restart >/dev/null 2>&1
             sleep 1
             if pgrep -x httpd &>/dev/null; then
                 print_ok "Apache started on port 80"
@@ -503,8 +503,24 @@ start_services() {
                 sudo "${BREW_PREFIX}/bin/apachectl" configtest 2>&1 | tail -3
             fi
         fi
-        [[ $MARIADB == 1 ]] && brew services start mariadb 2>/dev/null
-        [[ $PHP == 1 ]] && brew services start php 2>/dev/null
+
+        if [[ $MARIADB == 1 ]]; then
+            brew services start mariadb 2>/dev/null
+            for ((_i=0; _i<5; _i++)); do
+                pgrep -x mariadbd &>/dev/null && { print_ok "MariaDB started"; break; }
+                sleep 1
+            done
+            pgrep -x mariadbd &>/dev/null || print_err "MariaDB failed to start — check ${LOGS_DIR}/mariadb_error.log"
+        fi
+
+        if [[ $PHP == 1 ]]; then
+            brew services start php 2>/dev/null
+            for ((_i=0; _i<5; _i++)); do
+                pgrep -f "(^|/)php-fpm" &>/dev/null && { print_ok "PHP-FPM started"; break; }
+                sleep 1
+            done
+            pgrep -f "(^|/)php-fpm" &>/dev/null || print_err "PHP-FPM failed to start — check ${LOGS_DIR}/php_errors.log"
+        fi
     fi
     sleep 2
     print_ok "Services started"
@@ -518,10 +534,17 @@ stop_services() {
         [[ $PHP == 1 ]] && sudo systemctl stop php*-fpm 2>/dev/null
     else
         # Kill any httpd process, then stop the launchd service to prevent restart
-        [[ $APACHE == 1 ]] && sudo "${BREW_PREFIX}/bin/apachectl" stop 2>/dev/null
-        [[ $APACHE == 1 ]] && brew services stop httpd 2>/dev/null
-        [[ $MARIADB == 1 ]] && brew services stop mariadb 2>/dev/null
-        [[ $PHP == 1 ]] && brew services stop php 2>/dev/null
+        if [[ $APACHE == 1 ]] && is_service_running apache; then
+            sudo "${BREW_PREFIX}/bin/apachectl" stop >/dev/null 2>&1
+            sleep 1
+            if ! pgrep -x httpd &>/dev/null; then
+                print_ok "Apache stopped"
+            fi
+        fi
+        [[ $MARIADB == 1 ]] && brew services stop mariadb
+        [[ $MARIADB == 1 ]] && pkill -x mariadbd 2>/dev/null || true
+        [[ $PHP == 1 ]] && brew services stop php
+        [[ $PHP == 1 ]] && pkill -f "(^|/)php-fpm" 2>/dev/null || true
     fi
     sleep 3
     print_ok "Services stopped"
@@ -883,7 +906,7 @@ configure_mariadb() {
     sleep 3
 
     # Set blank root password (Homebrew MariaDB often has no password by default)
-    if mysql -u root -e "SELECT 1" &>/dev/null 2>&1; then
+    if mysql -u root -h 127.0.0.1 -e "SELECT 1" &>/dev/null 2>&1; then
         print_ok "MariaDB root access confirmed (no password)"
     else
         # Try to set blank password via safe mode
@@ -1207,12 +1230,12 @@ cmd_update() {
         configure_phpmyadmin
         start_services
     else
-        brew update
+        brew update &>/dev/null
         local outdated
         outdated=$(brew outdated --formula httpd mariadb php phpmyadmin 2>/dev/null)
 
         if [[ -z "$outdated" ]]; then
-            print_ok "All components are up to date"
+            print_ok "All stack components are up to date"
             printf "\n"
             read -r -p "Press Enter to continue..."
             return
@@ -1303,8 +1326,31 @@ cmd_delete() {
             mv "$DATA_BACKUP_DIR" "$archived_backup"
             print_ok "Archived existing backup to ${archived_backup}"
         fi
-        sudo cp -r "$mariadb_data" "$DATA_BACKUP_DIR" 2>/dev/null || cp -r "$mariadb_data" "$DATA_BACKUP_DIR"
-        print_ok "Backed up MariaDB data to ${DATA_BACKUP_DIR}"
+
+        # Only back up user databases — skip system/internal dirs
+        mkdir -p "$DATA_BACKUP_DIR"
+        local backed_up=0
+        for dbdir in "$mariadb_data"/*/; do
+            [[ -d "$dbdir" ]] || continue
+            local dbname
+            dbname=$(basename "$dbdir")
+            case "$dbname" in
+                mysql|performance_schema|sys|information_schema|test|[#]*)
+                    continue
+                    ;;
+                *)
+                    cp -r "$dbdir" "$DATA_BACKUP_DIR/" 2>/dev/null || true
+                    ((backed_up++))
+                    ;;
+            esac
+        done
+
+        if [[ $backed_up -gt 0 ]]; then
+            print_ok "Backed up ${backed_up} database(s) to ${DATA_BACKUP_DIR}"
+        else
+            print_info "No user databases to back up"
+            rmdir "$DATA_BACKUP_DIR" 2>/dev/null || true
+        fi
     else
         print_info "No MariaDB data to back up"
     fi
@@ -1541,6 +1587,7 @@ main() {
                     read -r -p "Press Enter to continue..."
                 else
                     toggle_services
+                    detect_all
                     printf "\n"
                     read -r -p "Press Enter to continue..."
                 fi
