@@ -5,8 +5,8 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-07-26
-#  Version: 1.1.1
+#  Date: 2026-07-30
+#  Version: 1.2.0
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -17,6 +17,7 @@ LOGS_DIR="${BASE_DIR}/logs"
 CONFIG_DIR="${HOME}/.config/phpup"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 DATA_BACKUP_DIR="${BASE_DIR}/data_backup"
+CONFIG_BACKUP_DIR="${BASE_DIR}/config_backup"
 
 # ---- Colour Constants ---------------------------------------
 ESC='\033'
@@ -1148,6 +1149,9 @@ cmd_install() {
     configure_mariadb
     configure_phpmyadmin
 
+    # Restore config files from previous install (if any)
+    restore_configs
+
     # Check for database backup from previous install
     check_restore_data
 
@@ -1274,6 +1278,103 @@ cmd_update() {
     read -r -p "Press Enter to return to the dashboard..."
 }
 
+# ---- Config Backup / Restore ---------------------------------
+backup_configs() {
+    local count=0
+    mkdir -p "$CONFIG_BACKUP_DIR"
+
+    if [[ $USE_APT == 1 ]]; then
+        # Linux (apt) config files
+        [[ -f /etc/apache2/apache2.conf ]] && { cp /etc/apache2/apache2.conf "${CONFIG_BACKUP_DIR}/apache2.conf" 2>/dev/null; ((count++)); }
+        [[ -f /etc/apache2/sites-available/000-default.conf ]] && { cp /etc/apache2/sites-available/000-default.conf "${CONFIG_BACKUP_DIR}/000-default.conf" 2>/dev/null; ((count++)); }
+
+        # php.ini: find Apache SAPI ini
+        local php_ver
+        php_ver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+        local php_ini="/etc/php/${php_ver}/apache2/php.ini"
+        [[ -f "$php_ini" ]] && { cp "$php_ini" "${CONFIG_BACKUP_DIR}/php.ini" 2>/dev/null; ((count++)); }
+
+        # MariaDB config
+        [[ -f /etc/mysql/mariadb.conf.d/50-server.cnf ]] && { cp /etc/mysql/mariadb.conf.d/50-server.cnf "${CONFIG_BACKUP_DIR}/50-server.cnf" 2>/dev/null; ((count++)); }
+        [[ -f /etc/mysql/my.cnf ]] && { cp /etc/mysql/my.cnf "${CONFIG_BACKUP_DIR}/my.cnf" 2>/dev/null; ((count++)); }
+
+        # phpMyAdmin config
+        [[ -f /etc/phpmyadmin/config.inc.php ]] && { cp /etc/phpmyadmin/config.inc.php "${CONFIG_BACKUP_DIR}/config.inc.php" 2>/dev/null; ((count++)); }
+    else
+        # macOS (brew) config files
+        [[ -f "${BREW_PREFIX}/etc/httpd/httpd.conf" ]] && { cp "${BREW_PREFIX}/etc/httpd/httpd.conf" "${CONFIG_BACKUP_DIR}/httpd.conf" 2>/dev/null; ((count++)); }
+
+        # php.ini: find via PHP runtime
+        local php_ini
+        php_ini=$(php -r 'echo php_ini_loaded_file();' 2>/dev/null)
+        [[ -z "$php_ini" ]] && php_ini=$(php -i 2>/dev/null | grep "Loaded Configuration File" | awk -F' => ' '{print $2}')
+        [[ -n "$php_ini" && -f "$php_ini" ]] && { cp "$php_ini" "${CONFIG_BACKUP_DIR}/php.ini" 2>/dev/null; ((count++)); }
+
+        # MariaDB config
+        [[ -f "${BREW_PREFIX}/etc/my.cnf" ]] && { cp "${BREW_PREFIX}/etc/my.cnf" "${CONFIG_BACKUP_DIR}/my.cnf" 2>/dev/null; ((count++)); }
+
+        # phpMyAdmin config
+        [[ -f "${BREW_PREFIX}/etc/phpmyadmin.config.inc.php" ]] && { cp "${BREW_PREFIX}/etc/phpmyadmin.config.inc.php" "${CONFIG_BACKUP_DIR}/config.inc.php" 2>/dev/null; ((count++)); }
+    fi
+
+    if [[ $count -gt 0 ]]; then
+        print_ok "Backed up ${count} config file(s) to ${CONFIG_BACKUP_DIR}"
+    else
+        print_info "No config files to back up"
+        rmdir "$CONFIG_BACKUP_DIR" 2>/dev/null || true
+    fi
+}
+
+restore_configs() {
+    if [[ ! -d "$CONFIG_BACKUP_DIR" ]]; then
+        return
+    fi
+
+    local has_backup=0
+    for f in "$CONFIG_BACKUP_DIR"/*; do
+        [[ -f "$f" ]] && { has_backup=1; break; }
+    done
+
+    if [[ $has_backup == 0 ]]; then
+        rmdir "$CONFIG_BACKUP_DIR" 2>/dev/null || true
+        return
+    fi
+
+    print_info "Restoring configuration files from backup..."
+
+    if [[ $USE_APT == 1 ]]; then
+        [[ -f "${CONFIG_BACKUP_DIR}/apache2.conf" ]] && { sudo cp "${CONFIG_BACKUP_DIR}/apache2.conf" /etc/apache2/apache2.conf 2>/dev/null; print_ok "Restored: apache2.conf"; }
+        [[ -f "${CONFIG_BACKUP_DIR}/000-default.conf" ]] && { sudo cp "${CONFIG_BACKUP_DIR}/000-default.conf" /etc/apache2/sites-available/000-default.conf 2>/dev/null; print_ok "Restored: 000-default.conf"; }
+
+        [[ -f "${CONFIG_BACKUP_DIR}/php.ini" ]] && {
+            local php_ver
+            php_ver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+            [[ -n "$php_ver" ]] && sudo cp "${CONFIG_BACKUP_DIR}/php.ini" "/etc/php/${php_ver}/apache2/php.ini" 2>/dev/null && print_ok "Restored: php.ini"
+        }
+
+        [[ -f "${CONFIG_BACKUP_DIR}/50-server.cnf" ]] && { sudo cp "${CONFIG_BACKUP_DIR}/50-server.cnf" /etc/mysql/mariadb.conf.d/50-server.cnf 2>/dev/null; print_ok "Restored: 50-server.cnf"; }
+        [[ -f "${CONFIG_BACKUP_DIR}/my.cnf" ]] && { sudo cp "${CONFIG_BACKUP_DIR}/my.cnf" /etc/mysql/my.cnf 2>/dev/null; print_ok "Restored: my.cnf"; }
+        [[ -f "${CONFIG_BACKUP_DIR}/config.inc.php" ]] && { sudo cp "${CONFIG_BACKUP_DIR}/config.inc.php" /etc/phpmyadmin/config.inc.php 2>/dev/null; print_ok "Restored: config.inc.php"; }
+    else
+        [[ -f "${CONFIG_BACKUP_DIR}/httpd.conf" ]] && { cp "${CONFIG_BACKUP_DIR}/httpd.conf" "${BREW_PREFIX}/etc/httpd/httpd.conf" 2>/dev/null; print_ok "Restored: httpd.conf"; }
+
+        [[ -f "${CONFIG_BACKUP_DIR}/php.ini" ]] && {
+            local php_ini
+            php_ini=$(php -r 'echo php_ini_loaded_file();' 2>/dev/null)
+            [[ -z "$php_ini" ]] && php_ini=$(php -i 2>/dev/null | grep "Loaded Configuration File" | awk -F' => ' '{print $2}')
+            [[ -n "$php_ini" ]] && cp "${CONFIG_BACKUP_DIR}/php.ini" "$php_ini" 2>/dev/null && print_ok "Restored: php.ini"
+        }
+
+        [[ -f "${CONFIG_BACKUP_DIR}/my.cnf" ]] && { cp "${CONFIG_BACKUP_DIR}/my.cnf" "${BREW_PREFIX}/etc/my.cnf" 2>/dev/null; print_ok "Restored: my.cnf"; }
+
+        [[ -f "${CONFIG_BACKUP_DIR}/config.inc.php" ]] && { cp "${CONFIG_BACKUP_DIR}/config.inc.php" "${BREW_PREFIX}/etc/phpmyadmin.config.inc.php" 2>/dev/null; print_ok "Restored: config.inc.php"; }
+    fi
+
+    # Clean up backup directory after restore
+    rm -rf "$CONFIG_BACKUP_DIR" 2>/dev/null || true
+    print_ok "Config backup removed after restore"
+}
+
 # ---- Delete Command -----------------------------------------
 cmd_delete() {
     if [[ $STACK == 0 ]]; then
@@ -1290,8 +1391,8 @@ cmd_delete() {
     printf "${GREEN}THIS WILL NOT BE DELETED:${RESET}\n"
     printf "${GREEN}- Your website files in %s${RESET}\n" "$DOC_ROOT"
     printf "${GREEN}- Your MariaDB databases (backed up to %s)${RESET}\n" "$DATA_BACKUP_DIR"
+    printf "${GREEN}- Your config files (backed up to %s)${RESET}\n" "$CONFIG_BACKUP_DIR"
     printf "\n"
-
     printf "${BOLD}Type DELETE to confirm:${RESET} "
     read -r confirm_delete
 
@@ -1308,6 +1409,9 @@ cmd_delete() {
     # Stop services
     stop_services
     print_ok "Stopped all services"
+
+    # Backup config files
+    backup_configs
 
     # Backup MariaDB data
     local mariadb_data
@@ -1327,30 +1431,9 @@ cmd_delete() {
             print_ok "Archived existing backup to ${archived_backup}"
         fi
 
-        # Only back up user databases — skip system/internal dirs
-        mkdir -p "$DATA_BACKUP_DIR"
-        local backed_up=0
-        for dbdir in "$mariadb_data"/*/; do
-            [[ -d "$dbdir" ]] || continue
-            local dbname
-            dbname=$(basename "$dbdir")
-            case "$dbname" in
-                mysql|performance_schema|sys|information_schema|test|[#]*)
-                    continue
-                    ;;
-                *)
-                    cp -r "$dbdir" "$DATA_BACKUP_DIR/" 2>/dev/null || true
-                    ((backed_up++))
-                    ;;
-            esac
-        done
-
-        if [[ $backed_up -gt 0 ]]; then
-            print_ok "Backed up ${backed_up} database(s) to ${DATA_BACKUP_DIR}"
-        else
-            print_info "No user databases to back up"
-            rmdir "$DATA_BACKUP_DIR" 2>/dev/null || true
-        fi
+        # Copy entire data directory for full restore on reinstall
+        cp -r "$mariadb_data" "$DATA_BACKUP_DIR" 2>/dev/null || true
+        print_ok "Backed up MariaDB data to ${DATA_BACKUP_DIR}"
     else
         print_info "No MariaDB data to back up"
     fi
@@ -1369,9 +1452,28 @@ cmd_delete() {
     fi
     print_ok "Uninstalled packages"
 
-    # Remove remaining config files
+    # Clean up brew leftovers that survive uninstall
+    if [[ $USE_APT == 0 ]]; then
+        # Remove MariaDB data dir (brew uninstall leaves it behind)
+        local mariadb_data="${BREW_PREFIX}/var/mysql"
+        rm -rf "$mariadb_data" 2>/dev/null || true
+        print_ok "Removed MariaDB data directory"
+
+        # Remove leftover brew config files in /usr/local/etc
+        rm -f "${BREW_PREFIX}/etc/my.cnf" 2>/dev/null || true
+        rm -f "${BREW_PREFIX}/etc/phpmyadmin.config.inc.php" 2>/dev/null || true
+        rm -rf "${BREW_PREFIX}/etc/httpd" 2>/dev/null || true
+        rm -rf "${BREW_PREFIX}/etc/php" 2>/dev/null || true
+        print_ok "Removed leftover brew configuration files"
+
+        # Remove stale launchagent plists
+        rm -f "${HOME}/Library/LaunchAgents/homebrew.mxcl.*.plist" 2>/dev/null || true
+        print_ok "Removed stale LaunchAgent plists"
+    fi
+
+    # Remove remaining logs
     rm -rf "$LOGS_DIR" 2>/dev/null || true
-    print_ok "Removed config files and logs"
+    print_ok "Removed logs"
 
     # Clear config
     clear_config
@@ -1384,6 +1486,7 @@ cmd_delete() {
     print_ok "DELETION COMPLETE!"
     printf "${GREEN}Your website files are preserved in: %s${RESET}\n" "$DOC_ROOT"
     printf "${GREEN}Your databases are preserved in:   %s${RESET}\n" "$DATA_BACKUP_DIR"
+    printf "${GREEN}Your config files are preserved in: %s${RESET}\n" "$CONFIG_BACKUP_DIR"
     printf "\n"
     read -r -p "Press Enter to continue..."
 }
