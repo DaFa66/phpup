@@ -352,16 +352,13 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 | **1.1.0** | 2026-07-25 | PHP upload limits |
 | **1.0.0** | 2026-07-19 | Initial phpup fork — native apt, 19 fixes |
 
-[2.2.2]: https://github.com/DaFa66/phpup/releases/tag/v2.2.2
-[2.2.1]: https://github.com/DaFa66/phpup/releases/tag/v2.2.1
-[2.2.0]: https://github.com/DaFa66/phpup/releases/tag/v2.2.0
+[2.2.2]: https://github.com/DaFa66/phpup/releases/tag/v2.2.2+0.4.8-beta
+[2.2.1]: https://github.com/DaFa66/phpup/releases/tag/v2.2.1+1.1.1
+[2.2.0]: https://github.com/DaFa66/phpup/releases/tag/v2.2.0+1.1.0
 [2.1.1]: https://github.com/DaFa66/phpup/releases/tag/v2.1.1
 [2.1.0]: https://github.com/DaFa66/phpup/releases/tag/v2.1.0
 [2.0.0]: https://github.com/DaFa66/phpup/releases/tag/v2.0.0
 [1.0.6]: https://github.com/DaFa66/phpup/releases/tag/v1.0.6
 [1.0.5]: https://github.com/DaFa66/phpup/releases/tag/v1.0.5
-[1.0.4]: https://github.com/DaFa66/phpup/releases/tag/v1.0.4
-[1.0.3]: https://github.com/DaFa66/phpup/releases/tag/v1.0.3
 [1.0.2]: https://github.com/DaFa66/phpup/releases/tag/v1.0.2
-[1.0.1]: https://github.com/DaFa66/phpup/releases/tag/v1.0.1
-[1.0.0]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0
+[1.0.0]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0-win
