@@ -308,9 +308,9 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 ## Pre-fork History — getphp.sh (Mac)
 
-*The original `getphp.sh` was created by Balázs Szabó for the [getphp.org](https://getphp.org) project. phpup's Mac/Linux script began as a fork of this work.*
+*The original `getphp.sh` was created by Balázs Zatik for the [getphp.org](https://getphp.org) project. phpup's Mac/Linux script began as a fork of this work.*
 
-### macOS (getphp.sh — Balázs Szabó, 2026-03-26 to 2026-07-19)
+### macOS (getphp.sh — Balázs Zatik, 2026-03-26 to 2026-07-19)
 
 - Initial ZAMPP Dashboard (v1.0.0, 2026-03-26)
 - Homebrew-based Apache, PHP, MariaDB, phpMyAdmin install
