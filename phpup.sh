@@ -5,8 +5,8 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-07-30
-#  Version: 0.4.8-beta
+#  Date: 2026-08-01
+#  Version: 0.5.11-beta
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -274,7 +274,7 @@ check_prerequisites() {
         if [[ $need_apt == 1 ]]; then
             printf "\n"
             print_warn "Installing Linux prerequisites (build-essential, procps, file, git, curl)..."
-            sudo apt update -qq && sudo apt install -y build-essential procps file git curl
+            sudo apt update -qq 2>&1 | sed '/can be upgraded/d' && sudo apt install -y build-essential procps file git curl
             print_ok "Linux prerequisites installed"
         fi
     fi
@@ -436,21 +436,30 @@ show_dashboard() {
 
     printf "Apache ${CYAN}------->${RESET} "
     if [[ $APACHE == 1 ]]; then
-        is_service_running apache && printf "${GREEN}Running${RESET}\n" || printf "${GREEN}Stopped${RESET}\n"
+        is_service_running apache && printf "${GREEN}Running${RESET}\n" || printf "${RED}Stopped${RESET}\n"
     else
         printf "${RED}Not available${RESET}\n"
     fi
 
     printf "MariaDB ${CYAN}------>${RESET} "
     if [[ $MARIADB == 1 ]]; then
-        is_service_running mariadb && printf "${GREEN}Running${RESET}\n" || printf "${GREEN}Stopped${RESET}\n"
+        is_service_running mariadb && printf "${GREEN}Running${RESET}\n" || printf "${RED}Stopped${RESET}\n"
     else
         printf "${RED}Not available${RESET}\n"
     fi
 
     printf "PHP-FPM ${CYAN}------>${RESET} "
     if [[ $PHP == 1 ]]; then
-        is_service_running php && printf "${GREEN}Running${RESET}\n" || printf "${GREEN}Stopped${RESET}\n"
+        if [[ $USE_APT == 1 ]]; then
+            # apt uses mod_php (libapache2-mod-php) — check fpm only if installed
+            if dpkg -l 'php*-fpm' 2>/dev/null | grep -q '^ii'; then
+                is_service_running php && printf "${GREEN}Running${RESET}\n" || printf "${RED}Stopped${RESET}\n"
+            else
+                is_service_running apache && printf "${GREEN}Active (mod_php)${RESET}\n" || printf "${RED}Stopped${RESET}\n"
+            fi
+        else
+            is_service_running php && printf "${GREEN}Running${RESET}\n" || printf "${RED}Stopped${RESET}\n"
+        fi
     else
         printf "${RED}Not available${RESET}\n"
     fi
@@ -687,6 +696,12 @@ configure_apache_apt() {
         sudo sed -i "s@DocumentRoot /var/www/html@DocumentRoot ${DOC_ROOT}@" "$site_conf"
         print_ok "Set DocumentRoot to ${DOC_ROOT}"
 
+        # Add Directory grant for new doc root (default Apache policy denies non-/var/www paths)
+        if ! grep -q "<Directory ${DOC_ROOT}>" "$site_conf"; then
+            sudo sed -i "s|</VirtualHost>|\t<Directory ${DOC_ROOT}>\n\t\tOptions Indexes FollowSymLinks\n\t\tAllowOverride All\n\t\tRequire all granted\n\t</Directory>\n\n</VirtualHost>|" "$site_conf"
+            print_ok "Added Directory grant for ${DOC_ROOT}"
+        fi
+
         # AllowOverride All for .htaccess
         sudo sed -i "s/AllowOverride None/AllowOverride All/g" "$site_conf"
         print_ok "Set AllowOverride All"
@@ -713,6 +728,9 @@ configure_apache_apt() {
     sudo chgrp -R www-data "$DOC_ROOT" 2>/dev/null || true
     sudo chmod -R 775 "$DOC_ROOT" 2>/dev/null || true
     print_ok "Set ${DOC_ROOT} group to www-data (775)"
+
+    # Ensure Apache can traverse the home directory (default 700 blocks www-data)
+    chmod o+x "$HOME" 2>/dev/null || true
 
     # Reload Apache to apply changes
     sudo systemctl reload apache2 2>/dev/null || sudo systemctl start apache2 2>/dev/null
@@ -976,10 +994,9 @@ configure_mariadb_apt() {
     sudo systemctl start mariadb 2>/dev/null || true
     sleep 2
 
-    # Set blank root password via Unix socket (default on Debian/Ubuntu)
+    # Set blank root password for TCP connections (switch from unix_socket auth)
     if sudo mysql -u root -e "SELECT 1" &>/dev/null 2>&1; then
-        # Set blank password for TCP connections
-        sudo mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
+        sudo mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING ''; FLUSH PRIVILEGES;" 2>/dev/null || true
         print_ok "MariaDB root access confirmed (no password via socket)"
     else
         print_warn "Could not connect to MariaDB as root — you may need to set a password manually"
@@ -1126,40 +1143,43 @@ configure_phpmyadmin_apt() {
         return
     fi
 
-    if [[ ! -f "${pma_conf}.phpup.bak" ]]; then
-        sudo cp "$pma_conf" "${pma_conf}.phpup.bak"
-    fi
-
     print_info "Configuring phpMyAdmin (apt)..."
 
-    # Blowfish secret
-    sudo sed -i "s/\\$cfg\\['blowfish_secret'\\] = '';/\\$cfg\\['blowfish_secret'\\] = '12345678901234567890123456789012';/" "$pma_conf"
-    print_ok "Set blowfish secret"
-
-    # Allow passwordless root login
-    sudo sed -i "s/\\\\\\$cfg\\['Servers'\\]\\\\[\\\\\\$i\\]\\['AllowNoPassword'\\] = false;/\\\\\\$cfg\\['Servers'\\]\\\\[\\\\\\$i\\]\\['AllowNoPassword'\\] = true;/" "$pma_conf"
-    print_ok "Enabled passwordless root login"
-
-    # Disable version check (speeds up login)
-    sudo sed -i "s/\\\\\\$cfg\\['VersionCheck'\\] = true;/\\\\\\$cfg\\['VersionCheck'\\] = false;/" "$pma_conf"
-    print_ok "Disabled version check"
-
-    # Disable error reporting
-    sudo sed -i "s/\\\\\\$cfg\\['SendErrorReports'\\] = 'ask';/\\\\\\$cfg\\['SendErrorReports'\\] = 'never';/" "$pma_conf"
-    print_ok "Disabled error reporting"
-
-    # Extend login cookie to 4 hours
-    sudo sed -i "s/\\\\\\$cfg\\['LoginCookieValidity'\\] = 1440;/\\\\\\$cfg\\['LoginCookieValidity'\\] = 14400;/" "$pma_conf"
-    print_ok "Extended login cookie to 4 hours"
-
-    # Template cache directory
-    sudo sed -i "s|\\$cfg\['TempDir'\] = '/tmp';|\\$cfg\['TempDir'\] = '/usr/share/phpmyadmin/tmp';|" "$pma_conf"
-    print_ok "Set TempDir for template cache"
+    # Use conf.d override — works across all phpMyAdmin versions without fragile sed
+    local pma_override="/etc/phpmyadmin/conf.d/phpup.php"
+    sudo mkdir -p /etc/phpmyadmin/conf.d 2>/dev/null || true
+    sudo tee "$pma_override" > /dev/null <<'PMACONF'
+<?php
+// phpup — phpMyAdmin configuration overrides
+foreach (array_keys($cfg['Servers']) as $server) {
+    $cfg['Servers'][$server]['AllowNoPassword'] = true;
+}
+$cfg['VersionCheck'] = false;
+$cfg['SendErrorReports'] = 'never';
+$cfg['LoginCookieValidity'] = 14400;
+$cfg['TempDir'] = '/usr/share/phpmyadmin/tmp';
+PMACONF
+    print_ok "Applied phpMyAdmin overrides (AllowNoPassword, performance, 4h cookie)"
 
     # Create phpMyAdmin tmp directory (required for template cache)
     local pma_tmp="/usr/share/phpmyadmin/tmp"
     sudo sh -c "mkdir -p '$pma_tmp' && chgrp www-data '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null || true
     print_ok "Created phpMyAdmin tmp directory"
+
+    # Ensure Apache alias is configured (apt package may skip this in noninteractive mode)
+    local pma_apache_conf="/etc/apache2/conf-available/phpmyadmin.conf"
+    if [[ ! -f "$pma_apache_conf" ]]; then
+        sudo tee "$pma_apache_conf" > /dev/null <<'PMACONF'
+Alias /phpmyadmin /usr/share/phpmyadmin
+<Directory /usr/share/phpmyadmin>
+    Options FollowSymLinks
+    DirectoryIndex index.php
+    Require all granted
+</Directory>
+PMACONF
+        print_ok "Created Apache phpMyAdmin alias"
+    fi
+    sudo a2enconf phpmyadmin 2>/dev/null || true
 
     print_ok "phpMyAdmin configured"
 }
@@ -1199,11 +1219,11 @@ cmd_install() {
         printf "\n"
         print_info "Installing packages via apt..."
         printf "\n"
-        sudo apt update -qq
-        [[ $APACHE == 0 ]] && sudo apt install -y apache2 && APACHE=1
-        [[ $MARIADB == 0 ]] && sudo apt install -y mariadb-server && MARIADB=1
-        [[ $PHP == 0 ]] && sudo apt install -y php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 php-sodium libapache2-mod-php && PHP=1
-        [[ $PHPMYADMIN == 0 ]] && sudo apt install -y phpmyadmin && PHPMYADMIN=1
+        sudo apt update -qq 2>&1 | sed '/can be upgraded/d'
+        [[ $APACHE == 0 ]] && sudo DEBIAN_FRONTEND=noninteractive apt install -y apache2 && APACHE=1
+        [[ $MARIADB == 0 ]] && sudo DEBIAN_FRONTEND=noninteractive apt install -y mariadb-server && MARIADB=1
+        [[ $PHP == 0 ]] && sudo DEBIAN_FRONTEND=noninteractive apt install -y php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php && PHP=1
+        [[ $PHPMYADMIN == 0 ]] && sudo DEBIAN_FRONTEND=noninteractive apt install -y phpmyadmin && PHPMYADMIN=1
 
         detect_all
     else
@@ -1297,7 +1317,7 @@ cmd_update() {
     # Check for updates
     print_info "Checking for updates..."
     if [[ $USE_APT == 1 ]]; then
-        sudo apt update -qq
+        sudo apt update -qq 2>&1 | sed '/can be upgraded/d'
         local outdated
         outdated=$(apt list --upgradable 2>/dev/null | grep -E '^(apache2|mariadb-server|php|phpmyadmin)/' || true)
 
@@ -1324,7 +1344,7 @@ cmd_update() {
         stop_services
         printf "\n"
         print_info "Upgrading packages via apt..."
-        sudo apt upgrade -y apache2 mariadb-server php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 php-sodium libapache2-mod-php phpmyadmin
+        sudo apt upgrade -y apache2 mariadb-server php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php phpmyadmin
         detect_all
         configure_apache
         configure_php
@@ -1436,7 +1456,7 @@ cmd_delete() {
 
     # Uninstall packages
     if [[ $USE_APT == 1 ]]; then
-        sudo apt remove -y apache2 mariadb-server php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 php-sodium libapache2-mod-php phpmyadmin 2>/dev/null || true
+        sudo apt remove -y apache2 mariadb-server php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php phpmyadmin 2>/dev/null || true
         sudo apt autoremove -y 2>/dev/null || true
     else
         brew uninstall httpd 2>/dev/null || true
@@ -1708,7 +1728,7 @@ main() {
                 ;;
             [qQ]|[qQ]uit)
                 printf "[${GREEN}  OK  ${RESET}] Goodbye!\n\n"
-                exit 0
+                return 0
                 ;;
             *)
                 print_err "Command not recognized."

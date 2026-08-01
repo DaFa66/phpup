@@ -9,6 +9,31 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 ---
 
+## [2.2.2] / [0.5.11-beta] — 2026-08-01
+
+### Linux (phpup.sh v0.5.11-beta)
+
+**Added**
+- Apache `<Directory>` grant for custom DocumentRoot (default Ubuntu policy denies non-`/var/www` paths)
+- phpMyAdmin Apache alias auto-creation (`/etc/apache2/conf-available/phpmyadmin.conf`)
+- phpMyAdmin conf.d override system (`/etc/phpmyadmin/conf.d/phpup.php`) — works across all versions without fragile sed
+- Home directory traversal fix (`chmod o+x "$HOME"`) — allows `www-data` to reach `~/phpup/www`
+- `DEBIAN_FRONTEND=noninteractive` on all apt install commands — suppresses debconf prompts (phpMyAdmin password popup)
+
+**Changed**
+- Linux platform status: 🧪 Untested → ✅ Stable (Ubuntu/WSL)
+- Service status colours: Running = Green, Stopped = Red, Not available = Red
+- PHP-FPM dashboard: now shows "Active (mod_php)" when using `libapache2-mod-php` (apt default)
+- Quit command uses `return` instead of `exit` — no longer closes the terminal when script is sourced
+
+**Fixed**
+- Removed non-existent `php-sodium` from apt package lists (sodium is built into PHP core)
+- MariaDB root auth plugin: switched from `unix_socket` to `mysql_native_password` for phpMyAdmin TCP login
+- phpMyAdmin `AllowNoPassword` now iterates all servers (was targeting stale `$i` index)
+- Suppressed apt "N packages can be upgraded" noise in update checks
+
+---
+
 ## [2.2.2] / [0.4.8-beta] — 2026-07-30
 
 ### Windows (phpup.ps1 v2.2.2)
