@@ -1,4 +1,4 @@
-# phpup — Power tools for local PHP development
+# phpup — Bare-metal PHP for local development
 
 > Install, update and manage complete PHP development environments from a single command.
 
