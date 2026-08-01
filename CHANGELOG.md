@@ -9,7 +9,7 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 ---
 
-## [2.2.2] / [0.5.11-beta] — 2026-08-01
+## 2.2.2 / [0.5.11-beta] — 2026-08-01
 
 ### Linux (phpup.sh v0.5.11-beta)
 
@@ -34,7 +34,7 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 ---
 
-## [2.2.2] / [0.4.8-beta] — 2026-07-30
+## 2.2.2 / [0.4.8-beta] — 2026-07-30
 
 ### Windows (phpup.ps1 v2.2.2)
 
@@ -379,7 +379,7 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 | **1.0.0** | 2026-07-19 | Initial phpup fork — native apt, 19 fixes |
 
 [0.5.11-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.5.11-beta
-[2.2.2]: https://github.com/DaFa66/phpup/releases/tag/v2.2.2+0.4.8-beta
+[0.4.8-beta]: https://github.com/DaFa66/phpup/releases/tag/v2.2.2+0.4.8-beta
 [2.2.1]: https://github.com/DaFa66/phpup/releases/tag/v2.2.1+1.1.1
 [2.2.0]: https://github.com/DaFa66/phpup/releases/tag/v2.2.0+1.1.0
 [2.1.1]: https://github.com/DaFa66/phpup/releases/tag/v2.1.1
