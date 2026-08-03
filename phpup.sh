@@ -5,8 +5,8 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-08-01
-#  Version: 0.5.11-beta
+#  Date: 2026-08-04
+#  Version: 0.6.2-beta
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -35,6 +35,7 @@ OS_TYPE="${OSTYPE}"
 
 if [[ "${OS_TYPE}" == "darwin"* ]]; then
     OS_NAME="macOS"
+    OS_DISTRO="macOS"
     OS_VERSION=$(sw_vers -productVersion 2>/dev/null || echo "unknown")
     OS_MAJOR=$(echo "$OS_VERSION" | cut -d. -f1)
     SHELL_PROFILE="${HOME}/.zshrc"
@@ -45,6 +46,12 @@ elif [[ "${OS_TYPE}" == "linux-gnu"* ]]; then
     if command -v lsb_release &>/dev/null; then
         OS_VERSION=$(lsb_release -rs 2>/dev/null || echo "unknown")
         OS_DISTRO=$(lsb_release -is 2>/dev/null || echo "Linux")
+    elif [[ -f /etc/os-release ]]; then
+        # lsb_release not installed on minimal Debian — parse os-release instead
+        OS_DISTRO=$(grep '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"' | sed 's/.*/\u&/')
+        OS_VERSION=$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+        [[ -z "$OS_DISTRO" ]] && OS_DISTRO="Linux"
+        [[ -z "$OS_VERSION" ]] && OS_VERSION="unknown"
     else
         OS_VERSION="unknown"
         OS_DISTRO="Linux"
@@ -54,6 +61,7 @@ elif [[ "${OS_TYPE}" == "linux-gnu"* ]]; then
     USE_APT=1
 else
     OS_NAME="Unknown"
+    OS_DISTRO="Unknown"
     OS_VERSION="unknown"
     SHELL_PROFILE="${HOME}/.bashrc"
     HTTPD_USER="www-data"
@@ -116,7 +124,7 @@ save_config() {
   "installed_at": "${now}",
   "brew_prefix": "${BREW_PREFIX}",
   "architecture": "${ARCH}",
-  "os": "${OS_NAME} ${OS_VERSION}",
+  "os": "${OS_DISTRO} ${OS_VERSION}",
   "versions": {
     "apache": "${apache_ver}",
     "mariadb": "${mariadb_ver}",
@@ -177,7 +185,8 @@ detect_php() {
     if [[ $USE_APT == 1 ]]; then
         if dpkg -l php &>/dev/null 2>&1 && dpkg -s php &>/dev/null 2>&1; then
             PHP=1
-            PHP_VERSION=$(dpkg -s php 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
+            # Report the active version from the binary (survives fu version switches)
+            PHP_VERSION=$(php -r 'echo PHP_VERSION;' 2>/dev/null || dpkg -s php 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
         else
             PHP=0
             PHP_VERSION=""
@@ -389,7 +398,7 @@ show_dashboard() {
     # Architecture line
     if [[ $USE_APT == 1 ]]; then
         printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}apt${RESET}\n" \
-            "$ARCH" "$OS_NAME" "$OS_VERSION"
+            "$ARCH" "$OS_DISTRO" "$OS_VERSION"
     else
         printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Homebrew: ${CYAN}%s${RESET}\n" \
             "$ARCH" "$OS_NAME" "$OS_VERSION" "$BREW_PREFIX"
@@ -1180,6 +1189,7 @@ PMACONF
         print_ok "Created Apache phpMyAdmin alias"
     fi
     sudo a2enconf phpmyadmin 2>/dev/null || true
+    sudo systemctl reload apache2 2>/dev/null || true
 
     print_ok "phpMyAdmin configured"
 }
@@ -1511,6 +1521,140 @@ cmd_delete() {
 }
 
 # ---- Forced Update / Version Switching ----------------------
+ensure_php_repo() {
+    # ondrej/php repo (deb.sury.org) provides PHP 8.2+ on Debian & Ubuntu
+    if grep -rq "packages.sury.org" /etc/apt/sources.list.d/ 2>/dev/null; then
+        return 0
+    fi
+
+    local codename
+    codename=$(grep -E '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d= -f2)
+    if [[ -z "$codename" ]]; then
+        print_err "Cannot determine OS codename — cannot add PHP repository."
+        return 1
+    fi
+
+    print_info "Adding ondrej/php repository (deb.sury.org)..."
+    sudo curl -fsSL https://packages.sury.org/php/apt.gpg -o /etc/apt/trusted.gpg.d/php.gpg 2>/dev/null || {
+        print_err "Failed to fetch PHP repository key."
+        return 1
+    }
+    echo "deb https://packages.sury.org/php/ ${codename} main" | sudo tee /etc/apt/sources.list.d/phpup-php.list > /dev/null
+    sudo apt update -qq 2>&1 | sed '/can be upgraded/d'
+    print_ok "Added ondrej/php repository"
+    return 0
+}
+
+switch_php_apt() {
+    if ! ensure_php_repo; then
+        printf "\n"
+        read -r -p "Press Enter to return to the dashboard..."
+        return
+    fi
+
+    # Sync php meta packages to the repo's versions so U doesn't list them
+    # (metas are pointers only — active versioned modules are untouched)
+    print_info "Syncing PHP meta packages to latest..."
+    sudo apt-get install --only-upgrade -y \
+        php php-curl php-gd php-intl php-mbstring php-mysql php-sqlite3 \
+        php-xml php-zip php-bcmath php-bz2 libapache2-mod-php 2>/dev/null || true
+    print_ok "PHP meta packages up to date"
+
+    # Current active version
+    local current
+    current=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+
+    # Available versions (8.2 to latest)
+    local versions
+    versions=$(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -V | awk -F. '$1 == 8 && $2 >= 2')
+
+    if [[ -z "$versions" ]]; then
+        print_err "No PHP 8.2+ versions found via apt."
+        printf "\n"
+        read -r -p "Press Enter to return to the dashboard..."
+        return
+    fi
+
+    printf "\n${CYAN}Available PHP versions:${RESET}\n"
+
+    local i=1 v
+    declare -a opts=()
+    while read -r v; do
+        local tag=""
+        if [[ "$v" == "$current" ]]; then
+            tag=" ${GREEN}(active)${RESET}"
+        elif [[ -x "/usr/bin/php${v}" ]]; then
+            tag=" ${YELLOW}(installed)${RESET}"
+        fi
+        printf "  %d) PHP %s%b\n" "$i" "$v" "$tag"
+        opts[$i]="$v"
+        ((i++))
+    done <<< "$versions"
+
+    printf "\n${BOLD}Enter the number of the PHP version to switch to (or press Enter to cancel):${RESET} "
+    read -r choice
+
+    if [[ -z "$choice" ]]; then
+        print_info "No change made."
+        printf "\n"
+        read -r -p "Press Enter to return to the dashboard..."
+        return
+    fi
+
+    local target="${opts[$choice]}"
+    if [[ -z "$target" ]]; then
+        print_err "Invalid selection."
+        printf "\n"
+        read -r -p "Press Enter to return to the dashboard..."
+        return
+    fi
+
+    if [[ "$target" == "$current" ]]; then
+        print_ok "PHP ${target} is already active."
+        printf "\n"
+        read -r -p "Press Enter to return to the dashboard..."
+        return
+    fi
+
+    print_info "Installing PHP ${target} packages..."
+
+    if ! sudo DEBIAN_FRONTEND=noninteractive apt install -y \
+        "php${target}" "php${target}-cli" "php${target}-curl" "php${target}-gd" \
+        "php${target}-intl" "php${target}-mbstring" "php${target}-mysql" \
+        "php${target}-sqlite3" "php${target}-xml" "php${target}-zip" \
+        "php${target}-bcmath" "php${target}-bz2" "libapache2-mod-php${target}"; then
+        print_err "Failed to install PHP ${target}."
+        printf "\n"
+        read -r -p "Press Enter to return to the dashboard..."
+        return
+    fi
+
+    # Switch Apache module to the new version
+    print_info "Switching Apache to PHP ${target}..."
+    if [[ -n "$current" ]]; then
+        sudo a2dismod "php${current}" 2>/dev/null || true
+    fi
+    sudo a2enmod "php${target}" 2>/dev/null || true
+
+    # Switch CLI alternative
+    sudo update-alternatives --set php "/usr/bin/php${target}" 2>/dev/null || true
+
+    # Re-apply PHP config for the new version
+    configure_php_apt
+
+    # Restart Apache
+    print_info "Restarting Apache..."
+    sudo systemctl restart apache2 2>/dev/null
+    sleep 1
+
+    detect_all
+    save_config "$BASE_DIR" "$APACHE_VERSION" "$MARIADB_VERSION" "$PHP_VERSION" "$PHPMYADMIN_VERSION"
+
+    print_ok "PHP switched to ${target} (previous version kept installed — switch back anytime with fu)"
+    printf "\n"
+    read -r -p "Press Enter to return to the dashboard..."
+}
+
 cmd_forced_update() {
     if [[ $STACK == 0 ]]; then
         print_err "Nothing to switch — stack is not installed."
@@ -1528,6 +1672,12 @@ cmd_forced_update() {
     printf "  PHP:        %s\n" "${PHP_VERSION:-unknown}"
     printf "  phpMyAdmin: %s\n" "${PHPMYADMIN_VERSION:-unknown}"
     printf "\n"
+
+    # apt: switch PHP versions via ondrej/php repo
+    if [[ $USE_APT == 1 ]]; then
+        switch_php_apt
+        return
+    fi
 
     # Show available PHP versions via Homebrew
     printf "${CYAN}Available PHP versions:${RESET}\n"
@@ -1718,13 +1868,7 @@ main() {
                 cmd_delete
                 ;;
             fu|FU|fU|Fu)
-                if [[ $USE_APT == 1 ]]; then
-                    print_err "Forced update (version switching) is not available with apt. Use U to update."
-                    printf "\n"
-                    read -r -p "Press Enter to continue..."
-                else
-                    cmd_forced_update
-                fi
+                cmd_forced_update
                 ;;
             [qQ]|[qQ]uit)
                 printf "[${GREEN}  OK  ${RESET}] Goodbye!\n\n"

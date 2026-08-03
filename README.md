@@ -103,7 +103,7 @@ The dashboard shows installed versions, running services, and useful paths — a
 | ------ | ----------------------------------------------------------------------------------- |
 | **I**  | Install the web stack                                                               |
 | **U**  | Update outdated components                                                          |
-| **fu** | _(hidden)_ Forced update — switch to any cached version offline                     |
+| **fu** | _(hidden)_ Forced update — switch PHP versions (offline zips on Windows, ondrej/php repo on Mac/Linux) |
 | **R**  | Restart Apache + MariaDB                                                            |
 | **S**  | Toggle services — stops if running, starts if stopped. Offers service registration. |
 | **D**  | Delete the stack (preserves `www/` and databases)                                   |
@@ -120,6 +120,8 @@ Run with `-Offline` to skip all network activity:
 Requires pre-downloaded zips in `C:\phpup\downloads\`. Run the script online once to populate the cache, then all subsequent installs skip downloads entirely.
 
 Once multiple versions are cached, the hidden **`fu`** command lets you switch between them interactively — upgrades, downgrades, or snapshots — without touching the network. MariaDB databases are automatically backed up and restored across version changes.
+
+> **Mac & Linux:** **`fu`** switches PHP versions via package manager — Homebrew formulae (`php@8.2` … `php@8.5`) on macOS, and the [ondrej/php repository](https://deb.sury.org/) on Debian/Ubuntu (8.2 → latest). Select the version from a numbered list; the previous PHP version stays installed so you can switch back anytime.
 
 ### Service Registration (Windows)
 

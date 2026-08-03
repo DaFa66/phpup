@@ -9,6 +9,22 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 ---
 
+## [0.6.2-beta] — 2026-08-04
+
+### Linux (phpup.sh v0.6.2-beta)
+
+**Added**
+- `fu` (forced update) now works on apt: adds the ondrej/php repository (deb.sury.org), lists PHP versions 8.2 → latest with `(active)`/`(installed)` tags, numbered selection, installs versioned packages, switches the Apache module + CLI alternative, re-applies PHP config and restarts Apache
+- Previous PHP version stays installed after switching — switch back anytime with another `fu`
+- PHP meta packages synced to the repo's versions on every `fu` run so `U` doesn't list them
+
+**Fixed**
+- Version list colour tags rendered as literal `\033` text (now `%b` in printf)
+- Dashboard showed `OS: Linux unknown` on minimal Debian (no lsb_release) — now falls back to `/etc/os-release` and shows the distro name (`OS: Debian 13`, `OS: Ubuntu 24.04`)
+- phpMyAdmin alias now active immediately after install (Apache reloaded after `a2enconf`)
+
+---
+
 ## 2.2.2 / [0.5.11-beta] — 2026-08-01
 
 ### Linux (phpup.sh v0.5.11-beta)
@@ -372,12 +388,14 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **0.6.2-beta** | 2026-08-04 | `fu` PHP version switching on apt (ondrej/php repo), PMA alias fix, OS distro display |
 | **0.5.11-beta** | 2026-08-01 | Linux apt support, 8 fixes (php-sodium, MariaDB auth, PMA config) |
 | **0.4.8-beta** | 2026-07-30 | Service overhaul, PMA storage, delete hardening, MariaDB auth |
 | **1.1.1** | 2026-07-26 | PMA config, session lifetime |
 | **1.1.0** | 2026-07-25 | PHP upload limits |
 | **1.0.0** | 2026-07-19 | Initial phpup fork — native apt, 19 fixes |
 
+[0.6.2-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.6.2-beta
 [0.5.11-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.5.11-beta
 [0.4.8-beta]: https://github.com/DaFa66/phpup/releases/tag/v2.2.2+0.4.8-beta
 [2.2.1]: https://github.com/DaFa66/phpup/releases/tag/v2.2.1+1.1.1
