@@ -9,6 +9,23 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 ---
 
+## [0.7.2-beta] — 2026-08-04
+
+### Linux (phpup.sh v0.7.2-beta)
+
+**Added**
+- Fresh Linux installs now install the latest stable PHP (e.g. 8.5) — ondrej/php (deb.sury.org) repo auto-added, versioned packages installed, Apache module + CLI alternative activated
+- Complete MariaDB data backup before delete on apt (sudo cp — datadir is 700 mysql:mysql)
+- Delete on apt preserves configs in /etc (apt remove keeps conffiles — no config backup needed on Linux)
+
+**Fixed**
+- phpMyAdmin storage database (`pma`) + control user now created explicitly on apt — dbconfig-common skips DB creation under noninteractive, leaving a dead controluser reference
+- Restore of user databases now runs BEFORE phpMyAdmin config — the restore previously wiped the freshly-created control DB
+- Duplicate stock `phpmyadmin` control database (restored from pre-rename backups) now dropped during configure — guarded to never touch a DB with user data
+- apt "WARNING: apt does not have a stable CLI interface" noise suppressed in update/install/fu flows
+
+---
+
 ## [0.6.2-beta] — 2026-08-04
 
 ### Linux (phpup.sh v0.6.2-beta)
@@ -388,6 +405,7 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **0.7.2-beta** | 2026-08-04 | Latest PHP on fresh installs, pma control DB fix, quiet apt updates, duplicate pma DB cleanup |
 | **0.6.2-beta** | 2026-08-04 | `fu` PHP version switching on apt (ondrej/php repo), PMA alias fix, OS distro display |
 | **0.5.11-beta** | 2026-08-01 | Linux apt support, 8 fixes (php-sodium, MariaDB auth, PMA config) |
 | **0.4.8-beta** | 2026-07-30 | Service overhaul, PMA storage, delete hardening, MariaDB auth |
@@ -395,6 +413,7 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 | **1.1.0** | 2026-07-25 | PHP upload limits |
 | **1.0.0** | 2026-07-19 | Initial phpup fork — native apt, 19 fixes |
 
+[0.7.2-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.7.2-beta
 [0.6.2-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.6.2-beta
 [0.5.11-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.5.11-beta
 [0.4.8-beta]: https://github.com/DaFa66/phpup/releases/tag/v2.2.2+0.4.8-beta

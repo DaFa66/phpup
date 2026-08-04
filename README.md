@@ -53,6 +53,8 @@ if ! command -v curl &> /dev/null; then sudo apt install -y curl; fi && source <
 
 After launching **phpup**, press **I** to install. On subsequent runs the script remembers your setup and goes straight to the dashboard.
 
+**Fresh installs install the latest PHP** (8.2+, currently 8.5) via the [ondrej/php repository](https://deb.sury.org/) instead of the distro default — same behaviour as Windows and macOS. Use the hidden **`fu`** command later to switch versions.
+
 ### Windows PowerShell Alias (Optional)
 
 Add this to your PowerShell profile for a quick `phpup` command:
@@ -132,6 +134,8 @@ During install, you're prompted to register Apache and MariaDB as Windows servic
 Pressing **D** stops services, backs up your config files (`httpd.conf`, `php.ini`, `my.ini`, `config.inc.php`) to `config_backup/` and MariaDB data to `data_backup/`, then removes Apache, PHP, MariaDB, and phpMyAdmin. Your website files in `www/` are untouched.
 
 On reinstall, the script detects both backups and offers to restore your databases and config files — MariaDB picks up the restored data without re-initialisation, and your Apache, PHP, and phpMyAdmin settings are preserved.
+
+> **Mac & Linux (apt/brew):** config files live in `/etc` (apt) or the Cellar (brew) and are **kept in place** by the package manager — no `config_backup/` needed. Delete removes packages and runtime state (`/var/lib`), preserves `www/`, `data_backup/`, and `/etc` configs; reinstall re-applies them automatically.
 
 ## What the Installer Configures
 

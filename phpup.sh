@@ -6,7 +6,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-08-04
-#  Version: 0.6.2-beta
+#  Version: 0.7.2-beta
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -147,7 +147,9 @@ clear_config() {
 # ---- Component Detection ------------------------------------
 detect_apache() {
     if [[ $USE_APT == 1 ]]; then
-        if dpkg -l apache2 &>/dev/null 2>&1 && dpkg -s apache2 &>/dev/null 2>&1; then
+        # ^ii = installed. rc (removed, config kept) must NOT count as installed —
+        # otherwise delete leaves rc packages and reinstall skips them.
+        if dpkg -l apache2 2>/dev/null | grep -q '^ii'; then
             APACHE=1
             APACHE_VERSION=$(dpkg -s apache2 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1)
         else
@@ -165,7 +167,7 @@ detect_apache() {
 
 detect_mariadb() {
     if [[ $USE_APT == 1 ]]; then
-        if dpkg -l mariadb-server &>/dev/null 2>&1 && dpkg -s mariadb-server &>/dev/null 2>&1; then
+        if dpkg -l mariadb-server 2>/dev/null | grep -q '^ii'; then
             MARIADB=1
             MARIADB_VERSION=$(dpkg -s mariadb-server 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
         else
@@ -183,9 +185,9 @@ detect_mariadb() {
 
 detect_php() {
     if [[ $USE_APT == 1 ]]; then
-        if dpkg -l php &>/dev/null 2>&1 && dpkg -s php &>/dev/null 2>&1; then
+        if command -v php &>/dev/null 2>&1; then
             PHP=1
-            # Report the active version from the binary (survives fu version switches)
+            # Report the active version from the binary (versioned installs have no php meta package)
             PHP_VERSION=$(php -r 'echo PHP_VERSION;' 2>/dev/null || dpkg -s php 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
         else
             PHP=0
@@ -202,7 +204,7 @@ detect_php() {
 
 detect_phpmyadmin() {
     if [[ $USE_APT == 1 ]]; then
-        if dpkg -l phpmyadmin &>/dev/null 2>&1 && dpkg -s phpmyadmin &>/dev/null 2>&1; then
+        if dpkg -l phpmyadmin 2>/dev/null | grep -q '^ii'; then
             PHPMYADMIN=1
             PHPMYADMIN_VERSION=$(dpkg -s phpmyadmin 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
         else
@@ -269,6 +271,12 @@ print_err()   { printf "[${RED} ERROR ${RESET}] %s\n" "$1"; }
 print_warn()  { printf "[${YELLOW}  WAIT ${RESET}] %s\n" "$1"; }
 print_info()  { printf "${CYAN}%s${RESET}\n" "$1"; }
 
+# Quiet apt update: suppress the "no stable CLI" warning apt emits when its
+# output is piped (non-TTY), plus the "can be upgraded" notices. Real errors pass through.
+apt_update_quiet() {
+    sudo apt update -qq 2>&1 | grep -v '^WARNING: apt does not have a stable CLI interface' | sed '/can be upgraded/d'
+}
+
 # ---- Prerequisites Check ------------------------------------
 check_prerequisites() {
     # Linux: apt prerequisites
@@ -283,7 +291,7 @@ check_prerequisites() {
         if [[ $need_apt == 1 ]]; then
             printf "\n"
             print_warn "Installing Linux prerequisites (build-essential, procps, file, git, curl)..."
-            sudo apt update -qq 2>&1 | sed '/can be upgraded/d' && sudo apt install -y build-essential procps file git curl
+            apt_update_quiet && sudo apt install -y build-essential procps file git curl
             print_ok "Linux prerequisites installed"
         fi
     fi
@@ -1160,6 +1168,9 @@ configure_phpmyadmin_apt() {
     sudo tee "$pma_override" > /dev/null <<'PMACONF'
 <?php
 // phpup — phpMyAdmin configuration overrides
+// Scoped to phpMyAdmin only: silence twig 3.21 deprecation notices on PHP 8.5.
+// Warnings/errors are NOT suppressed — only E_DEPRECATED.
+error_reporting(E_ALL & ~E_DEPRECATED);
 foreach (array_keys($cfg['Servers']) as $server) {
     $cfg['Servers'][$server]['AllowNoPassword'] = true;
 }
@@ -1174,6 +1185,52 @@ PMACONF
     local pma_tmp="/usr/share/phpmyadmin/tmp"
     sudo sh -c "mkdir -p '$pma_tmp' && chgrp www-data '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null || true
     print_ok "Created phpMyAdmin tmp directory"
+
+    # Configure phpMyAdmin storage database (named 'pma', matching the Mac path).
+    # Debian's dbconfig-common skips DB creation under noninteractive, so the
+    # controluser it references in config-db.php never exists — create it here.
+    local pma_sql="/usr/share/phpmyadmin/sql/create_tables.sql"
+    if [[ -f "$pma_sql" ]]; then
+        if ! mariadb -u root -e "USE pma" &>/dev/null 2>&1; then
+            print_info "Setting up phpMyAdmin storage database..."
+            # Rename the db to 'pma' throughout the SQL (backticked and bare
+            # forms — Debian's script uses `USE phpmyadmin;` without backticks)
+            sed 's/phpmyadmin/pma/g' "$pma_sql" | mariadb -u root 2>/dev/null || true
+        fi
+        # Stable control password: reuse one already written to the override
+        # (survives delete via /etc), else generate one.
+        local pma_pass=""
+        if [[ -f "$pma_override" ]]; then
+            pma_pass=$(grep -oP "(?<=controlpass'\] = ')[^']*" "$pma_override" 2>/dev/null | head -1)
+        fi
+        [[ -z "$pma_pass" ]] && pma_pass=$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        # Ensure the pma control user exists with the configured password
+        mariadb -u root -e "CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY '${pma_pass}'; ALTER USER 'pma'@'localhost' IDENTIFIED BY '${pma_pass}'; GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null || true
+        # Wire controluser + storage into the override (overrides config-db.php)
+        sudo tee -a "$pma_override" > /dev/null <<EOF
+foreach (array_keys(\$cfg['Servers']) as \$server) {
+    \$cfg['Servers'][\$server]['controluser'] = 'pma';
+    \$cfg['Servers'][\$server]['controlpass'] = '${pma_pass}';
+    \$cfg['Servers'][\$server]['pmadb'] = 'pma';
+}
+EOF
+        print_ok "Configured phpMyAdmin storage database (pma)"
+    else
+        print_info "phpMyAdmin storage tables not found — skipping storage setup"
+    fi
+
+    # Ubuntu's dbconfig-common (or an old backup restored before this rename)
+    # can leave the stock 'phpmyadmin' control DB behind; we wire phpMyAdmin
+    # to 'pma' instead, so drop the stock copy — but only when it holds just
+    # the pma__* control tables (never a DB with user data).
+    if mariadb -u root -e "USE phpmyadmin" &>/dev/null 2>&1; then
+        local nonstock
+        nonstock=$(mariadb -u root -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='phpmyadmin' AND table_name NOT LIKE 'pma__%'" 2>/dev/null)
+        if [[ "${nonstock:-1}" == "0" ]]; then
+            mariadb -u root -e "DROP DATABASE phpmyadmin; DROP USER IF EXISTS 'phpmyadmin'@'localhost';" 2>/dev/null || true
+            print_ok "Removed duplicate stock phpmyadmin control database"
+        fi
+    fi
 
     # Ensure Apache alias is configured (apt package may skip this in noninteractive mode)
     local pma_apache_conf="/etc/apache2/conf-available/phpmyadmin.conf"
@@ -1229,10 +1286,27 @@ cmd_install() {
         printf "\n"
         print_info "Installing packages via apt..."
         printf "\n"
-        sudo apt update -qq 2>&1 | sed '/can be upgraded/d'
+        apt_update_quiet
         [[ $APACHE == 0 ]] && sudo DEBIAN_FRONTEND=noninteractive apt install -y apache2 && APACHE=1
         [[ $MARIADB == 0 ]] && sudo DEBIAN_FRONTEND=noninteractive apt install -y mariadb-server && MARIADB=1
-        [[ $PHP == 0 ]] && sudo DEBIAN_FRONTEND=noninteractive apt install -y php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php && PHP=1
+        if [[ $PHP == 0 ]]; then
+            # Install latest stable PHP (8.2+) via ondrej/php repo — mirrors Windows/macOS behaviour
+            ensure_php_repo
+            local php_latest
+            php_latest=$(latest_php_version)
+            if [[ -n "$php_latest" ]]; then
+                print_info "Installing latest PHP ${php_latest} (ondrej/php repo)..."
+                if install_php_version_apt "$php_latest"; then
+                    PHP=1
+                else
+                    print_warn "Versioned install failed — falling back to distro default PHP"
+                    sudo DEBIAN_FRONTEND=noninteractive apt install -y php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php && PHP=1
+                fi
+            else
+                print_warn "Could not detect latest PHP — installing distro default"
+                sudo DEBIAN_FRONTEND=noninteractive apt install -y php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php && PHP=1
+            fi
+        fi
         [[ $PHPMYADMIN == 0 ]] && sudo DEBIAN_FRONTEND=noninteractive apt install -y phpmyadmin && PHPMYADMIN=1
 
         detect_all
@@ -1274,10 +1348,12 @@ cmd_install() {
     configure_apache
     configure_php
     configure_mariadb
-    configure_phpmyadmin
 
-    # Check for database backup from previous install
+    # Restore previous databases BEFORE phpMyAdmin config — the restore replaces
+    # the datadir, which would otherwise wipe the pma control DB just created.
     check_restore_data
+
+    configure_phpmyadmin
 
     # PATH management
     manage_path
@@ -1327,9 +1403,9 @@ cmd_update() {
     # Check for updates
     print_info "Checking for updates..."
     if [[ $USE_APT == 1 ]]; then
-        sudo apt update -qq 2>&1 | sed '/can be upgraded/d'
+        apt_update_quiet
         local outdated
-        outdated=$(apt list --upgradable 2>/dev/null | grep -E '^(apache2|mariadb-server|php|phpmyadmin)/' || true)
+        outdated=$(apt list --upgradable 2>/dev/null | grep -E '^(apache2|mariadb-server|phpmyadmin|libapache2-mod-php|php)' || true)
 
         if [[ -z "$outdated" ]]; then
             print_ok "All components are up to date"
@@ -1354,7 +1430,7 @@ cmd_update() {
         stop_services
         printf "\n"
         print_info "Upgrading packages via apt..."
-        sudo apt upgrade -y apache2 mariadb-server php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php phpmyadmin
+        sudo apt upgrade -y apache2 mariadb-server $(php_active_pkgs) phpmyadmin
         detect_all
         configure_apache
         configure_php
@@ -1417,11 +1493,12 @@ cmd_delete() {
     printf "\n"
     printf "${RED}THIS WILL BE DELETED:${RESET}\n"
     printf "${RED}- Apache, MariaDB, PHP, and phpMyAdmin.${RESET}\n"
-    printf "${RED}- Services, config files, and logs.${RESET}\n\n"
+    printf "${RED}- Services, logs, and runtime state.${RESET}\n\n"
     printf "${GREEN}THIS WILL NOT BE DELETED:${RESET}\n"
-    printf "${GREEN}- Your website files in %s${RESET}\\n" "$DOC_ROOT"
-    printf "${GREEN}- Your MariaDB databases (backed up to %s)${RESET}\\n" "$DATA_BACKUP_DIR"
-    printf "\\n"
+    printf "${GREEN}- Your website files in %s${RESET}\n" "$DOC_ROOT"
+    printf "${GREEN}- Your MariaDB databases (backed up to %s)${RESET}\n" "$DATA_BACKUP_DIR"
+    printf "${GREEN}- Your config files (kept in /etc — restored on reinstall)${RESET}\n"
+    printf "\n"
     printf "${BOLD}Type DELETE to confirm:${RESET} "
     read -r confirm_delete
 
@@ -1453,12 +1530,22 @@ cmd_delete() {
             local timestamp
             timestamp=$(date "+%Y%m%d_%H%M%S")
             local archived_backup="${BASE_DIR}/data_backup_${timestamp}"
-            mv "$DATA_BACKUP_DIR" "$archived_backup"
+            if [[ $USE_APT == 1 ]]; then
+                sudo mv "$DATA_BACKUP_DIR" "$archived_backup" 2>/dev/null || true
+            else
+                mv "$DATA_BACKUP_DIR" "$archived_backup" 2>/dev/null || true
+            fi
             print_ok "Archived existing backup to ${archived_backup}"
         fi
 
-        # Copy entire data directory for full restore on reinstall
-        cp -r "$mariadb_data" "$DATA_BACKUP_DIR" 2>/dev/null || true
+        # Copy entire data directory for full restore on reinstall.
+        # apt datadir is 700 mysql:mysql — must copy as root or the system
+        # schema and user databases are silently skipped (cp exits 0).
+        if [[ $USE_APT == 1 ]]; then
+            sudo cp -r "$mariadb_data" "$DATA_BACKUP_DIR" 2>/dev/null || true
+        else
+            cp -r "$mariadb_data" "$DATA_BACKUP_DIR" 2>/dev/null || true
+        fi
         print_ok "Backed up MariaDB data to ${DATA_BACKUP_DIR}"
     else
         print_info "No MariaDB data to back up"
@@ -1466,8 +1553,21 @@ cmd_delete() {
 
     # Uninstall packages
     if [[ $USE_APT == 1 ]]; then
-        sudo apt remove -y apache2 mariadb-server php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php phpmyadmin 2>/dev/null || true
-        sudo apt autoremove -y 2>/dev/null || true
+        # Collect ALL installed php packages (versioned + metas + phpmyadmin deps),
+        # so nothing lingers regardless of which PHP versions are present
+        local php_all
+        php_all=$(dpkg -l 2>/dev/null | awk '/^ii/{print $2}' | grep -E '^(php|libapache2-mod-php)' | tr '\n' ' ')
+        sudo DEBIAN_FRONTEND=noninteractive apt remove -y apache2 mariadb-server $php_all phpmyadmin 2>/dev/null || true
+        sudo DEBIAN_FRONTEND=noninteractive apt autoremove -y 2>/dev/null || true
+
+        # Remove runtime state dirs — configs in /etc are preserved by apt remove
+        # (conffiles), user data is in www/ + data_backup. /var/lib holds only
+        # runtime state (sessions, tmp, sockets) safe to purge for a fresh start.
+        sudo rm -rf /var/lib/apache2 /var/lib/php /var/lib/phpmyadmin 2>/dev/null || true
+        # /var/lib/mysql is the live datadir — its contents were backed up above;
+        # removing it gives a genuinely fresh reinstall. Configs stay in /etc/mysql.
+        sudo rm -rf /var/lib/mysql 2>/dev/null || true
+        print_ok "Removed runtime state (/var/lib)"
     else
         brew uninstall httpd 2>/dev/null || true
         brew uninstall mariadb 2>/dev/null || true
@@ -1516,11 +1616,62 @@ cmd_delete() {
     print_ok "DELETION COMPLETE!"
     printf "${GREEN}Your website files are preserved in: %s${RESET}\n" "$DOC_ROOT"
     printf "${GREEN}Your databases are preserved in:   %s${RESET}\n" "$DATA_BACKUP_DIR"
+    printf "${GREEN}Your config files are preserved in: /etc (restored on reinstall)${RESET}\n"
     printf "\n"
     read -r -p "Press Enter to continue..."
 }
 
 # ---- Forced Update / Version Switching ----------------------
+latest_php_version() {
+    # Latest stable PHP version available via apt (e.g. 8.5), skipping pre-releases
+    local version candidate latest=""
+    for version in $(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -V); do
+        candidate=$(apt-cache policy "php${version}" 2>/dev/null | awk '/Candidate:/{print $2; exit}')
+        [[ -n "$candidate" ]] || continue
+        case "$candidate" in
+            *alpha*|*beta*|*RC*|*rc*) continue ;;
+        esac
+        latest="$version"
+    done
+    echo "$latest"
+}
+
+php_active_pkgs() {
+    # Versioned package set for the ACTIVE PHP version (e.g. php8.5-*), else meta fallback
+    local pver
+    pver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+    if [[ -n "$pver" ]]; then
+        echo "php${pver} php${pver}-cli php${pver}-curl php${pver}-gd php${pver}-intl php${pver}-mbstring php${pver}-mysql php${pver}-sqlite3 php${pver}-xml php${pver}-zip php${pver}-bcmath php${pver}-bz2 libapache2-mod-php${pver}"
+    else
+        echo "php php-curl php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php"
+    fi
+}
+
+install_php_version_apt() {
+    # Install versioned PHP packages and activate them (module + CLI alternative)
+    local target="$1"
+    if ! sudo DEBIAN_FRONTEND=noninteractive apt install -y \
+        "php${target}" "php${target}-cli" "php${target}-curl" "php${target}-gd" \
+        "php${target}-intl" "php${target}-mbstring" "php${target}-mysql" \
+        "php${target}-sqlite3" "php${target}-xml" "php${target}-zip" \
+        "php${target}-bcmath" "php${target}-bz2" "libapache2-mod-php${target}"; then
+        return 1
+    fi
+
+    # Switch Apache module to the new version
+    local enabled
+    enabled=$(a2query -m 2>/dev/null | awk '{print $1}' | grep '^php' | head -1)
+    if [[ -n "$enabled" && "$enabled" != "php${target}" ]]; then
+        sudo a2dismod "$enabled" 2>/dev/null || true
+    fi
+    sudo a2enmod "php${target}" 2>/dev/null || true
+
+    # Switch CLI alternative
+    sudo update-alternatives --set php "/usr/bin/php${target}" 2>/dev/null || true
+
+    return 0
+}
+
 ensure_php_repo() {
     # ondrej/php repo (deb.sury.org) provides PHP 8.2+ on Debian & Ubuntu
     if grep -rq "packages.sury.org" /etc/apt/sources.list.d/ 2>/dev/null; then
@@ -1540,7 +1691,7 @@ ensure_php_repo() {
         return 1
     }
     echo "deb https://packages.sury.org/php/ ${codename} main" | sudo tee /etc/apt/sources.list.d/phpup-php.list > /dev/null
-    sudo apt update -qq 2>&1 | sed '/can be upgraded/d'
+    apt_update_quiet
     print_ok "Added ondrej/php repository"
     return 0
 }
@@ -1618,26 +1769,12 @@ switch_php_apt() {
 
     print_info "Installing PHP ${target} packages..."
 
-    if ! sudo DEBIAN_FRONTEND=noninteractive apt install -y \
-        "php${target}" "php${target}-cli" "php${target}-curl" "php${target}-gd" \
-        "php${target}-intl" "php${target}-mbstring" "php${target}-mysql" \
-        "php${target}-sqlite3" "php${target}-xml" "php${target}-zip" \
-        "php${target}-bcmath" "php${target}-bz2" "libapache2-mod-php${target}"; then
+    if ! install_php_version_apt "$target"; then
         print_err "Failed to install PHP ${target}."
         printf "\n"
         read -r -p "Press Enter to return to the dashboard..."
         return
     fi
-
-    # Switch Apache module to the new version
-    print_info "Switching Apache to PHP ${target}..."
-    if [[ -n "$current" ]]; then
-        sudo a2dismod "php${current}" 2>/dev/null || true
-    fi
-    sudo a2enmod "php${target}" 2>/dev/null || true
-
-    # Switch CLI alternative
-    sudo update-alternatives --set php "/usr/bin/php${target}" 2>/dev/null || true
 
     # Re-apply PHP config for the new version
     configure_php_apt
