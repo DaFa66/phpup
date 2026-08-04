@@ -17,11 +17,11 @@ Originally inspired by getPHP, **phpup** has evolved into an independent project
 
 ## Platform Support
 
-| Platform | Architecture         | Status      |
-| -------- | -------------------- | ----------- |
-| Windows  | x64                  | ✅ Stable              |
-| macOS    | x86_64 + arm64       | ⚠️ Beta                |
-| Linux    | x86_64 + arm64       | ✅ Stable (Ubuntu/WSL) |
+| Platform | Architecture   | Status                        |
+| -------- | -------------- | ----------------------------- |
+| Windows  | x64            | ✅ Stable                     |
+| macOS    | x86_64 + arm64 | ⚠️ Beta                       |
+| Linux    | x86_64 + arm64 | ✅ Stable (Ubuntu/Debian/WSL) |
 
 > **macOS version note:** macOS 11 Big Sur or newer recommended. macOS 10.x works but PHP compiles from source (slower, needs full Xcode CLT). The script prints an info message on 10.x so you know what to expect.
 
@@ -47,7 +47,7 @@ irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.ps1 | iex
 if ! command -v curl &> /dev/null; then sudo apt install -y curl; fi && source <(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)
 ```
 
-> **WSL2:** Works out of the box on Ubuntu under WSL2. The script auto-configures Apache directory permissions for the home directory.
+> **WSL2:** Works out of the box on Ubuntu and Debian under WSL2. The script auto-configures Apache directory permissions for the home directory.
 >
 > **ARM:** Raspberry Pi and other ARM64 devices are supported via apt. Native ARM testing is ongoing — feedback welcome.
 
@@ -101,15 +101,15 @@ The dashboard shows installed versions, running services, and useful paths — a
 
 ### Commands
 
-| Key    | Action                                                                              |
-| ------ | ----------------------------------------------------------------------------------- |
-| **I**  | Install the web stack                                                               |
-| **U**  | Update outdated components                                                          |
+| Key    | Action                                                                                                 |
+| ------ | ------------------------------------------------------------------------------------------------------ |
+| **I**  | Install the web stack                                                                                  |
+| **U**  | Update outdated components                                                                             |
 | **fu** | _(hidden)_ Forced update — switch PHP versions (offline zips on Windows, ondrej/php repo on Mac/Linux) |
-| **R**  | Restart Apache + MariaDB                                                            |
-| **S**  | Toggle services — stops if running, starts if stopped. Offers service registration. |
-| **D**  | Delete the stack (preserves `www/` and databases)                                   |
-| **Q**  | Quit                                                                                |
+| **R**  | Restart Apache + MariaDB                                                                               |
+| **S**  | Toggle services — stops if running, starts if stopped. Offers service registration.                    |
+| **D**  | Delete the stack (preserves `www/` and databases)                                                      |
+| **Q**  | Quit                                                                                                   |
 
 ### Offline Mode & Version Switching
 
