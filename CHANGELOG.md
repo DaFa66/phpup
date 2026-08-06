@@ -9,6 +9,15 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 ---
 
+## [0.7.3-beta] — 2026-08-06
+
+### Linux (phpup.sh v0.7.3-beta)
+
+**Fixed**
+- `fu` meta sync: suppressed "Skipping X, it is not installed" noise when metas aren't installed (versioned-only systems)
+
+---
+
 ## [0.7.2-beta] — 2026-08-04
 
 ### Linux (phpup.sh v0.7.2-beta)
@@ -405,6 +414,7 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **0.7.3-beta** | 2026-08-06 | Suppress meta sync "Skipping" noise in `fu` |
 | **0.7.2-beta** | 2026-08-04 | Latest PHP on fresh installs, pma control DB fix, quiet apt updates, duplicate pma DB cleanup |
 | **0.6.2-beta** | 2026-08-04 | `fu` PHP version switching on apt (ondrej/php repo), PMA alias fix, OS distro display |
 | **0.5.11-beta** | 2026-08-01 | Linux apt support, 8 fixes (php-sodium, MariaDB auth, PMA config) |
@@ -413,6 +423,7 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 | **1.1.0** | 2026-07-25 | PHP upload limits |
 | **1.0.0** | 2026-07-19 | Initial phpup fork — native apt, 19 fixes |
 
+[0.7.3-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.7.3-beta
 [0.7.2-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.7.2-beta
 [0.6.2-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.6.2-beta
 [0.5.11-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.5.11-beta

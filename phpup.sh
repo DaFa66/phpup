@@ -5,8 +5,8 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-08-04
-#  Version: 0.7.2-beta
+#  Date: 2026-08-06
+#  Version: 0.7.3-beta
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -1708,7 +1708,7 @@ switch_php_apt() {
     print_info "Syncing PHP meta packages to latest..."
     sudo apt-get install --only-upgrade -y \
         php php-curl php-gd php-intl php-mbstring php-mysql php-sqlite3 \
-        php-xml php-zip php-bcmath php-bz2 libapache2-mod-php 2>/dev/null || true
+        php-xml php-zip php-bcmath php-bz2 libapache2-mod-php &>/dev/null || true
     print_ok "PHP meta packages up to date"
 
     # Current active version
