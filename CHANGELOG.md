@@ -31,7 +31,7 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 - `fu` skips per-component menu, goes straight to PHP version selector
 - Date bumped to 2026-08-07
 
-### Windows (phpup.ps1 v2.3.0)
+### Windows (phpup.ps1 v2.2.3)
 
 **Added**
 - Architecture / OS line on dashboard (`Architecture: x86_64 | OS: Windows 11 Pro`) matching Linux format
