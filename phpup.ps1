@@ -1,22 +1,22 @@
-# ============================================================
-#  phpup — Windows 11 x64 Web Stack Installer & Dashboard
-#  Inspired by getphp.org (Mac, Linux & Windows) by Balázs Zatik
+# =======================================================================
+#  phpup — Windows 11 x64 a bare-metal PHP local development environment
+#  Inspired by getphp.org
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-07-27
+#  Date: 2026-08-06
 #  Version: 2.2.2
-# ============================================================
+# =======================================================================
 
 param(
-    [switch]$Offline  # Skip URL resolution — use pre-downloaded zips from TEMP
+    [switch]$Offline  # Skip URL resolution — use pre-downloaded zips
 )
 
-# ---- Config -------------------------------------------------
+# ---- Config -----------------------------------------------------------
 $BASE = "C:\phpup"
 $DOWNLOAD_CACHE  = "$BASE\downloads"
 
-# ---- Banner -------------------------------------------------
+# ---- Banner -----------------------------------------------------------
 $BANNER_ART = @'
 ┌─────────────────────────────┐
 │    ____  _   _ ____         │
@@ -30,12 +30,10 @@ $BANNER_ART = @'
 '@
 
 # Pinned fallback URLs — used when live scraping/API resolution fails.
-# These point to the last known-good versions for each component.
-# Update these when bumping the pinned versions.
 $FALLBACK_URLS = @{
     Redist     = "https://aka.ms/vc14/vc_redist.x64.exe"
     Apache     = "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.68-260617-Win64-VS18.zip"
-    PHP        = "https://windows.php.net/downloads/releases/php-8.5.7-Win32-vs17-x64.zip"
+    PHP        = "https://windows.php.net/downloads/releases/php-8.5.8-Win32-vs17-x64.zip"
     MariaDB    = "https://archive.mariadb.org/mariadb-12.3.2/winx64-packages/mariadb-12.3.2-winx64.zip"
     phpMyAdmin = "https://files.phpmyadmin.net/phpMyAdmin/5.2.3/phpMyAdmin-5.2.3-all-languages.zip"
 }
