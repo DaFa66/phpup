@@ -105,7 +105,7 @@ The dashboard shows installed versions, running services, and useful paths — a
 | ------ | ------------------------------------------------------------------------------------------------------ |
 | **I**  | Install the web stack                                                                                  |
 | **U**  | Update outdated components                                                                             |
-| **fu** | _(hidden)_ Forced update — switch PHP versions (offline zips on Windows, ondrej/php repo on Mac/Linux) |
+| **fu** | _(hidden)_ PHP version switch (offline zips on Windows, ondrej/php repo on Linux) |
 | **R**  | Restart Apache + MariaDB                                                                               |
 | **S**  | Toggle services — stops if running, starts if stopped. Offers service registration.                    |
 | **D**  | Delete the stack (preserves `www/` and databases)                                                      |

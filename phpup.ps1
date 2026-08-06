@@ -5,7 +5,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-08-06
-#  Version: 2.2.2
+#  Version: 2.3.0
 # =======================================================================
 
 param(
@@ -2327,6 +2327,17 @@ function Show-Dashboard {
             Write-Host $line -ForegroundColor White
         }
     }
+    Write-Host ""
+
+    # ---- Architecture / OS line ----
+    $arch = $env:PROCESSOR_ARCHITECTURE
+    if ($arch -eq "AMD64") { $arch = "x86_64" }
+    $osCaption = (Get-CimInstance Win32_OperatingSystem).Caption
+    if ($osCaption -match "Microsoft Windows (.*)") { $osCaption = $matches[1] }
+    Write-Host "Architecture: " -NoNewline
+    Write-Host "$arch" -ForegroundColor Cyan -NoNewline
+    Write-Host " | Windows: " -NoNewline
+    Write-Host "$osCaption" -ForegroundColor Cyan
     Write-Host ""
 
     # ---- System Prerequisites ----

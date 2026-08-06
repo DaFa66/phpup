@@ -9,6 +9,51 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 ---
 
+## [0.9.0-beta] — 2026-08-07
+
+### Linux (phpup.sh v0.9.0-beta)
+
+**Added**
+- Cross-series PHP upgrade detection in `U` (apt list won't flag 8.4→8.5 as different packages)
+- `U` now installs stable PHP series only (alpha/beta/RC releases are skipped)
+- Apache module auto-switch during cross-series PHP upgrades (a2dismod old, a2enmod new)
+- MariaDB version cleaned on dashboard (`12.3.2+maria~deb13` → `12.3.2`)
+- `U` cleans up stale `data_backup_pre_upgrade` after MariaDB upgrades
+- Download cache path shown in Quick Info (matches Windows dashboard)
+
+**Changed**
+- Dashboard colours now match Windows: section headers are bold white, arrows are default (no cyan), Quick Info labels are default with cyan values
+- `PHP-FPM` label changed to `PHP` with mode shown in status: `Active (mod_php)` or `Running (FPM)`
+- Dashboard columns use fixed-width labels + consistent `----->` arrows for alignment
+- `fu` simplified to PHP version switching only (`U` keeps everything else at latest)
+- Removed `switch_maria_db_apt`, `switch_pma_apt`, `switch_apache_apt` (dead code)
+- `apt_update_quiet` fully silenced (no more noise leaking through)
+- `fu` skips per-component menu, goes straight to PHP version selector
+- Date bumped to 2026-08-07
+
+### Windows (phpup.ps1 v2.3.0)
+
+**Added**
+- Architecture / OS line on dashboard (`Architecture: x86_64 | OS: Windows 11 Pro`) matching Linux format
+
+---
+
+## [0.8.0-beta] — 2026-08-06
+
+### Linux (phpup.sh v0.8.0-beta)
+
+**Added**
+- Fresh installs now get the latest phpMyAdmin via tarball from phpmyadmin.net (replaces apt package)
+- Fresh installs add the official MariaDB.org repo for latest MariaDB (e.g. 12.3 on Debian)
+- `U` (update) now checks for newer phpMyAdmin tarball versions
+
+**Changed**
+- `detect_phpmyadmin` on apt: checks for tarball install first, falls back to dpkg
+- `configure_phpmyadmin_apt`: no longer requires apt package config file
+- `cmd_delete`: removes phpMyAdmin tarball install, drops `phpmyadmin` from apt removal list
+
+---
+
 ## [0.7.3-beta] — 2026-08-06
 
 ### Linux (phpup.sh v0.7.3-beta)
@@ -414,6 +459,7 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **0.8.0-beta** | 2026-08-06 | pma tarball, MariaDB.org repo, `fu` per-component menu |
 | **0.7.3-beta** | 2026-08-06 | Suppress meta sync "Skipping" noise in `fu` |
 | **0.7.2-beta** | 2026-08-04 | Latest PHP on fresh installs, pma control DB fix, quiet apt updates, duplicate pma DB cleanup |
 | **0.6.2-beta** | 2026-08-04 | `fu` PHP version switching on apt (ondrej/php repo), PMA alias fix, OS distro display |
@@ -423,6 +469,7 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 | **1.1.0** | 2026-07-25 | PHP upload limits |
 | **1.0.0** | 2026-07-19 | Initial phpup fork — native apt, 19 fixes |
 
+[0.8.0-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.8.0-beta
 [0.7.3-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.7.3-beta
 [0.7.2-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.7.2-beta
 [0.6.2-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.6.2-beta

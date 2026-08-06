@@ -6,7 +6,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-08-06
-#  Version: 0.7.3-beta
+#  Version: 0.9.0-beta
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -169,7 +169,7 @@ detect_mariadb() {
     if [[ $USE_APT == 1 ]]; then
         if dpkg -l mariadb-server 2>/dev/null | grep -q '^ii'; then
             MARIADB=1
-            MARIADB_VERSION=$(dpkg -s mariadb-server 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
+            MARIADB_VERSION=$(dpkg -s mariadb-server 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2 | sed 's/+maria~.*//')
         else
             MARIADB=0
             MARIADB_VERSION=""
@@ -204,7 +204,11 @@ detect_php() {
 
 detect_phpmyadmin() {
     if [[ $USE_APT == 1 ]]; then
-        if dpkg -l phpmyadmin 2>/dev/null | grep -q '^ii'; then
+        # Check tarball install first (phpup-version.txt written by install_pma_tarball)
+        if [[ -f /usr/share/phpmyadmin/phpup-version.txt ]]; then
+            PHPMYADMIN=1
+            PHPMYADMIN_VERSION=$(cat /usr/share/phpmyadmin/phpup-version.txt)
+        elif dpkg -l phpmyadmin 2>/dev/null | grep -q '^ii'; then
             PHPMYADMIN=1
             PHPMYADMIN_VERSION=$(dpkg -s phpmyadmin 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
         else
@@ -274,7 +278,7 @@ print_info()  { printf "${CYAN}%s${RESET}\n" "$1"; }
 # Quiet apt update: suppress the "no stable CLI" warning apt emits when its
 # output is piped (non-TTY), plus the "can be upgraded" notices. Real errors pass through.
 apt_update_quiet() {
-    sudo apt update -qq 2>&1 | grep -v '^WARNING: apt does not have a stable CLI interface' | sed '/can be upgraded/d'
+    sudo apt update -qq > /dev/null 2>&1 || true
 }
 
 # ---- Prerequisites Check ------------------------------------
@@ -414,31 +418,31 @@ show_dashboard() {
     printf "\n"
 
     # Stack Status
-    printf "Your Web Stack:\n"
+    printf "${BOLD}Your Web Stack:${RESET}\n"
     printf "~~~~~~~~~~~~~~~\n"
 
-    printf "Apache ${CYAN}------->${RESET} "
+    printf "%-10s -----> " "Apache"
     if [[ $APACHE == 1 ]]; then
         printf "${GREEN}%s${RESET}\n" "$APACHE_VERSION"
     else
         printf "${RED}Not installed${RESET}\n"
     fi
 
-    printf "MariaDB ${CYAN}------>${RESET} "
+    printf "%-10s -----> " "MariaDB"
     if [[ $MARIADB == 1 ]]; then
         printf "${GREEN}%s${RESET}\n" "$MARIADB_VERSION"
     else
         printf "${RED}Not installed${RESET}\n"
     fi
 
-    printf "PHP ${CYAN}---------->${RESET} "
+    printf "%-10s -----> " "PHP"
     if [[ $PHP == 1 ]]; then
         printf "${GREEN}%s${RESET}\n" "$PHP_VERSION"
     else
         printf "${RED}Not installed${RESET}\n"
     fi
 
-    printf "phpMyAdmin ${CYAN}--->${RESET} "
+    printf "%-10s -----> " "phpMyAdmin"
     if [[ $PHPMYADMIN == 1 ]]; then
         printf "${GREEN}%s${RESET}\n" "$PHPMYADMIN_VERSION"
     else
@@ -448,29 +452,29 @@ show_dashboard() {
     printf "\n"
 
     # Service Status
-    printf "Service Status:\n"
+    printf "${BOLD}Service Status:${RESET}\n"
     printf "~~~~~~~~~~~~~~~\n"
 
-    printf "Apache ${CYAN}------->${RESET} "
+    printf "%-10s -----> " "Apache"
     if [[ $APACHE == 1 ]]; then
         is_service_running apache && printf "${GREEN}Running${RESET}\n" || printf "${RED}Stopped${RESET}\n"
     else
         printf "${RED}Not available${RESET}\n"
     fi
 
-    printf "MariaDB ${CYAN}------>${RESET} "
+    printf "%-10s -----> " "MariaDB"
     if [[ $MARIADB == 1 ]]; then
         is_service_running mariadb && printf "${GREEN}Running${RESET}\n" || printf "${RED}Stopped${RESET}\n"
     else
         printf "${RED}Not available${RESET}\n"
     fi
 
-    printf "PHP-FPM ${CYAN}------>${RESET} "
+    printf "%-10s -----> " "PHP"
     if [[ $PHP == 1 ]]; then
         if [[ $USE_APT == 1 ]]; then
             # apt uses mod_php (libapache2-mod-php) — check fpm only if installed
             if dpkg -l 'php*-fpm' 2>/dev/null | grep -q '^ii'; then
-                is_service_running php && printf "${GREEN}Running${RESET}\n" || printf "${RED}Stopped${RESET}\n"
+                is_service_running php && printf "${GREEN}Running (FPM)${RESET}\n" || printf "${RED}Stopped${RESET}\n"
             else
                 is_service_running apache && printf "${GREEN}Active (mod_php)${RESET}\n" || printf "${RED}Stopped${RESET}\n"
             fi
@@ -485,17 +489,18 @@ show_dashboard() {
 
     # Quick Info (only when stack is complete)
     if [[ $STACK == 1 ]]; then
-        printf "Quick Info:\n"
+        printf "${BOLD}Quick Info:${RESET}\n"
         printf "~~~~~~~~~~~\n"
-        printf "${CYAN}Where to put website files?${RESET} %s\n" "$DOC_ROOT"
-        printf "${CYAN}How to test your PHP setup?${RESET} http://localhost/phpinfo.php\n"
-        printf "${CYAN}Where to access phpMyAdmin?${RESET} http://localhost/phpmyadmin\n"
-        printf "${CYAN}How to log into phpMyAdmin?${RESET} Username: root | Password: [blank]\n"
+        printf "Where to put website files?  ${CYAN}%s${RESET}\n" "$DOC_ROOT"
+        printf "How to test your PHP setup?  ${CYAN}http://localhost/phpinfo.php${RESET}\n"
+        printf "Where to access phpMyAdmin?  ${CYAN}http://localhost/phpmyadmin${RESET}\n"
+        printf "How to log into phpMyAdmin?  ${CYAN}Username: root | Password: [blank]${RESET}\n"
+        printf "Where is the download cache? ${CYAN}%s${RESET}\n" "${BASE_DIR}/downloads"
         printf "\n"
     fi
 
     # Commands
-    printf "Stack Commands:\n"
+    printf "${BOLD}Stack Commands:${RESET}\n"
     printf "~~~~~~~~~~~~~~~\n"
 
     if [[ $STACK == 0 ]]; then
@@ -1153,13 +1158,6 @@ PMASTORAGE
 
 # ---- phpMyAdmin Configuration (apt) --------------------------
 configure_phpmyadmin_apt() {
-    local pma_conf="/etc/phpmyadmin/config.inc.php"
-
-    if [[ ! -f "$pma_conf" ]]; then
-        print_warn "phpMyAdmin config not found — skipping"
-        return
-    fi
-
     print_info "Configuring phpMyAdmin (apt)..."
 
     # Use conf.d override — works across all phpMyAdmin versions without fragile sed
@@ -1171,15 +1169,32 @@ configure_phpmyadmin_apt() {
 // Scoped to phpMyAdmin only: silence twig 3.21 deprecation notices on PHP 8.5.
 // Warnings/errors are NOT suppressed — only E_DEPRECATED.
 error_reporting(E_ALL & ~E_DEPRECATED);
-foreach (array_keys($cfg['Servers']) as $server) {
-    $cfg['Servers'][$server]['AllowNoPassword'] = true;
-}
 $cfg['VersionCheck'] = false;
 $cfg['SendErrorReports'] = 'never';
 $cfg['LoginCookieValidity'] = 14400;
 $cfg['TempDir'] = '/usr/share/phpmyadmin/tmp';
 PMACONF
-    print_ok "Applied phpMyAdmin overrides (AllowNoPassword, performance, 4h cookie)"
+    print_ok "Applied phpMyAdmin overrides (performance, 4h cookie)"
+
+    # Tarball install: phpMyAdmin ships without config.inc.php (uses config.default.php
+    # internally). Create one that loads /etc/conf.d/ overrides so AllowNoPassword
+    # and other phpup settings take effect.
+    local tarball_conf="/usr/share/phpmyadmin/config.inc.php"
+    if [[ ! -f "$tarball_conf" ]] || ! grep -q "conf.d" "$tarball_conf" 2>/dev/null; then
+        sudo tee "$tarball_conf" > /dev/null <<'CONFDINCLUDE'
+<?php
+// phpup — load distro conf.d overrides + AllowNoPassword
+$conf_d_dir = '/etc/phpmyadmin/conf.d/';
+if (is_dir($conf_d_dir)) {
+    foreach (glob($conf_d_dir . '*.php') as $conf_file) {
+        include $conf_file;
+    }
+}
+// AllowNoPassword for root (conf.d loads before $cfg['Servers'] is populated)
+$cfg['Servers'][1]['AllowNoPassword'] = true;
+CONFDINCLUDE
+        print_ok "Created tarball config with conf.d include"
+    fi
 
     # Create phpMyAdmin tmp directory (required for template cache)
     local pma_tmp="/usr/share/phpmyadmin/tmp"
@@ -1206,13 +1221,12 @@ PMACONF
         [[ -z "$pma_pass" ]] && pma_pass=$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')
         # Ensure the pma control user exists with the configured password
         mariadb -u root -e "CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY '${pma_pass}'; ALTER USER 'pma'@'localhost' IDENTIFIED BY '${pma_pass}'; GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null || true
-        # Wire controluser + storage into the override (overrides config-db.php)
+        # Wire controluser + storage into the override using server index 1
+        # (avoids $cfg['Servers'] array_key issue when conf.d loads early).
         sudo tee -a "$pma_override" > /dev/null <<EOF
-foreach (array_keys(\$cfg['Servers']) as \$server) {
-    \$cfg['Servers'][\$server]['controluser'] = 'pma';
-    \$cfg['Servers'][\$server]['controlpass'] = '${pma_pass}';
-    \$cfg['Servers'][\$server]['pmadb'] = 'pma';
-}
+\$cfg['Servers'][1]['controluser'] = 'pma';
+\$cfg['Servers'][1]['controlpass'] = '${pma_pass}';
+\$cfg['Servers'][1]['pmadb'] = 'pma';
 EOF
         print_ok "Configured phpMyAdmin storage database (pma)"
     else
@@ -1288,7 +1302,10 @@ cmd_install() {
         printf "\n"
         apt_update_quiet
         [[ $APACHE == 0 ]] && sudo DEBIAN_FRONTEND=noninteractive apt install -y apache2 && APACHE=1
-        [[ $MARIADB == 0 ]] && sudo DEBIAN_FRONTEND=noninteractive apt install -y mariadb-server && MARIADB=1
+        if [[ $MARIADB == 0 ]]; then
+            ensure_mariadb_repo || true
+            sudo DEBIAN_FRONTEND=noninteractive apt install -y mariadb-server && MARIADB=1
+        fi
         if [[ $PHP == 0 ]]; then
             # Install latest stable PHP (8.2+) via ondrej/php repo — mirrors Windows/macOS behaviour
             ensure_php_repo
@@ -1307,7 +1324,16 @@ cmd_install() {
                 sudo DEBIAN_FRONTEND=noninteractive apt install -y php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php && PHP=1
             fi
         fi
-        [[ $PHPMYADMIN == 0 ]] && sudo DEBIAN_FRONTEND=noninteractive apt install -y phpmyadmin && PHPMYADMIN=1
+        if [[ $PHPMYADMIN == 0 ]]; then
+            local pma_latest
+            pma_latest=$(latest_pma_version)
+            if [[ -n "$pma_latest" ]] && install_pma_tarball "$pma_latest"; then
+                PHPMYADMIN=1
+            else
+                print_warn "phpMyAdmin tarball download failed — falling back to apt package"
+                sudo DEBIAN_FRONTEND=noninteractive apt install -y phpmyadmin && PHPMYADMIN=1
+            fi
+        fi
 
         detect_all
     else
@@ -1405,7 +1431,37 @@ cmd_update() {
     if [[ $USE_APT == 1 ]]; then
         apt_update_quiet
         local outdated
-        outdated=$(apt list --upgradable 2>/dev/null | grep -E '^(apache2|mariadb-server|phpmyadmin|libapache2-mod-php|php)' || true)
+        outdated=$(apt list --upgradable 2>/dev/null | grep -E '^(apache2|mariadb-server|libapache2-mod-php|php)' || true)
+
+        # Also detect when PHP has been downgraded to an older series —
+        # apt list won't flag cross-series switches because the packages differ.
+        local php_current php_latest
+        php_current=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+
+        # Find the latest STABLE PHP series (skip alpha/beta/RC previews)
+        # and capture its full version string for the prompt.
+        php_latest=""
+        local php_latest_full="" v candidate_ver
+        for v in $(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -Vr | awk -F. '$1 == 8 && $2 >= 2'); do
+            candidate_ver=$(apt-cache show "php${v}-cli" 2>/dev/null | grep '^Version:' | head -1 | tr '[:upper:]' '[:lower:]')
+            if [[ "$candidate_ver" != *alpha* && "$candidate_ver" != *beta* && "$candidate_ver" != *rc* && "$candidate_ver" != *preview* ]]; then
+                php_latest="$v"
+                php_latest_full=$(echo "$candidate_ver" | sed 's/^version: *//' | cut -d- -f1 | cut -d: -f2)
+                break
+            fi
+        done
+
+        if [[ -n "$php_latest" && "$php_current" != "$php_latest" ]]; then
+            # Resolve full current version from the running binary
+            local php_current_full
+            php_current_full=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
+            local msg="PHP ${php_current_full} → ${php_latest_full}"
+            if [[ -z "$outdated" ]]; then
+                outdated="$msg"
+            else
+                outdated="${msg}"$'\n'"${outdated}"
+            fi
+        fi
 
         if [[ -z "$outdated" ]]; then
             print_ok "All components are up to date"
@@ -1430,8 +1486,33 @@ cmd_update() {
         stop_services
         printf "\n"
         print_info "Upgrading packages via apt..."
-        sudo apt upgrade -y apache2 mariadb-server $(php_active_pkgs) phpmyadmin
+
+        # If PHP is on an older series, install the php meta package to pull
+        # in the latest series, then switch the default php binary.
+        if [[ -n "$php_latest" && "$php_current" != "$php_latest" ]]; then
+            sudo apt install -y php php-curl php-gd php-intl php-mbstring php-mysql \
+                php-sqlite3 php-xml php-zip php-bcmath php-bz2 libapache2-mod-php
+            # Switch CLI default
+            sudo update-alternatives --set php "/usr/bin/php${php_latest}" 2>/dev/null || true
+            # Switch Apache module from old series to new
+            sudo a2dismod "php${php_current}" 2>/dev/null || true
+            sudo a2enmod "php${php_latest}" 2>/dev/null || true
+        fi
+        sudo apt upgrade -y apache2 mariadb-server $(php_active_pkgs)
         detect_all
+
+        # Check for newer phpMyAdmin tarball
+        local pma_latest
+        pma_latest=$(latest_pma_version)
+        if [[ -n "$pma_latest" && "$PHPMYADMIN_VERSION" != "$pma_latest" ]]; then
+            printf "\n${CYAN}phpMyAdmin ${pma_latest} available (installed: ${PHPMYADMIN_VERSION})${RESET}\n"
+            printf "${BOLD}Upgrade phpMyAdmin? [Y/n]:${RESET} "
+            read -r pma_upgrade
+            if [[ "$pma_upgrade" != "n" && "$pma_upgrade" != "N" ]]; then
+                install_pma_tarball "$pma_latest" || print_warn "phpMyAdmin tarball upgrade failed"
+            fi
+        fi
+
         configure_apache
         configure_php
         configure_phpmyadmin
@@ -1475,6 +1556,10 @@ cmd_update() {
     # Save new versions
     detect_all
     save_config "$BASE_DIR" "$APACHE_VERSION" "$MARIADB_VERSION" "$PHP_VERSION" "$PHPMYADMIN_VERSION"
+
+    # Clean up stale upgrade backup (MariaDB data snapshot left by a prior fu upgrade)
+    local stale_backup="${BASE_DIR}/data_backup_pre_upgrade"
+    [[ -d "$stale_backup" ]] && sudo rm -rf "$stale_backup" 2>/dev/null || true
 
     print_ok "UPDATE COMPLETE!"
     printf "\n"
@@ -1557,8 +1642,11 @@ cmd_delete() {
         # so nothing lingers regardless of which PHP versions are present
         local php_all
         php_all=$(dpkg -l 2>/dev/null | awk '/^ii/{print $2}' | grep -E '^(php|libapache2-mod-php)' | tr '\n' ' ')
-        sudo DEBIAN_FRONTEND=noninteractive apt remove -y apache2 mariadb-server $php_all phpmyadmin 2>/dev/null || true
+        sudo DEBIAN_FRONTEND=noninteractive apt remove -y apache2 mariadb-server $php_all 2>/dev/null || true
         sudo DEBIAN_FRONTEND=noninteractive apt autoremove -y 2>/dev/null || true
+
+        # Remove phpMyAdmin tarball install (if present)
+        sudo rm -rf /usr/share/phpmyadmin 2>/dev/null || true
 
         # Remove runtime state dirs — configs in /etc are preserved by apt remove
         # (conffiles), user data is in www/ + data_backup. /var/lib holds only
@@ -1696,6 +1784,85 @@ ensure_php_repo() {
     return 0
 }
 
+# ---- phpMyAdmin Tarball Helpers ------------------------------
+latest_pma_version() {
+    # Latest stable phpMyAdmin version from phpmyadmin.net
+    curl -s https://www.phpmyadmin.net/home_page/version.txt 2>/dev/null | head -1 | tr -d '[:space:]'
+}
+
+install_pma_tarball() {
+    local version="$1"
+    local url="https://files.phpmyadmin.net/phpMyAdmin/${version}/phpMyAdmin-${version}-all-languages.tar.gz"
+    local tmp_dir="/tmp/phpup_pma_$$"
+
+    print_info "Downloading phpMyAdmin ${version}..."
+    mkdir -p "$tmp_dir"
+    if ! curl -fsSL --connect-timeout 30 "$url" -o "${tmp_dir}/phpmyadmin.tar.gz"; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    # Remove old install
+    sudo rm -rf /usr/share/phpmyadmin
+
+    # Extract
+    print_info "Extracting phpMyAdmin..."
+    sudo mkdir -p /usr/share/phpmyadmin
+    sudo tar -xzf "${tmp_dir}/phpmyadmin.tar.gz" -C "$tmp_dir"
+    sudo mv "${tmp_dir}/phpMyAdmin-${version}-all-languages"/* /usr/share/phpmyadmin/
+    sudo mv "${tmp_dir}/phpMyAdmin-${version}-all-languages"/.* /usr/share/phpmyadmin/ 2>/dev/null || true
+
+    # Write version file for detection
+    echo "$version" | sudo tee /usr/share/phpmyadmin/phpup-version.txt > /dev/null
+
+    # Cleanup
+    rm -rf "$tmp_dir"
+    return 0
+}
+
+# ---- MariaDB Repo Helpers ------------------------------------
+latest_mariadb_series() {
+    # Latest stable MariaDB major.minor series (e.g. "12.3")
+    # The REST API returns minified JSON. Split on each release object,
+    # find the first Stable one, and extract its release_id.
+    curl -s "https://downloads.mariadb.org/rest-api/mariadb/" 2>/dev/null | \
+        awk -v RS='{"release_id"' '/release_status.*Stable/{print $2; exit}' FS='"'
+}
+
+ensure_mariadb_repo() {
+    if grep -rq "mariadb.org" /etc/apt/sources.list.d/ 2>/dev/null; then
+        return 0
+    fi
+
+    local series
+    series=$(latest_mariadb_series)
+    if [[ -z "$series" ]]; then
+        print_err "Cannot determine latest MariaDB version — skipping repo setup."
+        return 1
+    fi
+
+    local distro_path codename
+    . /etc/os-release
+    if [[ "$ID" == "ubuntu" ]]; then
+        distro_path="ubuntu"
+    else
+        distro_path="debian"
+    fi
+    codename=$(grep -E '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d= -f2)
+
+    print_info "Adding MariaDB.org repository (${series})..."
+    sudo curl -fsSL https://mariadb.org/mariadb_release_signing_key.asc \
+        -o /etc/apt/trusted.gpg.d/mariadb.asc 2>/dev/null || {
+        print_err "Failed to fetch MariaDB repository key."
+        return 1
+    }
+    echo "deb [signed-by=/etc/apt/trusted.gpg.d/mariadb.asc] https://deb.mariadb.org/${series}/${distro_path} ${codename} main" | \
+        sudo tee /etc/apt/sources.list.d/phpup-mariadb.list > /dev/null
+    apt_update_quiet
+    print_ok "Added MariaDB.org repository (${series})"
+    return 0
+}
+
 switch_php_apt() {
     if ! ensure_php_repo; then
         printf "\n"
@@ -1705,7 +1872,7 @@ switch_php_apt() {
 
     # Sync php meta packages to the repo's versions so U doesn't list them
     # (metas are pointers only — active versioned modules are untouched)
-    print_info "Syncing PHP meta packages to latest..."
+    print_info "Syncing PHP meta packages..."
     sudo apt-get install --only-upgrade -y \
         php php-curl php-gd php-intl php-mbstring php-mysql php-sqlite3 \
         php-xml php-zip php-bcmath php-bz2 libapache2-mod-php &>/dev/null || true
@@ -1800,23 +1967,15 @@ cmd_forced_update() {
         return
     fi
 
-    printf "\n${BOLD}phpup — Forced Update / Version Switch${RESET}\n\n"
+    printf "\n${BOLD}PHP Version Switch${RESET}\n\n"
 
-    # Show installed versions
-    printf "${CYAN}Currently installed:${RESET}\n"
-    printf "  Apache:     %s\n" "${APACHE_VERSION:-unknown}"
-    printf "  MariaDB:    %s\n" "${MARIADB_VERSION:-unknown}"
-    printf "  PHP:        %s\n" "${PHP_VERSION:-unknown}"
-    printf "  phpMyAdmin: %s\n" "${PHPMYADMIN_VERSION:-unknown}"
-    printf "\n"
-
-    # apt: switch PHP versions via ondrej/php repo
     if [[ $USE_APT == 1 ]]; then
+        ensure_php_repo 2>/dev/null || true
         switch_php_apt
         return
     fi
 
-    # Show available PHP versions via Homebrew
+    # Homebrew path — PHP version switching only
     printf "${CYAN}Available PHP versions:${RESET}\n"
     local php_versions
     php_versions=$(brew search '/php@/' 2>/dev/null | grep -E 'php@[0-9]+\.[0-9]+' | sort -V)
