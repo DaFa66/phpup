@@ -23,7 +23,9 @@ Originally inspired by getPHP, **phpup** has evolved into an independent project
 | macOS    | x86_64 + arm64 | ⚠️ Beta                       |
 | Linux    | x86_64 + arm64 | ✅ Stable (Ubuntu/Debian/WSL) |
 
-> **macOS version note:** macOS 11 Big Sur or newer recommended. macOS 10.x works but PHP compiles from source (slower, needs full Xcode CLT). The script prints an info message on 10.x so you know what to expect.
+> **macOS backend note:** Homebrew is the default on Apple Silicon and modern Intel macOS. On **older Intel Macs** (macOS 10.15 Catalina through 13 Ventura — where Homebrew is phasing out Intel support), phpup automatically switches to the **MacPorts** backend so your older hardware keeps working. You can force a choice with `PHPPUP_BACKEND=brew` or `PHPPUP_BACKEND=port`.
+
+> **macOS version note:** macOS 11 Big Sur or newer recommended. macOS 10.x works via MacPorts but PHP compiles from source (slower, needs full Xcode CLT). Below macOS 10.15 Catalina the script prints an explicit end-of-life message — the machine is not viable for a modern web stack.
 
 ## Quick Start
 
@@ -135,7 +137,7 @@ Pressing **D** stops services, backs up your config files (`httpd.conf`, `php.in
 
 On reinstall, the script detects both backups and offers to restore your databases and config files — MariaDB picks up the restored data without re-initialisation, and your Apache, PHP, and phpMyAdmin settings are preserved.
 
-> **Mac & Linux (apt/brew):** config files live in `/etc` (apt) or the Cellar (brew) and are **kept in place** by the package manager — no `config_backup/` needed. Delete removes packages and runtime state (`/var/lib`), preserves `www/`, `data_backup/`, and `/etc` configs; reinstall re-applies them automatically.
+> **Mac & Linux (apt/brew/port):** config files live in `/etc` (apt), the Cellar (brew), or `/opt/local/etc` (MacPorts) and are **kept in place** by the package manager — no `config_backup/` needed. Delete removes packages and runtime state, preserves `www/`, `data_backup/`, and the package manager's config dir; reinstall re-applies them automatically.
 
 ## What the Installer Configures
 
@@ -252,9 +254,21 @@ Config is cleared when you delete the stack. The next run prompts for a fresh in
 
 ### macOS
 
-- **macOS 11 Big Sur+** recommended. macOS 10.x works but PHP is compiled from source (no pre-built bottle).
+- **macOS 11 Big Sur+** recommended. macOS 10.15 Catalina supported via MacPorts (source builds — slower).
 - **Xcode Command Line Tools** — prompted to install automatically if missing (`xcode-select --install`).
-- **Homebrew** — installed automatically if missing.
+- **Homebrew** (Apple Silicon / modern Intel) or **MacPorts** (older Intel) — installed automatically if missing.
+
+#### Intel Macs & the Homebrew phase-out
+
+Homebrew is phasing out Intel macOS support: Intel moves to Tier 3 (no new bottles, source-compile only) in September 2026 and becomes fully unsupported in September 2027. phpup handles this automatically:
+
+- **Apple Silicon** — always uses Homebrew
+- **Intel macOS 14+ (Sonoma/Sequoia/Tahoe)** — uses Homebrew while supported
+- **Intel macOS 11–13 (Big Sur–Ventura)** — uses MacPorts (or keeps Homebrew if you already have a working brew stack — never silently migrated)
+- **Intel macOS 10.15 Catalina** — uses MacPorts (the key target for older hardware)
+- **Below Catalina** — explicit end-of-life message; not viable for a modern web stack
+
+MacPorts installs everything from source (no pre-built bottles), so first installs on older hardware can take a while. PHP version switching (`fu`) works via `port select --set php`.
 
 ## Uninstalling
 

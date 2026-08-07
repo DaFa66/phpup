@@ -11,7 +11,7 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 ## [0.10.0-beta] — 2026-08-07
 
-### Linux (phpup.sh v0.10.0-beta)
+### macOS & Linux (phpup.sh v0.10.0-beta)
 
 **Added**
 - MacPorts backend (`port`) on Intel Macs — full install/update/restart/delete + PHP version switching
@@ -29,6 +29,19 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 - `fu` switches PHP via `port select --set php`
 - `install_pma_tarball()` takes a target directory (backend-specific: /usr/share, /opt/local/share, brew Cellar)
 - macOS < 11 installs route through MacPorts with the existing source-compile warning; Catalina is the supported floor
+- An existing Homebrew stack is never silently migrated to MacPorts — backend selection keeps brew when a brew stack is detected installed (even on macOS 11–13), and only routes to ports when no brew stack exists or `PHPPUP_BACKEND=port` is explicit
+
+**Fixed**
+- `fu` no longer corrupts httpd.conf on a failed PHP install — install failure is captured via `PIPESTATUS` and the LoadModule rewrite is gated on success; `php_ver` input is validated before any sudo'd sed
+- Stale `LoadModule php*_module` lines are stripped before appending the current one — fu → D → I cycles leave exactly one live module line (no dead-module Apache crash)
+- `mariadb-11.4` fallback persists across sessions — `detect_mariadb` self-heals by scanning for any installed `mariadb-1[12].*` datadir and adopting that series
+- Q4 floor gate uses numeric version comparison (macOS 10.6–10.9 no longer slip past the end-of-life check)
+- `U` reports update failure instead of a false "UPDATE COMPLETE!" banner on the ports backend
+- phpMyAdmin storage DB rename now matches both SQL forms (backticked `` `phpmyadmin` `` and bare `USE phpmyadmin;`) — the import no longer aborts leaving an empty `pma` DB
+- MariaDB 12.x does not auto-create users on `GRANT` — `CREATE USER IF NOT EXISTS 'pma'@'localhost'` added before the grant
+- phpMyAdmin tmp-dir creation no longer silently lies on failure — if the web-server group can't be set, a warn with the exact sudo fix command is printed instead of a false OK (all three backends)
+- `detect_mariadb` ports branch falls through to brew detection when no `/opt/local` datadir exists (mirrors `detect_apache`) — fixes mixed dashboard state when forcing `PHPPUP_BACKEND=port` on a brew machine
+- The "keeping Homebrew backend" notice only prints when MacPorts migration was actually considered, not on every brew install
 
 ---
 
