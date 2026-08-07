@@ -209,9 +209,23 @@ detect_mariadb() {
             MARIADB=0
             MARIADB_VERSION=""
         fi
-    elif [[ $USE_PORTS == 1 ]] && [[ -d "${PORT_PREFIX}/var/db/${MARIADB_PORT}" ]]; then
-        MARIADB=1
-        MARIADB_VERSION=$("${PORT_PREFIX}/bin/mariadb" --version 2>/dev/null | sed -n 's/.*Distrib \([0-9.]*\).*/\1/p')
+    elif [[ $USE_PORTS == 1 ]]; then
+        # F2: self-healing fallback — the mariadb-11.4 LTS series chosen by a
+        # previous install must survive across sessions (config.json is
+        # write-only). If the default series datadir is absent but any other
+        # mariadb-1[12].* datadir exists, adopt that series BEFORE the check.
+        if [[ ! -d "${PORT_PREFIX}/var/db/${MARIADB_PORT}" ]]; then
+            local found_series
+            found_series=$(find "${PORT_PREFIX}/var/db" -maxdepth 1 -type d -name 'mariadb-1[12].*' 2>/dev/null | sed 's@.*/@@' | sort -V | tail -1)
+            [[ -n "$found_series" ]] && MARIADB_PORT="$found_series"
+        fi
+        if [[ -d "${PORT_PREFIX}/var/db/${MARIADB_PORT}" ]]; then
+            MARIADB=1
+            MARIADB_VERSION=$("${PORT_PREFIX}/bin/mariadb" --version 2>/dev/null | sed -n 's/.*Distrib \([0-9.]*\).*/\1/p')
+        else
+            MARIADB=0
+            MARIADB_VERSION=""
+        fi
     elif [[ -d "${BREW_PREFIX}/Cellar/mariadb" ]]; then
         MARIADB=1
         MARIADB_VERSION=$(find "${BREW_PREFIX}/Cellar/mariadb" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
@@ -922,12 +936,14 @@ configure_apache_ports() {
     sudo sed -i.bak "s/DirectoryIndex index.html/DirectoryIndex index.php index.html/" "$conf"
     print_ok "Added index.php to DirectoryIndex"
 
-    # PHP module — absolute path, grep-guarded (works regardless of ServerRoot value)
+    # PHP module — REPLACE, never append-only: strip any existing LoadModule
+    # php*_module line first (fu→D→I cycles leave dead lines pointing at
+    # uninstalled .so files) then append exactly one line for the current
+    # PHP_PORT. Idempotent: every run converges to exactly one php module line.
+    sudo sed -i.bak "/^LoadModule php[0-9]*_module /d" "$conf"
     local php_module="${PORT_PREFIX}/lib/apache2/modules/mod_${PHP_PORT}.so"
     if [[ -f "$php_module" ]]; then
-        if ! grep -q "LoadModule ${PHP_PORT}_module" "$conf"; then
-            printf "\nLoadModule ${PHP_PORT}_module %s\n" "$php_module" | sudo tee -a "$conf" > /dev/null
-        fi
+        printf "\nLoadModule ${PHP_PORT}_module %s\n" "$php_module" | sudo tee -a "$conf" > /dev/null
         if ! grep -q '<FilesMatch \\.php$>' "$conf"; then
             cat << 'PHPFILESMATCH' | sudo tee -a "$conf" > /dev/null
 
@@ -1731,13 +1747,21 @@ cmd_install() {
         printf "${YELLOW}   This takes longer and needs Xcode CLT.  macOS 11+ has pre-built bottles.${RESET}\n\n"
     fi
 
-    # Q4: macOS below the supported floor is not viable for a modern stack
-    if [[ $USE_PORTS == 1 ]] && [[ $OS_VERSION < "10.15" ]]; then
-        printf "${RED}macOS ${OS_VERSION} is below the supported floor (10.15 Catalina).${RESET}\n"
-        printf "${RED}This machine is not viable as a dev machine for a modern web stack — no package manager\n"
-        printf "${RED}(Homebrew or MacPorts) can deliver a current PHP/Apache/MariaDB here.${RESET}\n\n"
-        read -r -p "Press Enter to return to the dashboard..."
-        return
+    # Q4: macOS below the supported floor is not viable for a modern stack.
+    # Numeric compare — a lexicographic string compare would let 10.6–10.9 slip
+    # through ('6' > '1' at the third char), so derive minor from OS_VERSION.
+    if [[ $USE_PORTS == 1 ]]; then
+        local os_minor min_major min_minor
+        os_minor=$(echo "$OS_VERSION" | cut -d. -f2)
+        min_major="${MACPORTS_MIN_OS%%.*}"
+        min_minor="${MACPORTS_MIN_OS##*.}"
+        if [[ $OS_MAJOR -lt $min_major ]] || { [[ $OS_MAJOR -eq $min_major ]] && [[ "$os_minor" =~ ^[0-9]+$ ]] && [[ $os_minor -lt $min_minor ]]; }; then
+            printf "${RED}macOS ${OS_VERSION} is below the supported floor (10.15 Catalina).${RESET}\n"
+            printf "${RED}This machine is not viable as a dev machine for a modern web stack — no package manager\n"
+            printf "${RED}(Homebrew or MacPorts) can deliver a current PHP/Apache/MariaDB here.${RESET}\n\n"
+            read -r -p "Press Enter to return to the dashboard..."
+            return
+        fi
     fi
 
     # Prerequisites
@@ -2014,6 +2038,11 @@ cmd_update() {
     elif [[ $USE_PORTS == 1 ]]; then
         print_info "Updating ports tree (port selfupdate)..."
         sudo "${PORT_PREFIX}/bin/port" selfupdate 2>&1 | tail -5
+        local selfupdate_status=${PIPESTATUS[0]}
+        if [[ $selfupdate_status -ne 0 ]]; then
+            # Non-fatal: the `port outdated` gate below is self-correcting, but be honest
+            print_warn "port selfupdate failed (exit ${selfupdate_status}) — continuing with the current ports tree"
+        fi
         local outdated
         outdated=$("${PORT_PREFIX}/bin/port" outdated 2>/dev/null | grep -E "apache2|${PHP_PORT}|php8|mariadb" || true)
         if [[ -z "$outdated" ]]; then
@@ -2025,7 +2054,16 @@ cmd_update() {
         [[ "$confirm" != "y" && "$confirm" != "Y" && "$confirm" != "yes" ]] && { print_info "Update cancelled."; printf "\n"; read -r -p "Press Enter to continue..."; return; }
         stop_services
         printf "\n"; print_info "Upgrading packages via MacPorts..."
+        # N1: `| tail -5` masks the real exit status (no pipefail here) — capture it
+        # so a failed upgrade is never reported as "UPDATE COMPLETE!"
         sudo "${PORT_PREFIX}/bin/port" upgrade outdated 2>&1 | tail -5
+        local upgrade_status=${PIPESTATUS[0]}
+        if [[ $upgrade_status -ne 0 ]]; then
+            print_err "port upgrade failed (exit ${upgrade_status}) — no updates were applied"
+            printf "\n"
+            read -r -p "Press Enter to return to the dashboard..."
+            return
+        fi
         detect_all
         # phpMyAdmin tarball upgrade (same as apt branch)
         local pma_latest
@@ -2184,6 +2222,7 @@ cmd_delete() {
         # removing it gives a genuinely fresh reinstall. Configs stay in /etc/mysql.
         sudo rm -rf /var/lib/mysql 2>/dev/null || true
         print_ok "Removed runtime state (/var/lib)"
+        print_ok "Uninstalled packages"
     elif [[ $USE_PORTS == 1 ]]; then
         # Uninstall leaf-first (dependents before dependencies) so port does not
         # prompt. Do NOT use `port -y` — it is a dry run, not confirm-skip.
@@ -2207,6 +2246,7 @@ cmd_delete() {
         for f in httpd mariadb php phpmyadmin; do
             brew uninstall --force --ignore-dependencies "$f" 2>/dev/null || true
         done
+        print_ok "Uninstalled packages"
     fi
 
     # Clean up backend leftovers that survive uninstall
@@ -2536,13 +2576,32 @@ cmd_forced_update() {
         printf "\n${BOLD}Enter PHP version to switch to (e.g. 8.5) or press Enter to skip:${RESET} "
         read -r php_ver
         if [[ -n "$php_ver" ]]; then
+            # N5: validate input FIRST — only digits + one dot may reach the sudo'd
+            # commands below (a crafted string could inject sed expression content)
+            if [[ ! "$php_ver" =~ ^[0-9]+\.[0-9]+$ ]]; then
+                print_err "Invalid PHP version '${php_ver}' — expected a version like 8.5 (nothing was changed)"
+                printf "\n"
+                read -r -p "Press Enter to return to the dashboard..."
+                return
+            fi
             local target="php${php_ver}"
             print_info "Installing ${target} + Apache handler..."
+            # F1: `| tail -5` masks port's exit status (no pipefail in this script) —
+            # capture ${PIPESTATUS[0]} so a failed install can NEVER rewrite httpd.conf
+            # to a dead LoadModule line.
             sudo "${PORT_PREFIX}/bin/port" -N install "$target" "${target}-apache2handler" "${target}-mysql" \
                 "${target}-curl" "${target}-gd" "${target}-intl" "${target}-mbstring" \
                 "${target}-sqlite" "${target}-openssl" 2>&1 | tail -5
+            local install_status=${PIPESTATUS[0]}
+            if [[ $install_status -ne 0 ]]; then
+                print_err "Failed to install ${target} (port install exited ${install_status}) — httpd.conf left untouched"
+                printf "\n"
+                read -r -p "Press Enter to return to the dashboard..."
+                return
+            fi
             sudo "${PORT_PREFIX}/bin/port" select --set php "$target" 2>/dev/null || true
             # Rewrite the LoadModule line in httpd.conf to the new version's .so
+            # (only reached when the install above succeeded)
             sudo sed -i.bak "s@LoadModule php[0-9]*_module .*@LoadModule ${target}_module ${PORT_PREFIX}/lib/apache2/modules/mod_${target}.so@" \
                 "${PORT_PREFIX}/etc/apache2/httpd.conf"
             sudo rm -f "${PORT_PREFIX}/etc/apache2/httpd.conf.bak"
@@ -2699,6 +2758,14 @@ detect_backend() {
         brew|homebrew) USE_PORTS=0; return ;;
     esac
     # No explicit choice → decide by availability/support
+    # N3: backward compat — a working Homebrew stack already installed wins over
+    # the MacPorts route, even on macOS versions brew no longer officially
+    # supports (11–13 and older). MacPorts stays available via PHPPUP_BACKEND=port.
+    if [[ -n "$BREW_PREFIX" ]] && { [[ -d "${BREW_PREFIX}/Cellar/httpd" ]] || [[ -d "${BREW_PREFIX}/Cellar/mariadb" ]] || [[ -d "${BREW_PREFIX}/Cellar/php" ]]; }; then
+        USE_PORTS=0
+        print_info "Homebrew stack detected — keeping Homebrew backend (MacPorts available via PHPPUP_BACKEND=port)"
+        return
+    fi
     if [[ $OS_MAJOR -lt 11 ]]; then        # Catalina & older: brew cannot run modern formulas
         USE_PORTS=1; return
     fi
