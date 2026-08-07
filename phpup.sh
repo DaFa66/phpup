@@ -1502,8 +1502,16 @@ configure_phpmyadmin() {
 
     # Create phpMyAdmin tmp directory (required for template cache)
     local pma_tmp="${BREW_PREFIX}/share/phpmyadmin/tmp"
-    sudo sh -c "mkdir -p '$pma_tmp' && chgrp _www '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null || mkdir -p "$pma_tmp" 2>/dev/null && chgrp _www "$pma_tmp" 2>/dev/null && chmod 775 "$pma_tmp" 2>/dev/null || true
-    print_ok "Created phpMyAdmin tmp directory"
+    local pma_tmp_ok=0
+    sudo sh -c "mkdir -p '$pma_tmp' && chgrp _www '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null && pma_tmp_ok=1
+    if [[ $pma_tmp_ok == 0 ]] && [[ "$(stat -f '%Sg' "$pma_tmp" 2>/dev/null)" == "_www" ]]; then
+        pma_tmp_ok=1
+    fi
+    if [[ $pma_tmp_ok == 1 ]]; then
+        print_ok "Created phpMyAdmin tmp directory"
+    else
+        print_warn "phpMyAdmin tmp dir not writable by Apache — run: sudo chgrp _www '$pma_tmp' && sudo chmod 775 '$pma_tmp'"
+    fi
 
     # Configure phpMyAdmin storage database (for bookmarks, relations, etc.)
     local pma_sql="${BREW_PREFIX}/share/phpmyadmin/sql/create_tables.sql"
@@ -1596,8 +1604,16 @@ CONFDINCLUDE
 
     # Create phpMyAdmin tmp directory (required for template cache)
     local pma_tmp="/usr/share/phpmyadmin/tmp"
-    sudo sh -c "mkdir -p '$pma_tmp' && chgrp www-data '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null || true
-    print_ok "Created phpMyAdmin tmp directory"
+    local pma_tmp_ok=0
+    sudo sh -c "mkdir -p '$pma_tmp' && chgrp www-data '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null && pma_tmp_ok=1
+    if [[ $pma_tmp_ok == 0 ]] && [[ "$(stat -c '%G' "$pma_tmp" 2>/dev/null)" == "www-data" ]]; then
+        pma_tmp_ok=1
+    fi
+    if [[ $pma_tmp_ok == 1 ]]; then
+        print_ok "Created phpMyAdmin tmp directory"
+    else
+        print_warn "phpMyAdmin tmp dir not writable by Apache — run: sudo chgrp www-data '$pma_tmp' && sudo chmod 775 '$pma_tmp'"
+    fi
 
     # Configure phpMyAdmin storage database (named 'pma', matching the Mac path).
     # Debian's dbconfig-common skips DB creation under noninteractive, so the
@@ -1706,8 +1722,16 @@ CONFDINCLUDE
 
     # Create phpMyAdmin tmp directory (required for template cache)
     local pma_tmp="${PMA_DIR}/tmp"
-    sudo sh -c "mkdir -p '$pma_tmp' && chgrp _www '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null || true
-    print_ok "Created phpMyAdmin tmp directory"
+    local pma_tmp_ok=0
+    sudo sh -c "mkdir -p '$pma_tmp' && chgrp _www '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null && pma_tmp_ok=1
+    if [[ $pma_tmp_ok == 0 ]] && [[ "$(stat -f '%Sg' "$pma_tmp" 2>/dev/null)" == "_www" ]]; then
+        pma_tmp_ok=1
+    fi
+    if [[ $pma_tmp_ok == 1 ]]; then
+        print_ok "Created phpMyAdmin tmp directory"
+    else
+        print_warn "phpMyAdmin tmp dir not writable by Apache — run: sudo chgrp _www '$pma_tmp' && sudo chmod 775 '$pma_tmp'"
+    fi
 
     # Configure phpMyAdmin storage database (named 'pma')
     local pma_sql="${PMA_DIR}/sql/create_tables.sql"
