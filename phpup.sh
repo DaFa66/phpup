@@ -1741,8 +1741,9 @@ CONFDINCLUDE
             print_info "Setting up phpMyAdmin storage database..."
             # Rename the db to 'pma' throughout the SQL
             sed 's/phpmyadmin/pma/g' "$pma_sql" | "$mysqlc" -u root 2>/dev/null || true
-            # Grant pma user limited privileges for the storage tables
-            "$mysqlc" -u root -e "GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost' IDENTIFIED BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
+            # Grant pma user limited privileges for the storage tables.
+            # MariaDB 12.x does NOT auto-create users on GRANT — CREATE USER first.
+            "$mysqlc" -u root -e "CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY ''; GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null || true
         fi
         # Wire storage into the override using server index 1 (conf.d loads early)
         if ! grep -q "pmadb" "$pma_override" 2>/dev/null; then
