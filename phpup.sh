@@ -222,6 +222,11 @@ detect_mariadb() {
         if [[ -d "${PORT_PREFIX}/var/db/${MARIADB_PORT}" ]]; then
             MARIADB=1
             MARIADB_VERSION=$("${PORT_PREFIX}/bin/mariadb" --version 2>/dev/null | sed -n 's/.*Distrib \([0-9.]*\).*/\1/p')
+        elif [[ -d "${BREW_PREFIX}/Cellar/mariadb" ]]; then
+            # Ports datadir absent (mixed machine or forced PHPPUP_BACKEND=port)
+            # — fall back to brew detection, mirroring detect_apache's fall-through.
+            MARIADB=1
+            MARIADB_VERSION=$(find "${BREW_PREFIX}/Cellar/mariadb" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
         else
             MARIADB=0
             MARIADB_VERSION=""
@@ -1505,10 +1510,12 @@ configure_phpmyadmin() {
     if [[ -f "$pma_sql" ]]; then
         if ! mysql -u root -e "USE pma" &>/dev/null 2>&1; then
             print_info "Setting up phpMyAdmin storage database..."
-            # Replace phpmyadmin with pma in the SQL so the db is named 'pma'
-            sed 's/`phpmyadmin`/`pma`/g' "$pma_sql" | mysql -u root 2>/dev/null || true
-            # Grant pma user limited privileges for the storage tables
-            mysql -u root -e "GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost' IDENTIFIED BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
+            # Replace phpmyadmin with pma in the SQL so the db is named 'pma'.
+            # Match BOTH forms: backticked (`phpmyadmin`) and bare (USE phpmyadmin;)
+            sed 's/phpmyadmin/pma/g' "$pma_sql" | mysql -u root 2>/dev/null || true
+            # Grant pma user limited privileges for the storage tables.
+            # MariaDB 12.x does NOT auto-create users on GRANT — CREATE USER first.
+            mysql -u root -e "CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY ''; GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null || true
         fi
         # Add storage config if not already present
         if ! grep -q "Servers\[\\\$i\]\['pmadb'\]" "$pma_conf" 2>/dev/null; then
@@ -2758,27 +2765,28 @@ detect_backend() {
         brew|homebrew) USE_PORTS=0; return ;;
     esac
     # No explicit choice → decide by availability/support
+    # Natural routing first (without the brew-stack guard):
+    local want_ports=0
+    if [[ $OS_MAJOR -lt 11 ]]; then        # Catalina & older: brew cannot run modern formulas
+        want_ports=1
+    elif command -v brew &>/dev/null && [[ $OS_MAJOR -ge $BREW_MIN_OS_MAJOR ]]; then
+        want_ports=0                        # supported brew present → keep (backward compat)
+    elif [[ $MACPORTS == 1 ]]; then
+        want_ports=1                        # brew absent/unsupported, ports present → prefer port
+    elif [[ $OS_MAJOR -lt $BREW_MIN_OS_MAJOR ]]; then
+        want_ports=1                        # brew unsupported on this OS → bootstrap MacPorts
+    fi
+
     # N3: backward compat — a working Homebrew stack already installed wins over
-    # the MacPorts route, even on macOS versions brew no longer officially
-    # supports (11–13 and older). MacPorts stays available via PHPPUP_BACKEND=port.
-    if [[ -n "$BREW_PREFIX" ]] && { [[ -d "${BREW_PREFIX}/Cellar/httpd" ]] || [[ -d "${BREW_PREFIX}/Cellar/mariadb" ]] || [[ -d "${BREW_PREFIX}/Cellar/php" ]]; }; then
+    # the MacPorts route when the natural routing would have picked ports
+    # (macOS 11–13 and older). MacPorts stays available via PHPPUP_BACKEND=port.
+    if [[ $want_ports == 1 ]] && [[ -n "$BREW_PREFIX" ]] && { [[ -d "${BREW_PREFIX}/Cellar/httpd" ]] || [[ -d "${BREW_PREFIX}/Cellar/mariadb" ]] || [[ -d "${BREW_PREFIX}/Cellar/php" ]]; }; then
         USE_PORTS=0
         print_info "Homebrew stack detected — keeping Homebrew backend (MacPorts available via PHPPUP_BACKEND=port)"
         return
     fi
-    if [[ $OS_MAJOR -lt 11 ]]; then        # Catalina & older: brew cannot run modern formulas
-        USE_PORTS=1; return
-    fi
-    if command -v brew &>/dev/null && [[ $OS_MAJOR -ge $BREW_MIN_OS_MAJOR ]]; then
-        USE_PORTS=0; return                 # supported brew present → keep (backward compat)
-    fi
-    if [[ $MACPORTS == 1 ]]; then
-        USE_PORTS=1; return                 # brew absent/unsupported, ports present → prefer port
-    fi
-    if [[ $OS_MAJOR -lt $BREW_MIN_OS_MAJOR ]]; then
-        USE_PORTS=1; return                 # brew unsupported on this OS → bootstrap MacPorts
-    fi
-    USE_PORTS=0                             # modern OS, neither installed → bootstrap brew (today's behavior)
+
+    USE_PORTS=$want_ports
 }
 
 # ---- Main Entry Point ---------------------------------------
