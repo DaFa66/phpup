@@ -9,6 +9,29 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 ---
 
+## [0.10.0-beta] — 2026-08-07
+
+### Linux (phpup.sh v0.10.0-beta)
+
+**Added**
+- MacPorts backend (`port`) on Intel Macs — full install/update/restart/delete + PHP version switching
+- Automatic backend selection: MacPorts when Homebrew is unavailable/unsupported on the macOS version or `PHPPUP_BACKEND=port` is set; Homebrew stays default on Apple Silicon and supported Intel macOS
+- `install_macports()` bootstraps MacPorts 2.12.5 from the official .pkg installer (per-macOS-version URL map)
+- `configure_apache_ports`, `configure_php_ports`, `configure_mariadb_ports`, `configure_phpmyadmin_ports` — mod_php (php85-apache2handler) + MariaDB 12.3 + phpMyAdmin tarball
+- MariaDB root auth reset (unix_socket → mysql_native_password) and networking enabled for MacPorts MariaDB (skip-networking removed)
+- PHP↔MariaDB socket wiring (`mysqli`/`pdo_mysql`/`mysql` default_socket) required by MacPorts layouts
+- Dashboard shows `Package: port`; macOS < 10.15 prints an explicit end-of-life message instead of attempting a stack
+
+**Changed**
+- `detect_*` and service management understand the `/opt/local` layout (port load/unload/reload)
+- `U` runs `port selfupdate` + `port upgrade outdated` on the ports backend
+- `D` uninstalls ports leaf-first (no `port -y` dry-run trap) and cleans `/opt/local` runtime state after backing up the data dir
+- `fu` switches PHP via `port select --set php`
+- `install_pma_tarball()` takes a target directory (backend-specific: /usr/share, /opt/local/share, brew Cellar)
+- macOS < 11 installs route through MacPorts with the existing source-compile warning; Catalina is the supported floor
+
+---
+
 ## [0.9.0-beta] — 2026-08-07
 
 ### Linux (phpup.sh v0.9.0-beta)

@@ -5,8 +5,8 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-08-06
-#  Version: 0.9.0-beta
+#  Date: 2026-08-07
+#  Version: 0.10.0-beta
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -76,6 +76,32 @@ if brew --version &>/dev/null; then
     BREW_PREFIX=$(brew --prefix)
 fi
 
+# ---- MacPorts Detection -------------------------------------
+USE_PORTS=0            # 1 = MacPorts backend active (Intel macOS only)
+MACPORTS=0             # 1 = /opt/local/bin/port present on machine
+PORT_PREFIX="/opt/local"
+BREW_MIN_OS_MAJOR=14   # Homebrew officially supports the latest 3 macOS releases (14/15/26 as of 2026-08)
+MARIADB_PORT="mariadb-12.3"   # fallback candidate: mariadb-11.4
+PHP_PORT="php85"               # active PHP port (changes on fu switch)
+PMA_DIR="/opt/local/share/phpmyadmin"   # ports backend tarball target
+MACPORTS_VERSION="2.12.5"      # bump when a new MacPorts release ships (see install.php)
+MACPORTS_MIN_OS="10.15"        # below this: machine not viable for a modern stack
+
+# ---- MacPorts paths (single source of truth) ----------------
+PORTS_APACHE_CONF="${PORT_PREFIX}/etc/apache2/httpd.conf"
+PORTS_APACHE_MODDIR="${PORT_PREFIX}/lib/apache2/modules"
+PORTS_APACHE_DOCROOT="${PORT_PREFIX}/www/apache2/html"
+PORTS_APACHECTL="${PORT_PREFIX}/sbin/apachectl"
+PORTS_MARIADB_DATADIR="${PORT_PREFIX}/var/db/${MARIADB_PORT}"
+PORTS_MARIADB_SOCKET="${PORT_PREFIX}/var/run/${MARIADB_PORT}/mysqld.sock"
+PORTS_MARIADB_CONF="${PORT_PREFIX}/etc/${MARIADB_PORT}/my.cnf"
+PORTS_MARIADB_INSTALL_DB="${PORT_PREFIX}/lib/${MARIADB_PORT}/bin/mariadb-install-db"
+PORTS_MARIADB_SERVER_PORT="${MARIADB_PORT}-server"
+
+if [[ -x "${PORT_PREFIX}/bin/port" ]]; then
+    MACPORTS=1
+fi
+
 APACHE=0
 MARIADB=0
 PHP=0
@@ -118,11 +144,17 @@ save_config() {
     local now
     now=$(date "+%Y-%m-%dT%H:%M:%S")
 
+    local pkg_mgr="brew"
+    [[ $USE_APT == 1 ]] && pkg_mgr="apt"
+    [[ $USE_PORTS == 1 ]] && pkg_mgr="port"
+
     cat > "$CONFIG_FILE" << EOF
 {
   "install_path": "${install_path}",
   "installed_at": "${now}",
+  "package_manager": "${pkg_mgr}",
   "brew_prefix": "${BREW_PREFIX}",
+  "port_prefix": "${PORT_PREFIX}",
   "architecture": "${ARCH}",
   "os": "${OS_DISTRO} ${OS_VERSION}",
   "versions": {
@@ -156,6 +188,9 @@ detect_apache() {
             APACHE=0
             APACHE_VERSION=""
         fi
+    elif [[ $USE_PORTS == 1 ]] && [[ -f "${PORT_PREFIX}/etc/apache2/httpd.conf" ]]; then
+        APACHE=1
+        APACHE_VERSION=$("${PORT_PREFIX}/sbin/httpd" -v 2>/dev/null | sed -n 's/.*Apache\/\([0-9.]*\).*/\1/p')
     elif [[ -d "${BREW_PREFIX}/Cellar/httpd" ]]; then
         APACHE=1
         APACHE_VERSION=$(find "${BREW_PREFIX}/Cellar/httpd" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
@@ -174,6 +209,9 @@ detect_mariadb() {
             MARIADB=0
             MARIADB_VERSION=""
         fi
+    elif [[ $USE_PORTS == 1 ]] && [[ -d "${PORT_PREFIX}/var/db/${MARIADB_PORT}" ]]; then
+        MARIADB=1
+        MARIADB_VERSION=$("${PORT_PREFIX}/bin/mariadb" --version 2>/dev/null | sed -n 's/.*Distrib \([0-9.]*\).*/\1/p')
     elif [[ -d "${BREW_PREFIX}/Cellar/mariadb" ]]; then
         MARIADB=1
         MARIADB_VERSION=$(find "${BREW_PREFIX}/Cellar/mariadb" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
@@ -193,6 +231,9 @@ detect_php() {
             PHP=0
             PHP_VERSION=""
         fi
+    elif [[ $USE_PORTS == 1 ]] && command -v php &>/dev/null 2>&1; then
+        PHP=1
+        PHP_VERSION=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
     elif [[ -d "${BREW_PREFIX}/Cellar/php" ]]; then
         PHP=1
         PHP_VERSION=$(find "${BREW_PREFIX}/Cellar/php" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
@@ -215,6 +256,9 @@ detect_phpmyadmin() {
             PHPMYADMIN=0
             PHPMYADMIN_VERSION=""
         fi
+    elif [[ $USE_PORTS == 1 ]] && [[ -f "${PMA_DIR}/phpup-version.txt" ]]; then
+        PHPMYADMIN=1
+        PHPMYADMIN_VERSION=$(cat "${PMA_DIR}/phpup-version.txt")
     elif [[ -d "${BREW_PREFIX}/Cellar/phpmyadmin" ]]; then
         PHPMYADMIN=1
         PHPMYADMIN_VERSION=$(find "${BREW_PREFIX}/Cellar/phpmyadmin" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
@@ -248,6 +292,10 @@ is_service_running() {
                 pgrep -x "mariadbd" &>/dev/null && return 0 || return 1
                 ;;
             php)
+                if [[ $USE_PORTS == 1 ]]; then
+                    # mod_php inside Apache — no standalone PHP-FPM service
+                    is_service_running apache && return 0 || return 1
+                fi
                 pgrep -f "(^|/)php-fpm" &>/dev/null && return 0 || return 1
                 ;;
             *) return 1 ;;
@@ -256,7 +304,7 @@ is_service_running() {
 }
 
 detect_all() {
-    if [[ $USE_APT == 0 ]] && [[ $HOMEBREW == 0 ]]; then
+    if [[ $USE_APT == 0 ]] && [[ $HOMEBREW == 0 ]] && [[ $MACPORTS == 0 ]]; then
         return
     fi
     detect_apache
@@ -310,6 +358,9 @@ check_prerequisites() {
             print_warn "Press Enter after the Xcode CLT installation completes..."
             read -r
         fi
+        if [[ $USE_PORTS == 1 ]]; then
+            print_info "MacPorts backend: packages compile from source — Xcode CLT is required."
+        fi
     fi
 }
 
@@ -357,11 +408,57 @@ install_homebrew() {
     fi
 }
 
+# ---- Install MacPorts ---------------------------------------
+install_macports() {
+    [[ $MACPORTS == 1 ]] && return
+    printf "\n"
+    print_warn "MacPorts not found. Installing MacPorts ${MACPORTS_VERSION}..."
+    local osver token
+    osver=$(sw_vers -productVersion | cut -d. -f1-2)
+    case "$osver" in
+        10.6) token="10.6-SnowLeopard";; 10.7) token="10.7-Lion";;
+        10.8) token="10.8-MountainLion";; 10.9) token="10.9-Mavericks";;
+        10.10) token="10.10-Yosemite";;  10.11) token="10.11-ElCapitan";;
+        10.12) token="10.12-Sierra";;    10.13) token="10.13-HighSierra";;
+        10.14) token="10.14-Mojave";;    10.15) token="10.15-Catalina";;
+        11) token="11-BigSur";; 12) token="12-Monterey";; 13) token="13-Ventura";;
+        14) token="14-Sonoma";; 15) token="15-Sequoia";; 26) token="26-Tahoe";;
+        *) print_err "No MacPorts installer for macOS ${osver} — this machine is not viable for a modern web stack."; return 1 ;;
+    esac
+    local ver="${MACPORTS_VERSION:-2.12.5}"
+    local url="https://github.com/macports/macports-base/releases/download/v${ver}/MacPorts-${ver}-${token}.pkg"
+    local pkg="/tmp/MacPorts-${ver}-${token}.pkg"
+    if ! curl -fsSL --connect-timeout 30 "$url" -o "$pkg"; then
+        print_err "Failed to download MacPorts installer: $url"
+        return 1
+    fi
+    sudo installer -pkg "$pkg" -target / || { print_err "MacPorts installer failed"; return 1; }
+    rm -f "$pkg"
+    export PATH="${PORT_PREFIX}/bin:${PORT_PREFIX}/sbin:${PATH}"
+    MACPORTS=1
+    print_ok "MacPorts installed"
+    print_info "Updating ports tree (first selfupdate can take a few minutes)..."
+    sudo "${PORT_PREFIX}/bin/port" -v selfupdate || print_warn "port selfupdate failed — ports tree may be stale"
+}
+
 # ---- PATH Management ----------------------------------------
 manage_path() {
     # On Linux/apt, binaries are already in standard system paths (/usr/bin)
     if [[ $USE_APT == 1 ]]; then
         print_ok "php and mysql available via system PATH"
+        return
+    fi
+
+    # MacPorts backend — /opt/local is prepended to PATH by main(); the pkg
+    # installer also added /opt/local/bin to new login shells.
+    if [[ $USE_PORTS == 1 ]]; then
+        if [[ -x "${PORT_PREFIX}/bin/php" ]]; then
+            print_ok "php available: ${PORT_PREFIX}/bin/php"
+        fi
+        if [[ -x "${PORT_PREFIX}/bin/mysql" ]] || [[ -x "${PORT_PREFIX}/bin/mariadb" ]]; then
+            print_ok "mariadb client available: ${PORT_PREFIX}/bin/mysql"
+        fi
+        print_info "MacPorts installer already added /opt/local/bin to new shells"
         return
     fi
 
@@ -411,6 +508,9 @@ show_dashboard() {
     if [[ $USE_APT == 1 ]]; then
         printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}apt${RESET}\n" \
             "$ARCH" "$OS_DISTRO" "$OS_VERSION"
+    elif [[ $USE_PORTS == 1 ]]; then
+        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}port${RESET}\n" \
+            "$ARCH" "$OS_NAME" "$OS_VERSION"
     else
         printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Homebrew: ${CYAN}%s${RESET}\n" \
             "$ARCH" "$OS_NAME" "$OS_VERSION" "$BREW_PREFIX"
@@ -478,6 +578,9 @@ show_dashboard() {
             else
                 is_service_running apache && printf "${GREEN}Active (mod_php)${RESET}\n" || printf "${RED}Stopped${RESET}\n"
             fi
+        elif [[ $USE_PORTS == 1 ]]; then
+            # ports: mod_php inside Apache (phpXX-apache2handler)
+            is_service_running apache && printf "${GREEN}Active (mod_php)${RESET}\n" || printf "${RED}Stopped${RESET}\n"
         else
             is_service_running php && printf "${GREEN}Running${RESET}\n" || printf "${RED}Stopped${RESET}\n"
         fi
@@ -523,6 +626,26 @@ start_services() {
         [[ $APACHE == 1 ]] && sudo systemctl start apache2 2>/dev/null
         [[ $MARIADB == 1 ]] && sudo systemctl start mariadb 2>/dev/null
         [[ $PHP == 1 ]] && sudo systemctl start php*-fpm 2>/dev/null
+    elif [[ $USE_PORTS == 1 ]]; then
+        if [[ $APACHE == 1 ]]; then
+            sudo "${PORT_PREFIX}/bin/port" load apache2 >/dev/null 2>&1
+            sleep 1
+            if pgrep -x httpd &>/dev/null; then
+                print_ok "Apache started on port 80"
+            else
+                print_err "Apache may have failed to start — check ${LOGS_DIR}/apache_error.log"
+                sudo "${PORT_PREFIX}/sbin/apachectl" configtest 2>&1 | tail -3
+            fi
+        fi
+        if [[ $MARIADB == 1 ]]; then
+            sudo "${PORT_PREFIX}/bin/port" load "${MARIADB_PORT}-server" >/dev/null 2>&1
+            for ((_i=0; _i<10; _i++)); do
+                pgrep -x mariadbd &>/dev/null && { print_ok "MariaDB started"; break; }
+                sleep 1
+            done
+            pgrep -x mariadbd &>/dev/null || print_err "MariaDB failed to start — check ${LOGS_DIR}/mariadb_error.log"
+        fi
+        # No PHP service — mod_php inside Apache
     else
         if [[ $APACHE == 1 ]]; then
             sudo "${BREW_PREFIX}/bin/apachectl" restart >/dev/null 2>&1
@@ -563,6 +686,12 @@ stop_services() {
         [[ $APACHE == 1 ]] && sudo systemctl stop apache2 2>/dev/null
         [[ $MARIADB == 1 ]] && sudo systemctl stop mariadb 2>/dev/null
         [[ $PHP == 1 ]] && sudo systemctl stop php*-fpm 2>/dev/null
+    elif [[ $USE_PORTS == 1 ]]; then
+        [[ $APACHE == 1 ]] && sudo "${PORT_PREFIX}/bin/port" unload apache2 >/dev/null 2>&1 || true
+        [[ $MARIADB == 1 ]] && sudo "${PORT_PREFIX}/bin/port" unload "${MARIADB_PORT}-server" >/dev/null 2>&1 || true
+        # Belt-and-braces: launchd will not restart after unload
+        pkill -x httpd 2>/dev/null || true
+        pkill -x mariadbd 2>/dev/null || true
     else
         # Kill any httpd process, then stop the launchd service to prevent restart
         if [[ $APACHE == 1 ]] && is_service_running apache; then
@@ -604,6 +733,10 @@ toggle_services() {
 configure_apache() {
     if [[ $USE_APT == 1 ]]; then
         configure_apache_apt
+        return
+    fi
+    if [[ $USE_PORTS == 1 ]]; then
+        configure_apache_ports
         return
     fi
 
@@ -759,10 +892,85 @@ configure_apache_apt() {
     print_ok "Apache configured"
 }
 
+# ---- Apache Configuration (MacPorts) ------------------------
+configure_apache_ports() {
+    local conf="${PORT_PREFIX}/etc/apache2/httpd.conf"
+    if [[ ! -f "$conf" ]]; then print_err "Apache config not found: $conf"; return 1; fi
+    if [[ ! -f "${conf}.phpup.bak" ]]; then sudo cp "$conf" "${conf}.phpup.bak"; fi
+    print_info "Configuring Apache (MacPorts)..."
+
+    # ServerName — stock conf has commented "ServerName www.example.com:80"
+    sudo sed -i.bak "s/#ServerName www.example.com:80/ServerName localhost:80/g" "$conf"
+    print_ok "Set ServerName to localhost:80"
+
+    # DocumentRoot + its <Directory> block (both reference /opt/local/www/apache2/html)
+    sudo sed -i.bak "s@${PORT_PREFIX}/www/apache2/html@$DOC_ROOT@g" "$conf"
+    print_ok "Set DocumentRoot to ${DOC_ROOT}"
+
+    # Logs — handle both relative ("logs/error_log", ServerRoot-dependent) and absolute forms
+    sudo sed -i.bak "s@^ErrorLog.*@ErrorLog ${LOGS_DIR}/apache_error.log@" "$conf"
+    sudo sed -i.bak "s@^CustomLog.*@CustomLog ${LOGS_DIR}/apache_access.log combined@" "$conf"
+    print_ok "Routed logs to ${LOGS_DIR}"
+
+    # mod_rewrite — uncomment both possible stock spellings
+    sudo sed -i.bak "s@#LoadModule rewrite_module lib/apache2/modules/mod_rewrite.so@LoadModule rewrite_module lib/apache2/modules/mod_rewrite.so@" "$conf"
+    sudo sed -i.bak "s@#LoadModule rewrite_module modules/mod_rewrite.so@LoadModule rewrite_module modules/mod_rewrite.so@" "$conf"
+    sudo sed -i.bak "s/AllowOverride None/AllowOverride All/g" "$conf"
+    print_ok "Enabled mod_rewrite"
+
+    # DirectoryIndex
+    sudo sed -i.bak "s/DirectoryIndex index.html/DirectoryIndex index.php index.html/" "$conf"
+    print_ok "Added index.php to DirectoryIndex"
+
+    # PHP module — absolute path, grep-guarded (works regardless of ServerRoot value)
+    local php_module="${PORT_PREFIX}/lib/apache2/modules/mod_${PHP_PORT}.so"
+    if [[ -f "$php_module" ]]; then
+        if ! grep -q "LoadModule ${PHP_PORT}_module" "$conf"; then
+            printf "\nLoadModule ${PHP_PORT}_module %s\n" "$php_module" | sudo tee -a "$conf" > /dev/null
+        fi
+        if ! grep -q '<FilesMatch \\.php$>' "$conf"; then
+            cat << 'PHPFILESMATCH' | sudo tee -a "$conf" > /dev/null
+
+<FilesMatch \.php$>
+    SetHandler application/x-httpd-php
+</FilesMatch>
+PHPFILESMATCH
+        fi
+        print_ok "Enabled ${PHP_PORT} module"
+    else
+        print_warn "PHP module not found (${php_module}) — PHP may not have installed correctly"
+    fi
+
+    # phpMyAdmin alias
+    if ! grep -q "Alias /phpmyadmin" "$conf"; then
+        cat << PMAALIAS | sudo tee -a "$conf" > /dev/null
+
+Alias /phpmyadmin ${PMA_DIR}
+<Directory ${PMA_DIR}/>
+    Options Indexes FollowSymLinks MultiViews
+    AllowOverride All
+    Require local
+</Directory>
+PMAALIAS
+    fi
+    print_ok "Created phpMyAdmin alias"
+
+    # www dir writable by Apache (macOS _www, same as brew path)
+    sudo chgrp -R _www "$DOC_ROOT" 2>/dev/null || true
+    sudo chmod -R 775 "$DOC_ROOT" 2>/dev/null || true
+    print_ok "Set ${DOC_ROOT} group to _www (775)"
+
+    sudo rm -f "${conf}.bak"
+}
+
 # ---- PHP Configuration --------------------------------------
 configure_php() {
     if [[ $USE_APT == 1 ]]; then
         configure_php_apt
+        return
+    fi
+    if [[ $USE_PORTS == 1 ]]; then
+        configure_php_ports
         return
     fi
 
@@ -940,10 +1148,104 @@ configure_php_apt() {
     print_ok "PHP configured"
 }
 
+# ---- PHP Configuration (MacPorts) ---------------------------
+configure_php_ports() {
+    if [[ $PHP == 0 ]]; then print_warn "PHP not installed — skipping configuration"; return; fi
+    local pver php_ini
+    pver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+    php_ini="${PORT_PREFIX}/etc/php${pver}/php.ini"
+
+    # MacPorts ships only php.ini-development / php.ini-production — create php.ini
+    if [[ ! -f "$php_ini" ]]; then
+        sudo cp "${PORT_PREFIX}/etc/php${pver}/php.ini-development" "$php_ini" 2>/dev/null \
+            || { print_warn "Could not create $php_ini — skipping PHP configuration"; return; }
+        print_ok "Created php.ini from php.ini-development"
+    fi
+    if [[ ! -f "${php_ini}.phpup.bak" ]]; then sudo cp "$php_ini" "${php_ini}.phpup.bak"; fi
+
+    print_info "Configuring PHP (MacPorts)..."
+    # Extensions are auto-loaded from ${PORT_PREFIX}/var/db/php${pver}/*.ini (config-file-scan-dir)
+    # — no extension= edits needed. Verify quickly: php -m | grep -qE 'mysqli|pdo_mysql' (warn only).
+
+    # MySQL socket wiring — REQUIRED for PHP↔MariaDB (mysqlnd has no matching default socket)
+    local sock="${PORT_PREFIX}/var/run/${MARIADB_PORT}/mysqld.sock"
+    for key in mysqli.default_socket pdo_mysql.default_socket mysql.default_socket; do
+        if grep -q "^${key}" "$php_ini" 2>/dev/null; then
+            sudo sed -i.bak "s@^${key}.*@${key} = ${sock}@" "$php_ini"
+        else
+            echo "${key} = ${sock}" | sudo tee -a "$php_ini" > /dev/null
+        fi
+    done
+    print_ok "Pointed mysqli/pdo_mysql at ${sock}"
+
+    # Display errors
+    sudo sed -i.bak "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
+    print_ok "Enabled display_errors"
+
+    # Error log
+    local error_log_line="error_log = ${LOGS_DIR}/php_errors.log"
+    if ! grep -q "^error_log" "$php_ini" 2>/dev/null; then
+        echo "$error_log_line" | sudo tee -a "$php_ini" > /dev/null
+    else
+        sudo sed -i.bak "s@^error_log.*@${error_log_line}@" "$php_ini"
+    fi
+    print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
+
+    # OPCache — compiled into php85 core (no php85-opcache port exists). Only
+    # touch the settings if the runtime actually has the module loaded.
+    if php -m 2>/dev/null | grep -qi 'Zend OPcache'; then
+        if grep -q "^;*opcache.enable=" "$php_ini" 2>/dev/null; then
+            sudo sed -i.bak "s/^;*opcache.enable=.*/opcache.enable=1/" "$php_ini"
+            sudo sed -i.bak "s/^;*opcache.memory_consumption=.*/opcache.memory_consumption=256/" "$php_ini"
+            sudo sed -i.bak "s/^;*opcache.interned_strings_buffer=.*/opcache.interned_strings_buffer=16/" "$php_ini"
+            sudo sed -i.bak "s/^;*opcache.max_accelerated_files=.*/opcache.max_accelerated_files=20000/" "$php_ini"
+            print_ok "Configured OPCache (256MB, JIT-ready)"
+        fi
+    fi
+
+    # File upload limits (50 MB import for phpMyAdmin, etc.)
+    if grep -q "^upload_max_filesize" "$php_ini" 2>/dev/null; then
+        sudo sed -i.bak "s/^upload_max_filesize.*/upload_max_filesize = 50M/" "$php_ini"
+    else
+        echo "upload_max_filesize = 50M" | sudo tee -a "$php_ini" > /dev/null
+    fi
+    if grep -q "^post_max_size" "$php_ini" 2>/dev/null; then
+        sudo sed -i.bak "s/^post_max_size.*/post_max_size = 55M/" "$php_ini"
+    else
+        echo "post_max_size = 55M" | sudo tee -a "$php_ini" > /dev/null
+    fi
+    if grep -q "^max_execution_time" "$php_ini" 2>/dev/null; then
+        sudo sed -i.bak "s/^max_execution_time.*/max_execution_time = 300/" "$php_ini"
+    else
+        echo "max_execution_time = 300" | sudo tee -a "$php_ini" > /dev/null
+    fi
+    if grep -q "^max_input_time" "$php_ini" 2>/dev/null; then
+        sudo sed -i.bak "s/^max_input_time.*/max_input_time = 300/" "$php_ini"
+    else
+        echo "max_input_time = 300" | sudo tee -a "$php_ini" > /dev/null
+    fi
+    print_ok "Upload limits set: 50 MB files, 300s timeout"
+
+    # Session GC lifetime (match PMA LoginCookieValidity)
+    if grep -q "^session.gc_maxlifetime" "$php_ini" 2>/dev/null; then
+        sudo sed -i.bak "s/^session.gc_maxlifetime.*/session.gc_maxlifetime = 14400/" "$php_ini"
+    else
+        echo "session.gc_maxlifetime = 14400" | sudo tee -a "$php_ini" > /dev/null
+    fi
+    print_ok "Session GC lifetime: 4 hours"
+
+    sudo rm -f "${php_ini}.bak"
+    print_ok "PHP configured (MacPorts)"
+}
+
 # ---- MariaDB Configuration ----------------------------------
 configure_mariadb() {
     if [[ $USE_APT == 1 ]]; then
         configure_mariadb_apt
+        return
+    fi
+    if [[ $USE_PORTS == 1 ]]; then
+        configure_mariadb_ports
         return
     fi
 
@@ -1038,10 +1340,83 @@ configure_mariadb_apt() {
     print_ok "MariaDB configured"
 }
 
+# ---- MariaDB Configuration (MacPorts) ------------------------
+configure_mariadb_ports() {
+    if [[ $MARIADB == 0 ]]; then print_warn "MariaDB not installed — skipping configuration"; return; fi
+    print_info "Configuring MariaDB (MacPorts)..."
+
+    # 1. Enable networking — MacPorts macports-default.cnf ships with skip-networking
+    #    (allows multiple mysql ports to coexist). phpup needs TCP + socket.
+    if [[ -f "${PORT_PREFIX}/etc/${MARIADB_PORT}/macports-default.cnf" ]] && \
+       grep -q "skip-networking" "${PORT_PREFIX}/etc/${MARIADB_PORT}/macports-default.cnf"; then
+        sudo sed -i.bak "s/^skip-networking/#skip-networking/" \
+            "${PORT_PREFIX}/etc/${MARIADB_PORT}/macports-default.cnf"
+        print_ok "Enabled MariaDB networking (removed skip-networking)"
+    fi
+
+    # 2. Initialize data dir if empty (server port pre-creates /opt/local/var/db/<port> owned by _mysql)
+    local datadir="${PORT_PREFIX}/var/db/${MARIADB_PORT}"
+    if [[ -d "$datadir" ]] && [[ -z "$(ls -A "$datadir" 2>/dev/null)" ]]; then
+        print_info "Initializing MariaDB data directory..."
+        # Prefer --auth-root-authentication-method=normal (native-password root, no
+        # unix_socket dance) — documented for MariaDB 10.4+ (12.3/11.4 both qualify).
+        # Fall back to the default init and let the sudo-ALTER chain below handle auth.
+        sudo -u _mysql "${PORT_PREFIX}/lib/${MARIADB_PORT}/bin/mariadb-install-db" \
+            --datadir="$datadir" --auth-root-authentication-method=normal 2>/dev/null \
+            || sudo -u _mysql "${PORT_PREFIX}/lib/${MARIADB_PORT}/bin/mariadb-install-db" \
+                --datadir="$datadir" 2>/dev/null \
+            || print_warn "mariadb-install-db failed — data dir may need manual init"
+    fi
+
+    # 3. Start
+    sudo "${PORT_PREFIX}/bin/port" load "${MARIADB_PORT}-server" >/dev/null 2>&1
+    sleep 3
+
+    # 4. Root auth: unix_socket → mysql_native_password, blank password (same reset as apt path).
+    #    `sudo mysql -u root` works because the OS root user matches the root@localhost account
+    #    via the unix_socket plugin. Use absolute client path (sudo may not keep /opt/local/bin).
+    local mysqlc="${PORT_PREFIX}/bin/mysql"
+    if sudo "$mysqlc" -u root -e "SELECT 1" &>/dev/null 2>&1; then
+        sudo "$mysqlc" -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING ''; FLUSH PRIVILEGES;" 2>/dev/null || true
+        print_ok "MariaDB root password set to blank (native auth)"
+    elif "$mysqlc" -u root -e "SELECT 1" &>/dev/null 2>&1; then
+        "$mysqlc" -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING ''; FLUSH PRIVILEGES;" 2>/dev/null || true
+        print_ok "MariaDB root password set to blank"
+    elif "$mysqlc" -u root -h 127.0.0.1 -e "SELECT 1" &>/dev/null 2>&1; then
+        print_ok "MariaDB root access confirmed (no password)"
+    else
+        # Fallback: stop, wipe, re-init with native auth, restart
+        print_warn "Could not connect as root — wiping and re-initializing data directory"
+        sudo "${PORT_PREFIX}/bin/port" unload "${MARIADB_PORT}-server" >/dev/null 2>&1
+        sleep 1
+        sudo rm -rf "$datadir" 2>/dev/null || true
+        sudo mkdir -p "$datadir"
+        sudo chown _mysql:_mysql "$datadir"
+        sudo -u _mysql "${PORT_PREFIX}/lib/${MARIADB_PORT}/bin/mariadb-install-db" \
+            --datadir="$datadir" --auth-root-authentication-method=normal 2>/dev/null \
+            || sudo -u _mysql "${PORT_PREFIX}/lib/${MARIADB_PORT}/bin/mariadb-install-db" --datadir="$datadir" 2>/dev/null || true
+        sudo "${PORT_PREFIX}/bin/port" load "${MARIADB_PORT}-server" >/dev/null 2>&1
+        sleep 5
+        sudo "$mysqlc" -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING ''; FLUSH PRIVILEGES;" 2>/dev/null || true
+        print_ok "MariaDB root password set to blank"
+    fi
+
+    # 5. Error log in my.cnf (append to [mysqld] if missing)
+    local my_cnf="${PORT_PREFIX}/etc/${MARIADB_PORT}/my.cnf"
+    if [[ -f "$my_cnf" ]] && ! grep -q "log-error" "$my_cnf" 2>/dev/null; then
+        echo "log-error = ${LOGS_DIR}/mariadb_error.log" | sudo tee -a "$my_cnf" > /dev/null
+        print_ok "Set MariaDB error log to ${LOGS_DIR}/mariadb_error.log"
+    fi
+}
+
 # ---- phpMyAdmin Configuration -------------------------------
 configure_phpmyadmin() {
     if [[ $USE_APT == 1 ]]; then
         configure_phpmyadmin_apt
+        return
+    fi
+    if [[ $USE_PORTS == 1 ]]; then
+        configure_phpmyadmin_ports
         return
     fi
 
@@ -1265,6 +1640,80 @@ PMACONF
     print_ok "phpMyAdmin configured"
 }
 
+# ---- phpMyAdmin Configuration (MacPorts) ---------------------
+configure_phpmyadmin_ports() {
+    print_info "Configuring phpMyAdmin (MacPorts)..."
+    if [[ $PHPMYADMIN == 0 ]]; then
+        print_warn "phpMyAdmin not installed — skipping configuration"
+        return
+    fi
+
+    # Tarball install (no port): use the conf.d override pattern from the apt
+    # path so overrides live under /opt/local/etc (preserved across upgrades).
+    local pma_override_dir="${PORT_PREFIX}/etc/phpmyadmin/conf.d"
+    local pma_override="${pma_override_dir}/phpup.php"
+    sudo mkdir -p "$pma_override_dir" 2>/dev/null || true
+    sudo tee "$pma_override" > /dev/null <<'PMACONF'
+<?php
+// phpup — phpMyAdmin configuration overrides (MacPorts)
+error_reporting(E_ALL & ~E_DEPRECATED);
+$cfg['VersionCheck'] = false;
+$cfg['SendErrorReports'] = 'never';
+$cfg['LoginCookieValidity'] = 14400;
+PMACONF
+    print_ok "Applied phpMyAdmin overrides (performance, 4h cookie)"
+
+    # Tarball ships without config.inc.php — create one that loads the conf.d
+    # overrides so AllowNoPassword and the rest take effect.
+    local tarball_conf="${PMA_DIR}/config.inc.php"
+    if [[ ! -f "$tarball_conf" ]] || ! grep -q "conf.d" "$tarball_conf" 2>/dev/null; then
+        sudo tee "$tarball_conf" > /dev/null <<CONFDINCLUDE
+<?php
+// phpup — load MacPorts conf.d overrides + AllowNoPassword
+\$conf_d_dir = '${pma_override_dir}/';
+if (is_dir(\$conf_d_dir)) {
+    foreach (glob(\$conf_d_dir . '*.php') as \$conf_file) {
+        include \$conf_file;
+    }
+}
+\$cfg['Servers'][1]['AllowNoPassword'] = true;
+CONFDINCLUDE
+        print_ok "Created tarball config with conf.d include"
+    fi
+
+    # Create phpMyAdmin tmp directory (required for template cache)
+    local pma_tmp="${PMA_DIR}/tmp"
+    sudo sh -c "mkdir -p '$pma_tmp' && chgrp _www '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null || true
+    print_ok "Created phpMyAdmin tmp directory"
+
+    # Configure phpMyAdmin storage database (named 'pma')
+    local pma_sql="${PMA_DIR}/sql/create_tables.sql"
+    local mysqlc="${PORT_PREFIX}/bin/mysql"
+    if [[ -f "$pma_sql" ]]; then
+        if ! "$mysqlc" -u root -e "USE pma" &>/dev/null 2>&1; then
+            print_info "Setting up phpMyAdmin storage database..."
+            # Rename the db to 'pma' throughout the SQL
+            sed 's/phpmyadmin/pma/g' "$pma_sql" | "$mysqlc" -u root 2>/dev/null || true
+            # Grant pma user limited privileges for the storage tables
+            "$mysqlc" -u root -e "GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost' IDENTIFIED BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
+        fi
+        # Wire storage into the override using server index 1 (conf.d loads early)
+        if ! grep -q "pmadb" "$pma_override" 2>/dev/null; then
+            sudo tee -a "$pma_override" > /dev/null <<'PMASTORAGE'
+
+$cfg['Servers'][1]['controluser'] = 'pma';
+$cfg['Servers'][1]['controlpass'] = '';
+$cfg['Servers'][1]['pmadb'] = 'pma';
+PMASTORAGE
+            print_ok "Configured phpMyAdmin storage database (pma)"
+        fi
+    else
+        print_info "phpMyAdmin storage tables not found — skipping storage setup"
+    fi
+
+    print_ok "phpMyAdmin configured (MacPorts)"
+}
+
 # ---- Install Command ----------------------------------------
 cmd_install() {
     if [[ $STACK == 1 ]]; then
@@ -1280,6 +1729,15 @@ cmd_install() {
     if [[ $OS_MAJOR -lt 11 && $OS_NAME == "macOS" ]]; then
         printf "${YELLOW}ℹ  macOS ${OS_VERSION} detected — PHP will be compiled from source.${RESET}\n"
         printf "${YELLOW}   This takes longer and needs Xcode CLT.  macOS 11+ has pre-built bottles.${RESET}\n\n"
+    fi
+
+    # Q4: macOS below the supported floor is not viable for a modern stack
+    if [[ $USE_PORTS == 1 ]] && [[ $OS_VERSION < "10.15" ]]; then
+        printf "${RED}macOS ${OS_VERSION} is below the supported floor (10.15 Catalina).${RESET}\n"
+        printf "${RED}This machine is not viable as a dev machine for a modern web stack — no package manager\n"
+        printf "${RED}(Homebrew or MacPorts) can deliver a current PHP/Apache/MariaDB here.${RESET}\n\n"
+        read -r -p "Press Enter to return to the dashboard..."
+        return
     fi
 
     # Prerequisites
@@ -1327,7 +1785,7 @@ cmd_install() {
         if [[ $PHPMYADMIN == 0 ]]; then
             local pma_latest
             pma_latest=$(latest_pma_version)
-            if [[ -n "$pma_latest" ]] && install_pma_tarball "$pma_latest"; then
+            if [[ -n "$pma_latest" ]] && install_pma_tarball "$pma_latest" /usr/share/phpmyadmin; then
                 PHPMYADMIN=1
             else
                 print_warn "phpMyAdmin tarball download failed — falling back to apt package"
@@ -1335,6 +1793,42 @@ cmd_install() {
             fi
         fi
 
+        detect_all
+    elif [[ $USE_PORTS == 1 ]]; then
+        install_macports || { print_err "MacPorts bootstrap failed"; read -r -p "Press Enter..."; return; }
+        export PATH="${PORT_PREFIX}/bin:${PORT_PREFIX}/sbin:${PATH}"
+
+        printf "\n"; print_info "Installing packages via MacPorts (compiled from source — this can take a long time on Intel)..."; printf "\n"
+        # Source builds take hours — refresh the sudo credential before each long command
+        sudo -v || true
+        [[ $APACHE == 0 ]] && sudo "${PORT_PREFIX}/bin/port" -N install apache2 && APACHE=1
+        if [[ $MARIADB == 0 ]]; then
+            sudo -v || true
+            if sudo "${PORT_PREFIX}/bin/port" -N install "${MARIADB_PORT}" "${MARIADB_PORT}-server"; then
+                MARIADB=1
+            else
+                print_warn "mariadb-12.3 failed — falling back to mariadb-11.4 (LTS)"
+                MARIADB_PORT="mariadb-11.4"
+                sudo "${PORT_PREFIX}/bin/port" -N install "${MARIADB_PORT}" "${MARIADB_PORT}-server" && MARIADB=1
+            fi
+        fi
+        if [[ $PHP == 0 ]]; then
+            sudo -v || true
+            sudo "${PORT_PREFIX}/bin/port" -N install "${PHP_PORT}" "${PHP_PORT}-apache2handler" "${PHP_PORT}-mysql" \
+                "${PHP_PORT}-curl" "${PHP_PORT}-gd" "${PHP_PORT}-intl" "${PHP_PORT}-mbstring" \
+                "${PHP_PORT}-sqlite" "${PHP_PORT}-openssl" && PHP=1
+        fi
+        sudo "${PORT_PREFIX}/bin/port" select --set php "${PHP_PORT}" 2>/dev/null || true
+        sudo "${PORT_PREFIX}/bin/port" select --set mysql "${MARIADB_PORT}" 2>/dev/null || true
+        if [[ $PHPMYADMIN == 0 ]]; then
+            local pma_latest
+            pma_latest=$(latest_pma_version)
+            if [[ -n "$pma_latest" ]] && install_pma_tarball "$pma_latest" "$PMA_DIR"; then
+                PHPMYADMIN=1
+            else
+                print_warn "phpMyAdmin tarball download failed"
+            fi
+        fi
         detect_all
     else
         # Install Homebrew
@@ -1509,13 +2003,40 @@ cmd_update() {
             printf "${BOLD}Upgrade phpMyAdmin? [Y/n]:${RESET} "
             read -r pma_upgrade
             if [[ "$pma_upgrade" != "n" && "$pma_upgrade" != "N" ]]; then
-                install_pma_tarball "$pma_latest" || print_warn "phpMyAdmin tarball upgrade failed"
+                install_pma_tarball "$pma_latest" /usr/share/phpmyadmin || print_warn "phpMyAdmin tarball upgrade failed"
             fi
         fi
 
         configure_apache
         configure_php
         configure_phpmyadmin
+        start_services
+    elif [[ $USE_PORTS == 1 ]]; then
+        print_info "Updating ports tree (port selfupdate)..."
+        sudo "${PORT_PREFIX}/bin/port" selfupdate 2>&1 | tail -5
+        local outdated
+        outdated=$("${PORT_PREFIX}/bin/port" outdated 2>/dev/null | grep -E "apache2|${PHP_PORT}|php8|mariadb" || true)
+        if [[ -z "$outdated" ]]; then
+            print_ok "All stack components are up to date"; printf "\n"; read -r -p "Press Enter to continue..."; return
+        fi
+        printf "\n${CYAN}Updates available:${RESET}\n"; printf "%s\n" "$outdated"; printf "\n"
+        printf "${BOLD}Apply these updates? [y/N]:${RESET} "
+        read -r confirm
+        [[ "$confirm" != "y" && "$confirm" != "Y" && "$confirm" != "yes" ]] && { print_info "Update cancelled."; printf "\n"; read -r -p "Press Enter to continue..."; return; }
+        stop_services
+        printf "\n"; print_info "Upgrading packages via MacPorts..."
+        sudo "${PORT_PREFIX}/bin/port" upgrade outdated 2>&1 | tail -5
+        detect_all
+        # phpMyAdmin tarball upgrade (same as apt branch)
+        local pma_latest
+        pma_latest=$(latest_pma_version)
+        if [[ -n "$pma_latest" && "$PHPMYADMIN_VERSION" != "$pma_latest" ]]; then
+            printf "\n${CYAN}phpMyAdmin ${pma_latest} available (installed: ${PHPMYADMIN_VERSION})${RESET}\n"
+            printf "${BOLD}Upgrade phpMyAdmin? [Y/n]:${RESET} "
+            read -r pma_upgrade
+            [[ "$pma_upgrade" != "n" && "$pma_upgrade" != "N" ]] && install_pma_tarball "$pma_latest" "$PMA_DIR" || print_warn "phpMyAdmin upgrade failed"
+        fi
+        configure_apache; configure_php; configure_phpmyadmin
         start_services
     else
         brew update &>/dev/null
@@ -1582,7 +2103,11 @@ cmd_delete() {
     printf "${GREEN}THIS WILL NOT BE DELETED:${RESET}\n"
     printf "${GREEN}- Your website files in %s${RESET}\n" "$DOC_ROOT"
     printf "${GREEN}- Your MariaDB databases (backed up to %s)${RESET}\n" "$DATA_BACKUP_DIR"
-    printf "${GREEN}- Your config files (kept in /etc — restored on reinstall)${RESET}\n"
+    if [[ $USE_PORTS == 1 ]]; then
+        printf "${GREEN}- Your config files (kept in /opt/local/etc — restored on reinstall)${RESET}\n"
+    else
+        printf "${GREEN}- Your config files (kept in /etc — restored on reinstall)${RESET}\n"
+    fi
     printf "\n"
     printf "${BOLD}Type DELETE to confirm:${RESET} "
     read -r confirm_delete
@@ -1605,6 +2130,8 @@ cmd_delete() {
     local mariadb_data
     if [[ $USE_APT == 1 ]]; then
         mariadb_data="/var/lib/mysql"
+    elif [[ $USE_PORTS == 1 ]]; then
+        mariadb_data="${PORT_PREFIX}/var/db/${MARIADB_PORT}"
     else
         mariadb_data="${BREW_PREFIX}/var/mysql"
     fi
@@ -1615,7 +2142,7 @@ cmd_delete() {
             local timestamp
             timestamp=$(date "+%Y%m%d_%H%M%S")
             local archived_backup="${BASE_DIR}/data_backup_${timestamp}"
-            if [[ $USE_APT == 1 ]]; then
+            if [[ $USE_APT == 1 ]] || [[ $USE_PORTS == 1 ]]; then
                 sudo mv "$DATA_BACKUP_DIR" "$archived_backup" 2>/dev/null || true
             else
                 mv "$DATA_BACKUP_DIR" "$archived_backup" 2>/dev/null || true
@@ -1626,7 +2153,8 @@ cmd_delete() {
         # Copy entire data directory for full restore on reinstall.
         # apt datadir is 700 mysql:mysql — must copy as root or the system
         # schema and user databases are silently skipped (cp exits 0).
-        if [[ $USE_APT == 1 ]]; then
+        # ports datadir is owned by _mysql — same sudo requirement.
+        if [[ $USE_APT == 1 ]] || [[ $USE_PORTS == 1 ]]; then
             sudo cp -r "$mariadb_data" "$DATA_BACKUP_DIR" 2>/dev/null || true
         else
             cp -r "$mariadb_data" "$DATA_BACKUP_DIR" 2>/dev/null || true
@@ -1656,6 +2184,18 @@ cmd_delete() {
         # removing it gives a genuinely fresh reinstall. Configs stay in /etc/mysql.
         sudo rm -rf /var/lib/mysql 2>/dev/null || true
         print_ok "Removed runtime state (/var/lib)"
+    elif [[ $USE_PORTS == 1 ]]; then
+        # Uninstall leaf-first (dependents before dependencies) so port does not
+        # prompt. Do NOT use `port -y` — it is a dry run, not confirm-skip.
+        local stack_ports=("${PHP_PORT}-apache2handler" "${PHP_PORT}-mysql" "${PHP_PORT}-curl" \
+            "${PHP_PORT}-gd" "${PHP_PORT}-intl" "${PHP_PORT}-mbstring" "${PHP_PORT}-sqlite" \
+            "${PHP_PORT}-openssl" "${PHP_PORT}" "apache2" "${MARIADB_PORT}-server" "${MARIADB_PORT}")
+        for p in "${stack_ports[@]}"; do
+            sudo "${PORT_PREFIX}/bin/port" uninstall "$p" 2>/dev/null || true
+        done
+        # Safety net if any uninstall was blocked by dependents
+        sudo "${PORT_PREFIX}/bin/port" uninstall --follow-dependents "${MARIADB_PORT}-server" apache2 2>/dev/null || true
+        print_ok "Uninstalled packages"
     else
         brew uninstall httpd 2>/dev/null || true
         brew uninstall mariadb 2>/dev/null || true
@@ -1668,10 +2208,18 @@ cmd_delete() {
             brew uninstall --force --ignore-dependencies "$f" 2>/dev/null || true
         done
     fi
-    print_ok "Uninstalled packages"
 
-    # Clean up brew leftovers that survive uninstall
-    if [[ $USE_APT == 0 ]]; then
+    # Clean up backend leftovers that survive uninstall
+    if [[ $USE_PORTS == 1 ]]; then
+        # MariaDB data dir (already backed up above) + runtime state; keep
+        # /opt/local/etc configs (parity with apt keeping /etc — restored on reinstall)
+        sudo rm -rf "${PORT_PREFIX}/var/db/${MARIADB_PORT}" 2>/dev/null || true
+        sudo rm -rf "${PORT_PREFIX}/var/log/${MARIADB_PORT}" 2>/dev/null || true
+        sudo rm -rf "${PORT_PREFIX}/var/run/${MARIADB_PORT}" 2>/dev/null || true
+        sudo rm -rf "${PMA_DIR}" 2>/dev/null || true
+        print_ok "Removed MariaDB data dir and phpMyAdmin tarball"
+        [[ -d "${PORT_PREFIX}/var/db/${MARIADB_PORT}" ]] && print_warn "Run: sudo rm -rf ${PORT_PREFIX}/var/db/${MARIADB_PORT}"
+    elif [[ $USE_APT == 0 ]]; then
         # Remove MariaDB data dir (brew uninstall leaves it behind)
         local mariadb_data="${BREW_PREFIX}/var/mysql"
         rm -rf "$mariadb_data" 2>/dev/null || true
@@ -1704,7 +2252,11 @@ cmd_delete() {
     print_ok "DELETION COMPLETE!"
     printf "${GREEN}Your website files are preserved in: %s${RESET}\n" "$DOC_ROOT"
     printf "${GREEN}Your databases are preserved in:   %s${RESET}\n" "$DATA_BACKUP_DIR"
-    printf "${GREEN}Your config files are preserved in: /etc (restored on reinstall)${RESET}\n"
+    if [[ $USE_PORTS == 1 ]]; then
+        printf "${GREEN}Your config files are preserved in: /opt/local/etc (restored on reinstall)${RESET}\n"
+    else
+        printf "${GREEN}Your config files are preserved in: /etc (restored on reinstall)${RESET}\n"
+    fi
     printf "\n"
     read -r -p "Press Enter to continue..."
 }
@@ -1792,6 +2344,7 @@ latest_pma_version() {
 
 install_pma_tarball() {
     local version="$1"
+    local pma_dir="$2"    # backend-specific target: /usr/share, /opt/local/share, brew Cellar
     local url="https://files.phpmyadmin.net/phpMyAdmin/${version}/phpMyAdmin-${version}-all-languages.tar.gz"
     local tmp_dir="/tmp/phpup_pma_$$"
 
@@ -1803,17 +2356,17 @@ install_pma_tarball() {
     fi
 
     # Remove old install
-    sudo rm -rf /usr/share/phpmyadmin
+    sudo rm -rf "$pma_dir"
 
     # Extract
     print_info "Extracting phpMyAdmin..."
-    sudo mkdir -p /usr/share/phpmyadmin
+    sudo mkdir -p "$pma_dir"
     sudo tar -xzf "${tmp_dir}/phpmyadmin.tar.gz" -C "$tmp_dir"
-    sudo mv "${tmp_dir}/phpMyAdmin-${version}-all-languages"/* /usr/share/phpmyadmin/
-    sudo mv "${tmp_dir}/phpMyAdmin-${version}-all-languages"/.* /usr/share/phpmyadmin/ 2>/dev/null || true
+    sudo mv "${tmp_dir}/phpMyAdmin-${version}-all-languages"/* "$pma_dir/"
+    sudo mv "${tmp_dir}/phpMyAdmin-${version}-all-languages"/.* "$pma_dir/" 2>/dev/null || true
 
     # Write version file for detection
-    echo "$version" | sudo tee /usr/share/phpmyadmin/phpup-version.txt > /dev/null
+    echo "$version" | sudo tee "$pma_dir/phpup-version.txt" > /dev/null
 
     # Cleanup
     rm -rf "$tmp_dir"
@@ -1975,6 +2528,38 @@ cmd_forced_update() {
         return
     fi
 
+    if [[ $USE_PORTS == 1 ]]; then
+        printf "${CYAN}Available PHP versions:${RESET}\n"
+        local php_versions
+        php_versions=$("${PORT_PREFIX}/bin/port" echo 'php8*' 2>/dev/null | grep -E '^php8[0-9]+$' | sort -V)
+        printf "%s\n" "$php_versions"
+        printf "\n${BOLD}Enter PHP version to switch to (e.g. 8.5) or press Enter to skip:${RESET} "
+        read -r php_ver
+        if [[ -n "$php_ver" ]]; then
+            local target="php${php_ver}"
+            print_info "Installing ${target} + Apache handler..."
+            sudo "${PORT_PREFIX}/bin/port" -N install "$target" "${target}-apache2handler" "${target}-mysql" \
+                "${target}-curl" "${target}-gd" "${target}-intl" "${target}-mbstring" \
+                "${target}-sqlite" "${target}-openssl" 2>&1 | tail -5
+            sudo "${PORT_PREFIX}/bin/port" select --set php "$target" 2>/dev/null || true
+            # Rewrite the LoadModule line in httpd.conf to the new version's .so
+            sudo sed -i.bak "s@LoadModule php[0-9]*_module .*@LoadModule ${target}_module ${PORT_PREFIX}/lib/apache2/modules/mod_${target}.so@" \
+                "${PORT_PREFIX}/etc/apache2/httpd.conf"
+            sudo rm -f "${PORT_PREFIX}/etc/apache2/httpd.conf.bak"
+            PHP_PORT="$target"
+            detect_all
+            configure_apache_ports
+            configure_php_ports
+            sudo "${PORT_PREFIX}/bin/port" reload apache2 >/dev/null 2>&1 || sudo "${PORT_PREFIX}/sbin/apachectl" restart >/dev/null 2>&1
+            detect_all
+            save_config "$BASE_DIR" "$APACHE_VERSION" "$MARIADB_VERSION" "$PHP_VERSION" "$PHPMYADMIN_VERSION"
+            print_ok "PHP switched to ${PHP_VERSION}"
+        fi
+        printf "\n"
+        read -r -p "Press Enter to return to the dashboard..."
+        return
+    fi
+
     # Homebrew path — PHP version switching only
     printf "${CYAN}Available PHP versions:${RESET}\n"
     local php_versions
@@ -2046,6 +2631,15 @@ check_restore_data() {
                 sudo rm -rf "$DATA_BACKUP_DIR" 2>/dev/null || true
                 sudo chown -R mysql:mysql "$mariadb_data" 2>/dev/null || true
                 sudo systemctl start mariadb 2>/dev/null
+            elif [[ $USE_PORTS == 1 ]]; then
+                sudo "${PORT_PREFIX}/bin/port" unload "${MARIADB_PORT}-server" 2>/dev/null
+                sleep 1
+                local mariadb_data="${PORT_PREFIX}/var/db/${MARIADB_PORT}"
+                sudo rm -rf "$mariadb_data" 2>/dev/null || true
+                sudo cp -r "$DATA_BACKUP_DIR" "$mariadb_data"
+                sudo rm -rf "$DATA_BACKUP_DIR" 2>/dev/null || true
+                sudo chown -R _mysql:_mysql "$mariadb_data" 2>/dev/null || true
+                sudo "${PORT_PREFIX}/bin/port" load "${MARIADB_PORT}-server" 2>/dev/null
             else
                 brew services stop mariadb 2>/dev/null
                 sleep 1
@@ -2068,7 +2662,11 @@ check_offline() {
     # Quick connectivity check
     if ! curl -s --connect-timeout 2 https://github.com &>/dev/null; then
         printf "${YELLOW}⚠ No internet connection detected.${RESET}\n"
-        printf "${YELLOW}Homebrew may use cached bottles if available.${RESET}\n"
+        if [[ $USE_PORTS == 1 ]]; then
+            printf "${YELLOW}MacPorts compiles everything from source — an online install is required.${RESET}\n"
+        else
+            printf "${YELLOW}Homebrew may use cached bottles if available.${RESET}\n"
+        fi
         printf "\n"
         return 1
     fi
@@ -2087,6 +2685,35 @@ check_offline() {
     return 0
 }
 
+# ---- Backend Selection --------------------------------------
+detect_backend() {
+    [[ $USE_APT == 1 ]] && return          # Linux: apt, never touch
+    if [[ "$ARCH" == "arm64" ]]; then      # Q1: Apple Silicon = brew only
+        USE_PORTS=0
+        return
+    fi
+    # Intel (x86_64) below
+    local choice="${PHPPUP_BACKEND:-}"
+    case "$choice" in
+        port|macports) USE_PORTS=1; return ;;
+        brew|homebrew) USE_PORTS=0; return ;;
+    esac
+    # No explicit choice → decide by availability/support
+    if [[ $OS_MAJOR -lt 11 ]]; then        # Catalina & older: brew cannot run modern formulas
+        USE_PORTS=1; return
+    fi
+    if command -v brew &>/dev/null && [[ $OS_MAJOR -ge $BREW_MIN_OS_MAJOR ]]; then
+        USE_PORTS=0; return                 # supported brew present → keep (backward compat)
+    fi
+    if [[ $MACPORTS == 1 ]]; then
+        USE_PORTS=1; return                 # brew absent/unsupported, ports present → prefer port
+    fi
+    if [[ $OS_MAJOR -lt $BREW_MIN_OS_MAJOR ]]; then
+        USE_PORTS=1; return                 # brew unsupported on this OS → bootstrap MacPorts
+    fi
+    USE_PORTS=0                             # modern OS, neither installed → bootstrap brew (today's behavior)
+}
+
 # ---- Main Entry Point ---------------------------------------
 main() {
     # Reconnect stdin to terminal (needed when piped via curl | bash)
@@ -2099,6 +2726,12 @@ main() {
             HOMEBREW=1
             BREW_PREFIX=$(brew --prefix)
         fi
+    fi
+
+    # Backend selection (MacPorts vs Homebrew on Intel macOS)
+    detect_backend
+    if [[ $USE_PORTS == 1 ]]; then
+        export PATH="${PORT_PREFIX}/bin:${PORT_PREFIX}/sbin:${PATH}"
     fi
 
     # Detect installed components
@@ -2124,6 +2757,8 @@ main() {
                         BREW_PREFIX=$(brew --prefix)
                     fi
                 fi
+                # Re-check ports backend (a bootstrap may have added port)
+                [[ $USE_PORTS == 1 ]] && { [[ -x /opt/local/bin/port ]] && MACPORTS=1; detect_backend; export PATH="/opt/local/bin:/opt/local/sbin:$PATH"; }
                 detect_all
                 ;;
             [uU]|[uU]pdate)
@@ -2135,6 +2770,8 @@ main() {
                         BREW_PREFIX=$(brew --prefix)
                     fi
                 fi
+                # Re-check ports backend (a bootstrap may have added port)
+                [[ $USE_PORTS == 1 ]] && { [[ -x /opt/local/bin/port ]] && MACPORTS=1; detect_backend; export PATH="/opt/local/bin:/opt/local/sbin:$PATH"; }
                 detect_all
                 ;;
             [rR]|[rR]estart)
