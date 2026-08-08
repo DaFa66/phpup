@@ -662,7 +662,11 @@ start_services() {
                 pgrep -x mariadbd &>/dev/null && { print_ok "MariaDB started"; break; }
                 sleep 1
             done
-            pgrep -x mariadbd &>/dev/null || print_err "MariaDB failed to start — check ${LOGS_DIR}/mariadb_error.log"
+            if ! pgrep -x mariadbd &>/dev/null; then
+                print_err "MariaDB failed to start — check ${LOGS_DIR}/mariadb_error.log"
+                tail -50 "${LOGS_DIR}/mariadb_error.log" 2>/dev/null || \
+                    tail -50 "${PORT_PREFIX}/var/db/${MARIADB_PORT}/"*.err 2>/dev/null || true
+            fi
         fi
         # No PHP service — mod_php inside Apache
     else
@@ -683,7 +687,10 @@ start_services() {
                 pgrep -x mariadbd &>/dev/null && { print_ok "MariaDB started"; break; }
                 sleep 1
             done
-            pgrep -x mariadbd &>/dev/null || print_err "MariaDB failed to start — check ${LOGS_DIR}/mariadb_error.log"
+            if ! pgrep -x mariadbd &>/dev/null; then
+                print_err "MariaDB failed to start — check ${LOGS_DIR}/mariadb_error.log"
+                tail -50 "${LOGS_DIR}/mariadb_error.log" 2>/dev/null || true
+            fi
         fi
 
         if [[ $PHP == 1 ]]; then
@@ -1176,7 +1183,10 @@ configure_php_ports() {
     pver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
     php_ini="${PORT_PREFIX}/etc/php${pver}/php.ini"
 
-    # MacPorts ships only php.ini-development / php.ini-production — create php.ini
+    # MacPorts ships only php.ini-development / php.ini-production — create php.ini.
+    # Deliberate: dev tool → development template (loud errors, dev-friendly
+    # timeouts). display_errors forced On below regardless; brew/apt ship
+    # production defaults by comparison.
     if [[ ! -f "$php_ini" ]]; then
         sudo cp "${PORT_PREFIX}/etc/php${pver}/php.ini-development" "$php_ini" 2>/dev/null \
             || { print_warn "Could not create $php_ini — skipping PHP configuration"; return; }
@@ -1186,7 +1196,10 @@ configure_php_ports() {
 
     print_info "Configuring PHP (MacPorts)..."
     # Extensions are auto-loaded from ${PORT_PREFIX}/var/db/php${pver}/*.ini (config-file-scan-dir)
-    # — no extension= edits needed. Verify quickly: php -m | grep -qE 'mysqli|pdo_mysql' (warn only).
+    # — no extension= edits needed, but verify the mysql extensions loaded (warn only).
+    if ! php -m 2>/dev/null | grep -qE 'mysqli|pdo_mysql'; then
+        print_warn "mysqli/pdo_mysql not loaded — check that php${pver}-mysql is installed"
+    fi
 
     # MySQL socket wiring — REQUIRED for PHP↔MariaDB (mysqlnd has no matching default socket)
     local sock="${PORT_PREFIX}/var/run/${MARIADB_PORT}/mysqld.sock"
@@ -1700,6 +1713,8 @@ $cfg['VersionCheck'] = false;
 $cfg['SendErrorReports'] = 'never';
 $cfg['LoginCookieValidity'] = 14400;
 PMACONF
+    # TempDir needs shell expansion (quoted heredoc above), so append separately
+    echo "\$cfg['TempDir'] = '${PMA_DIR}/tmp';" | sudo tee -a "$pma_override" > /dev/null
     print_ok "Applied phpMyAdmin overrides (performance, 4h cookie)"
 
     # Tarball ships without config.inc.php — create one that loads the conf.d
