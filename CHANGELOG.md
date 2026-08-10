@@ -9,6 +9,101 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 ---
 
+## [1.0.0] — 2026-08-11
+
+### macOS & Linux (phpup.sh v1.0.0)
+
+First stable release of the macOS and Linux backend. The `-beta` suffix is dropped — phpup.sh is now production-ready on all supported platforms.
+
+**Added**
+- `manage_path()` now self-heals `/etc/paths.d/macports` and prepends `/opt/local/bin` to the shell profile on the MacPorts backend — `php` and `mysql` resolve to MacPorts binaries instead of Apple's bundled versions
+- `cmd_delete()` removes the phpup-added PATH lines from the shell profile on MacPorts so `D` restores the system default PATH
+- Apache start check on MacPorts now retries for up to 10 seconds — eliminates false "may have failed" errors on slow VMs
+- Comprehensive platform documentation: `docs/WINDOWS.md`, `docs/MACOS.md`, `docs/LINUX.md`, and updated `docs/INSTALL-OLDER-MAC.md`
+
+**Changed**
+- README.md restructured as a concise project overview — platform-specific setup details moved to dedicated OS documentation files
+- README now links to [brew.sh](https://brew.sh), [macports.org](https://www.macports.org/), [Apache Lounge](https://www.apachelounge.com/download/), [windows.php.net](https://windows.php.net), [ondrej/php](https://deb.sury.org/), [mariadb.org](https://mariadb.org), and [phpmyadmin.net](https://www.phpmyadmin.net)
+- `docs/INSTALL-OLDER-MAC.md` now links to [macports.org](https://www.macports.org/)
+- macOS backend documentation split: `docs/MACOS.md` for the Homebrew path, `docs/INSTALL-OLDER-MAC.md` for the MacPorts path
+- `PHPPUP_BACKEND` usage documented with examples in README and MACOS.md
+
+**Fixed**
+- `php -v` on fresh MacPorts installs now correctly resolves to the MacPorts PHP instead of Apple's bundled `/usr/bin/php` (macOS Catalina ships PHP 7.3.11)
+
+**Verified**
+- Full Phase 4 VM test pass (Catalina 10.15.5): install, update, delete, reinstall, restart, PHP version switch — all clean
+
+## [0.11.0-beta] — 2026-08-09
+
+### macOS & Linux (phpup.sh v0.11.0-beta)
+
+**Added**
+- `check_prerequisites()` re-verifies Xcode Command Line Tools are actually installed after `xcode-select --install` — phpup now waits and rechecks before proceeding into source builds instead of trusting the prompt (never compiles without CLT)
+- `cmd_delete()` prints an info note that the MacPorts build cache (`/opt/local/var/macports/software/`) survives delete — reinstalls and version switches reuse compiled archives instead of hours of recompiling (clear with `sudo port clean --all`)
+- Screenshot-led install guide for older Intel Macs: `docs/INSTALL-OLDER-MAC.md` (Catalina → Ventura, MacPorts backend)
+
+**Changed**
+- `fu` (forced update / PHP version switch) on MacPorts now presents a numbered menu with full version strings, marks the current version, and accepts number, dotted version (8.4), or port name (php84) — validates against the actual port list before any sudo runs
+- `fu` guards against reinstalling the already-active PHP version — prints a clear message and exits instead of a pointless recompile
+- `configure_php_ports()` now uses the `PHP_PORT` variable (php84, php85) for config paths instead of `php -r` runtime detection — eliminates a dotted-version vs port-name mismatch that silently broke php.ini creation and extension scanning
+- `port selfupdate`, `port upgrade outdated`, and `port -N install` now stream output live instead of `| tail -5` — users see build progress and `$?` captures the real exit status (eliminates the fragile `${PIPESTATUS[0]}` pattern)
+- `detect_mariadb()` on MacPorts now uses the versioned client path (`/opt/local/lib/mariadb-12.3/bin/mariadb`) and parses the MacPorts `from X.Y.Z-MariaDB` version format (not brew's `Distrib X.Y.Z`) — dashboard shows the real MariaDB version instead of a blank row
+- `configure_phpmyadmin_ports()` forces `$cfg['Servers'][1]['host'] = '127.0.0.1'` (TCP) and uses the versioned mysql client with a generic-path fallback — phpMyAdmin logs in over TCP instead of failing on the mismatched MacPorts socket path
+- `fu`'s MacPorts PHP version list removes a redundant alpha/beta/rc version-filter — the port-name regex already excludes devel/pre-release ports; adds a guard for an empty version list with a hint to run Update
+
+**Fixed**
+- Apache `LoadModule` on MacPorts: `configure_apache_ports()` and `fu` wrote `phpXX_module`, but MacPorts' `mod_phpXX.so` exports the module struct as `php_module` (no version suffix) — Apache failed with "Can't locate API module structure". Both sites now write `php_module`; the dedup sed still strips legacy versioned lines
+- MariaDB `my.cnf` on MacPorts: `log-error` was appended with no section header, but MySQL/MariaDB require every option under a `[group]` — MacPorts' my.cnf only has a comment + `!include`, so `[mysqld]` is now added first (guarded, idempotent)
+- MariaDB error log path on MacPorts: `log-error` pointed at `~/phpup/logs` (user-owned) but mariadbd runs as `_mysql` — it aborted at startup with "Permission denied" and wrote no log. Now `/opt/local/var/log/<port>/mariadb_error.log` is created and chowned `_mysql`; `start_services()` failure-tail updated
+- MariaDB service detection on MacPorts: phpup grepped `pgrep -x mariadbd`, but MacPorts' launchd startupitem runs the server as `mysqld` — MariaDB always appeared "failed to start"/"Stopped" even when running. `is_service_running()`, `start_services()` and `stop_services()` now match either process name (mariadbd for brew/apt, mysqld for MacPorts)
+- Apache startup check on MacPorts: `port load apache2` can take longer than 1 second to actually spawn httpd on slow machines (e.g. virtualized Intel), so the single `sleep 1` + `pgrep` produced a false `[ERROR] Apache may have failed to start` even when Apache came up cleanly. `start_services()` now polls `pgrep -x httpd` for up to 10 seconds before declaring failure — parity with the MariaDB check
+- MacPorts shell PATH: `manage_path()` trusted the MacPorts pkg installer to add `/opt/local/bin` to new login shells, but the paths.d entry was sometimes missing, and even when present it sits *after* `/usr/bin` — so Apple's bundled PHP (e.g. 7.3.11 on Catalina) shadowed the installed stack and `php -v` reported the wrong version. `manage_path()` now self-heals `/etc/paths.d/macports` when absent **and** prepends `/opt/local/bin:/opt/local/sbin` to the shell profile (the layer that actually wins over `/usr/bin`); `cmd_delete()` removes those lines again so `D` restores the original shell PATH. The PATH line is version-agnostic, so `fu`/`U` switches need no profile edits
+
+**Verified**
+- Catalina 10.15.5 VM test (fresh install, MacPorts 2.12.5): Apache 2.4.68 + PHP 8.5.9 + MariaDB 12.3.2 + phpMyAdmin 5.2.3 — phpinfo 200, PMA root/blank login works, storage DB (19 tables) configured
+- Phase 4 lifecycle on the same VM: `fu` 8.5↔8.4 switch (one live LoadModule line), `U` update, `D` delete (datadir backup, www intact), `I` reinstall, `R` restart — all clean
+- Shell PATH fix verified live on the guest: an interactive login shell resolves `php` → `/opt/local/bin/php` (8.5.9) instead of Apple's `/usr/bin/php` (7.3.11)
+- All fixes regression-checked for the brew (macOS) and apt (Linux) backends — shared service-management functions match either process name without changing brew/apt behavior
+
+---
+
+## [0.10.0-beta] — 2026-08-07
+
+### macOS & Linux (phpup.sh v0.10.0-beta)
+
+**Added**
+- MacPorts backend (`port`) on Intel Macs — full install/update/restart/delete + PHP version switching
+- Automatic backend selection: MacPorts when Homebrew is unavailable/unsupported on the macOS version or `PHPPUP_BACKEND=port` is set; Homebrew stays default on Apple Silicon and supported Intel macOS
+- `install_macports()` bootstraps MacPorts 2.12.5 from the official .pkg installer (per-macOS-version URL map)
+- `configure_apache_ports`, `configure_php_ports`, `configure_mariadb_ports`, `configure_phpmyadmin_ports` — mod_php (php85-apache2handler) + MariaDB 12.3 + phpMyAdmin tarball
+- MariaDB root auth reset (unix_socket → mysql_native_password) and networking enabled for MacPorts MariaDB (skip-networking removed)
+- PHP↔MariaDB socket wiring (`mysqli`/`pdo_mysql`/`mysql` default_socket) required by MacPorts layouts
+- Dashboard shows `Package: port`; macOS < 10.15 prints an explicit end-of-life message instead of attempting a stack
+
+**Changed**
+- `detect_*` and service management understand the `/opt/local` layout (port load/unload/reload)
+- `U` runs `port selfupdate` + `port upgrade outdated` on the ports backend
+- `D` uninstalls ports leaf-first (no `port -y` dry-run trap) and cleans `/opt/local` runtime state after backing up the data dir
+- `fu` switches PHP via `port select --set php`
+- `install_pma_tarball()` takes a target directory (backend-specific: /usr/share, /opt/local/share, brew Cellar)
+- macOS < 11 installs route through MacPorts with the existing source-compile warning; Catalina is the supported floor
+- An existing Homebrew stack is never silently migrated to MacPorts — backend selection keeps brew when a brew stack is detected installed (even on macOS 11–13), and only routes to ports when no brew stack exists or `PHPPUP_BACKEND=port` is explicit
+
+**Fixed**
+- `fu` no longer corrupts httpd.conf on a failed PHP install — install failure is captured via `PIPESTATUS` and the LoadModule rewrite is gated on success; `php_ver` input is validated before any sudo'd sed
+- Stale `LoadModule php*_module` lines are stripped before appending the current one — fu → D → I cycles leave exactly one live module line (no dead-module Apache crash)
+- `mariadb-11.4` fallback persists across sessions — `detect_mariadb` self-heals by scanning for any installed `mariadb-1[12].*` datadir and adopting that series
+- Q4 floor gate uses numeric version comparison (macOS 10.6–10.9 no longer slip past the end-of-life check)
+- `U` reports update failure instead of a false "UPDATE COMPLETE!" banner on the ports backend
+- phpMyAdmin storage DB rename now matches both SQL forms (backticked `` `phpmyadmin` `` and bare `USE phpmyadmin;`) — the import no longer aborts leaving an empty `pma` DB
+- MariaDB 12.x does not auto-create users on `GRANT` — `CREATE USER IF NOT EXISTS 'pma'@'localhost'` added before the grant
+- phpMyAdmin tmp-dir creation no longer silently lies on failure — if the web-server group can't be set, a warn with the exact sudo fix command is printed instead of a false OK (all three backends)
+- `detect_mariadb` ports branch falls through to brew detection when no `/opt/local` datadir exists (mirrors `detect_apache`) — fixes mixed dashboard state when forcing `PHPPUP_BACKEND=port` on a brew machine
+- The "keeping Homebrew backend" notice only prints when MacPorts migration was actually considered, not on every brew install
+
+---
+
 ## [0.9.0-beta] — 2026-08-07
 
 ### Linux (phpup.sh v0.9.0-beta)
