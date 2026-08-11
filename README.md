@@ -41,29 +41,33 @@ After launching, press **I** to install. On subsequent runs the script remembers
 
 ## Platform Support
 
-| Platform | Architecture   | Package Manager                                                         | Status    | Docs                                                    |
-| -------- | -------------- | ----------------------------------------------------------------------- | --------- | ------------------------------------------------------- |
-| Windows  | x64            | Direct binary downloads                                                 | ✅ Stable | [docs/WINDOWS.md](docs/WINDOWS.md)                      |
-| macOS    | x86_64 + arm64 | [Homebrew](https://brew.sh) / [MacPorts](https://www.macports.org/)    | ✅ Stable | [docs/MACOS.md](docs/MACOS.md)                          |
-| Linux    | x86_64 + arm64 | apt (Debian/Ubuntu/WSL2)                                                | ✅ Stable | [docs/LINUX.md](docs/LINUX.md)                          |
+| Platform | Architecture   | Package Manager                                                     | Status    | Docs                               |
+| -------- | -------------- | ------------------------------------------------------------------- | --------- | ---------------------------------- |
+| Windows  | x64            | Direct binary downloads                                             | ✅ Stable | [docs/WINDOWS.md](docs/WINDOWS.md) |
+| macOS    | x86_64 + arm64 | [Homebrew](https://brew.sh) / [MacPorts](https://www.macports.org/) | ✅ Stable | [docs/MACOS.md](docs/MACOS.md)     |
+| Linux    | x86_64 + arm64 | apt (Debian/Ubuntu/WSL2)                                            | ✅ Stable | [docs/LINUX.md](docs/LINUX.md)     |
 
 ### macOS Backends
 
 phpup picks the right package manager for your Mac automatically:
 
-| Your Mac                          | Backend                                              |
-| --------------------------------- | ---------------------------------------------------- |
-| Apple Silicon (M1/M2/M3/M4)       | [Homebrew](https://brew.sh) — always                 |
-| Intel, macOS 14+ (Sonoma/Sequoia) | [Homebrew](https://brew.sh) — while supported         |
+| Your Mac                                 | Backend                                                    |
+| ---------------------------------------- | ---------------------------------------------------------- |
+| Apple Silicon (M1/M2/M3/M4)              | [Homebrew](https://brew.sh) — always                       |
+| Intel, macOS 14+ (Sonoma/Sequoia)        | [Homebrew](https://brew.sh) — while supported              |
 | Intel, macOS 10.15–13 (Catalina–Ventura) | [MacPorts](https://www.macports.org/) — automatic fallback |
 
 You can override the automatic selection with an environment variable:
 
-```bash
 # Force Homebrew (even on older Intel Macs where phpup would pick MacPorts)
+
+```bash
 PHPPUP_BACKEND=brew /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)"
+```
 
 # Force MacPorts (even on Apple Silicon or modern Intel)
+
+```bash
 PHPPUP_BACKEND=port /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)"
 ```
 
@@ -103,12 +107,12 @@ The dashboard shows installed versions, running services, useful paths, and avai
 
 phpup doesn't hardcode version numbers. Every install and update dynamically resolves the latest stable release of each component:
 
-| Component      | Source                                     | Method                                                          |
-| -------------- | ------------------------------------------ | --------------------------------------------------------------- |
-| **Apache**     | [Apache Lounge](https://www.apachelounge.com/download/) / apt / brew / port | Windows: scrapes download page. Mac/Linux: package manager |
-| **PHP**        | [windows.php.net](https://windows.php.net) / [ondrej](https://deb.sury.org/) / brew / port | Windows: queries `releases.json`. Mac/Linux: package manager |
-| **MariaDB**    | [mariadb.org](https://mariadb.org)         | REST API, sorts by support policy (Rolling > LTS), then version |
-| **phpMyAdmin** | [phpmyadmin.net](https://www.phpmyadmin.net) | Latest stable release                                          |
+| Component      | Source                                                                                     | Method                                                          |
+| -------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| **Apache**     | [Apache Lounge](https://www.apachelounge.com/download/) / apt / brew / port                | Windows: scrapes download page. Mac/Linux: package manager      |
+| **PHP**        | [windows.php.net](https://windows.php.net) / [ondrej](https://deb.sury.org/) / brew / port | Windows: queries `releases.json`. Mac/Linux: package manager    |
+| **MariaDB**    | [mariadb.org](https://mariadb.org)                                                         | REST API, sorts by support policy (Rolling > LTS), then version |
+| **phpMyAdmin** | [phpmyadmin.net](https://www.phpmyadmin.net)                                               | Latest stable release                                           |
 
 PHP is always the latest stable major version (8.2+, currently 8.5). Use the hidden **`fu`** command to switch versions.
 

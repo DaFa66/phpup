@@ -24,10 +24,10 @@ Press **I** to install. That's the whole Quick Start. There isn't a Step 2.
 
 On a modern Mac, phpup uses Homebrew. Always. Here's exactly when:
 
-| Your Mac                          | Backend                                              | Why                                      |
-| --------------------------------- | ---------------------------------------------------- | ---------------------------------------- |
-| Apple Silicon (M1/M2/M3/M4)       | [Homebrew](https://brew.sh) — always                 | Native bottles, fast, no reason not to   |
-| Intel, macOS 14+ (Sonoma/Sequoia) | [Homebrew](https://brew.sh) — while supported         | Still in Homebrew's 3-release window     |
+| Your Mac                             | Backend                                           | Why                                                  |
+| ------------------------------------ | ------------------------------------------------- | ---------------------------------------------------- |
+| Apple Silicon (M1/M2/M3/M4)          | [Homebrew](https://brew.sh) — always              | Native bottles, fast, no reason not to               |
+| Intel, macOS 14+ (Sonoma/Sequoia)    | [Homebrew](https://brew.sh) — while supported     | Still in Homebrew's 3-release window                 |
 | Intel, macOS 11–13 (Big Sur–Ventura) | [MacPorts](https://www.macports.org/) — automatic | Homebrew is phasing out Intel; ports keeps you going |
 
 Running an older Intel Mac? You want the [MacPorts install guide](INSTALL-OLDER-MAC.md) instead — that's the one with screenshots and coffee recommendations.
@@ -36,11 +36,15 @@ Running an older Intel Mac? You want the [MacPorts install guide](INSTALL-OLDER-
 
 If you know what you're doing:
 
-```bash
-# Force Homebrew (even if phpup would normally pick MacPorts)
-PHPPUP_BACKEND=brew /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)"
+# Force Homebrew (even on older Intel Macs where phpup would pick MacPorts)
 
-# Force MacPorts (even on a modern Mac — you probably don't want this)
+```bash
+PHPPUP_BACKEND=brew /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)"
+```
+
+# Force MacPorts (even on Apple Silicon or modern Intel)
+
+```bash
 PHPPUP_BACKEND=port /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)"
 ```
 
@@ -48,12 +52,12 @@ phpup remembers your existing stack — if you've already got a working Homebrew
 
 ## What Gets Installed
 
-| Component   | Homebrew Formula                         | Config Location                          |
-| ----------- | ---------------------------------------- | ---------------------------------------- |
-| **Apache**  | `httpd`                                  | `$(brew --prefix)/etc/httpd/httpd.conf`  |
-| **MariaDB** | `mariadb`                                | `$(brew --prefix)/etc/my.cnf`            |
-| **PHP**     | `php` (latest) or `php@8.x` (switched via `fu`) | `$(brew --prefix)/etc/php/{version}/php.ini` |
-| **phpMyAdmin** | `phpmyadmin` (bottle)                 | `$(brew --prefix)/etc/phpmyadmin.config.inc.php` |
+| Component      | Homebrew Formula                                | Config Location                                  |
+| -------------- | ----------------------------------------------- | ------------------------------------------------ |
+| **Apache**     | `httpd`                                         | `$(brew --prefix)/etc/httpd/httpd.conf`          |
+| **MariaDB**    | `mariadb`                                       | `$(brew --prefix)/etc/my.cnf`                    |
+| **PHP**        | `php` (latest) or `php@8.x` (switched via `fu`) | `$(brew --prefix)/etc/php/{version}/php.ini`     |
+| **phpMyAdmin** | `phpmyadmin` (bottle)                           | `$(brew --prefix)/etc/phpmyadmin.config.inc.php` |
 
 Everything lives under the Homebrew prefix — `/opt/homebrew` on Apple Silicon, `/usr/local` on Intel. phpup never hardcodes the path; it asks Homebrew at runtime.
 
@@ -120,16 +124,17 @@ Under the hood, `fu` uses `brew link --overwrite --force php@X.Y` to repoint the
 
 phpup uses `brew services` (which wraps launchd) to manage Apache and MariaDB:
 
-| Dashboard Key | Action |
-| ------------- | ------ |
-| **R** | Restart Apache + MariaDB |
-| **S** | Toggle — stops if running, starts if stopped |
+| Dashboard Key | Action                                       |
+| ------------- | -------------------------------------------- |
+| **R**         | Restart Apache + MariaDB                     |
+| **S**         | Toggle — stops if running, starts if stopped |
 
 Apache binds port 80 via `sudo apachectl` (brew services runs as your user and can't do low ports). The `sudo` prompt is normal and expected.
 
 ## Safe Delete
 
 Pressing **D**:
+
 - Stops all services
 - Backs up MariaDB data to `~/phpup/data_backup/`
 - Runs `brew uninstall` on each component
