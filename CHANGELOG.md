@@ -3,13 +3,14 @@
 All notable changes to phpup will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Hybrid Calendar Versioning](https://calver.org/) (Windows: `Major.Feature.Patch`, Mac/Linux: `Major.Feature.Patch`).
+and this project adheres to [Semantic Versioning](https://semver.org/).
 
-Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked independently.
+Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked independently
+using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 
 ---
 
-## [1.0.1] — 2026-08-11
+## [1.0.1-nix] — 2026-08-11
 
 ### macOS & Linux (phpup.sh v1.0.1)
 
@@ -34,7 +35,7 @@ Patch release: Homebrew backend `fu` parity with the MacPorts numbered menu, for
 - Ad-hoc behavioral harness 21/21: menu render + current marker, number/dotted/formula input, guards, service stop/start formula-awareness, u hint in all four scenarios (older line + hint, newest line + no hint, updates + 'also', stale-global safety), detect_php active/fallback/no-php
 - PTY boot smoke test: dashboard renders with correct active PHP version, clean `q` exit
 
-## [1.0.0] — 2026-08-11
+## [1.0.0-nix] — 2026-08-11
 
 ### macOS & Linux (phpup.sh v1.0.0)
 
@@ -59,7 +60,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 **Verified**
 - Full Phase 4 VM test pass (Catalina 10.15.5): install, update, delete, reinstall, restart, PHP version switch — all clean
 
-## [0.11.0-beta] — 2026-08-09
+## [0.11.0-beta-nix] — 2026-08-09
 
 ### macOS & Linux (phpup.sh v0.11.0-beta)
 
@@ -93,7 +94,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [0.10.0-beta] — 2026-08-07
+## [0.10.0-beta-nix] — 2026-08-07
 
 ### macOS & Linux (phpup.sh v0.10.0-beta)
 
@@ -129,7 +130,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [0.9.0-beta] — 2026-08-07
+## [0.9.0-beta-nix] — 2026-08-07
 
 ### Linux (phpup.sh v0.9.0-beta)
 
@@ -158,7 +159,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [0.8.0-beta] — 2026-08-06
+## [0.8.0-beta-nix] — 2026-08-06
 
 ### Linux (phpup.sh v0.8.0-beta)
 
@@ -174,7 +175,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [0.7.3-beta] — 2026-08-06
+## [0.7.3-beta-nix] — 2026-08-06
 
 ### Linux (phpup.sh v0.7.3-beta)
 
@@ -183,7 +184,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [0.7.2-beta] — 2026-08-04
+## [0.7.2-beta-nix] — 2026-08-04
 
 ### Linux (phpup.sh v0.7.2-beta)
 
@@ -200,7 +201,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [0.6.2-beta] — 2026-08-04
+## [0.6.2-beta-nix] — 2026-08-04
 
 ### Linux (phpup.sh v0.6.2-beta)
 
@@ -216,7 +217,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## 2.2.2 / [0.5.11-beta] — 2026-08-01
+## 2.2.2-win / [0.5.11-beta-nix] — 2026-08-01
 
 ### Linux (phpup.sh v0.5.11-beta)
 
@@ -241,7 +242,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## 2.2.2 / [0.4.8-beta] — 2026-07-30
+## 2.2.2-win / [0.4.8-beta-nix] — 2026-07-30
 
 ### Windows (phpup.ps1 v2.2.2)
 
@@ -302,7 +303,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [2.2.1] / [1.1.1] — 2026-07-26
+## [2.2.1-win] / [1.1.1-nix] — 2026-07-26
 
 ### Windows (phpup.ps1 v2.2.1)
 
@@ -332,7 +333,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [2.2.0] / [1.1.0] — 2026-07-25
+## [2.2.0-win] / [1.1.0-nix] — 2026-07-25
 
 ### Windows (phpup.ps1 v2.2.0)
 
@@ -359,7 +360,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [2.1.1] — 2026-07-05
+## [2.1.1-win] — 2026-07-05
 
 ### Windows (phpup.ps1 v2.1.1)
 
@@ -371,7 +372,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [2.1.0] — 2026-07-05
+## [2.1.0-win] — 2026-07-05
 
 ### Windows (phpup.ps1 v2.1.0)
 
@@ -386,7 +387,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [2.0.0] — 2026-06-28
+## [2.0.0-win] — 2026-06-28
 
 ### Windows (phpup.ps1 v2.0.0)
 
@@ -405,7 +406,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [1.0.6] — 2026-06-20
+## [1.0.6-win] — 2026-06-20
 
 ### Windows (getphp.ps1 v1.0.6)
 
@@ -419,7 +420,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [1.0.5] — 2026-06-16
+## [1.0.5-win] — 2026-06-16
 
 ### Windows (getphp.ps1 v1.0.5)
 
@@ -438,7 +439,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [1.0.4] — 2026-06-14
+## [1.0.4-win] — 2026-06-14
 
 ### Windows (getphp.ps1 v1.0.4)
 
@@ -456,7 +457,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [1.0.3] — 2026-06-13
+## [1.0.3-win] — 2026-06-13
 
 ### Windows (getphp.ps1 v1.0.3)
 
@@ -478,7 +479,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [1.0.2] — 2026-06-08
+## [1.0.2-win] — 2026-06-08
 
 ### Windows (getphp.ps1 v1.0.2)
 
@@ -501,7 +502,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [1.0.1] — 2026-06-06
+## [1.0.1-win] — 2026-06-06
 
 ### Windows (getphp.ps1 v1.0.1)
 
@@ -522,7 +523,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 ---
 
-## [1.0.0] — 2026-06-05
+## [1.0.0-win] — 2026-06-05
 
 ### Windows (getphp.ps1 v1.0.0)
 
@@ -561,46 +562,62 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| **2.2.2** | 2026-07-27 | Banner colour fix |
-| **2.2.1** | 2026-07-26 | PMA config, upload limits, session lifetime |
-| **2.2.0** | 2026-07-25 | Forced update, config persistence, upload limits |
-| **2.1.1** | 2026-07-05 | PowerShell alias, VC++ section fix |
-| **2.1.0** | 2026-07-05 | S+T toggle merge, dashboard reorder |
-| **2.0.0** | 2026-06-28 | Rebrand to phpup |
-| **1.0.6** | 2026-06-20 | RC regex, admin message fix |
-| **1.0.5** | 2026-06-16 | Forced update (`fu`) |
-| **1.0.4** | 2026-06-14 | Sodium, offline switch, extraction fixes |
-| **1.0.3** | 2026-06-13 | Zip caching, MariaDB fixes, log consolidation |
-| **1.0.2** | 2026-06-08 | JIT, fallback URLs, service registration |
-| **1.0.1** | 2026-06-06 | Smart update, service registration |
-| **1.0.0** | 2026-06-05 | Initial release |
+| **2.2.2-win** | 2026-07-27 | Banner colour fix |
+| **2.2.1-win** | 2026-07-26 | PMA config, upload limits, session lifetime |
+| **2.2.0-win** | 2026-07-25 | Forced update, config persistence, upload limits |
+| **2.1.1-win** | 2026-07-05 | PowerShell alias, VC++ section fix |
+| **2.1.0-win** | 2026-07-05 | S+T toggle merge, dashboard reorder |
+| **2.0.0-win** | 2026-06-28 | Rebrand to phpup |
+| **1.0.6-win** | 2026-06-20 | RC regex, admin message fix |
+| **1.0.5-win** | 2026-06-16 | Forced update (`fu`) |
+| **1.0.4-win** | 2026-06-14 | Sodium, offline switch, extraction fixes |
+| **1.0.3-win** | 2026-06-13 | Zip caching, MariaDB fixes, log consolidation |
+| **1.0.2-win** | 2026-06-08 | JIT, fallback URLs, service registration |
+| **1.0.1-win** | 2026-06-06 | Smart update, service registration |
+| **1.0.0-win** | 2026-06-05 | Initial release |
 
 ### Mac & Linux (phpup.sh)
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| **0.8.0-beta** | 2026-08-06 | pma tarball, MariaDB.org repo, `fu` per-component menu |
-| **0.7.3-beta** | 2026-08-06 | Suppress meta sync "Skipping" noise in `fu` |
-| **0.7.2-beta** | 2026-08-04 | Latest PHP on fresh installs, pma control DB fix, quiet apt updates, duplicate pma DB cleanup |
-| **0.6.2-beta** | 2026-08-04 | `fu` PHP version switching on apt (ondrej/php repo), PMA alias fix, OS distro display |
-| **0.5.11-beta** | 2026-08-01 | Linux apt support, 8 fixes (php-sodium, MariaDB auth, PMA config) |
-| **0.4.8-beta** | 2026-07-30 | Service overhaul, PMA storage, delete hardening, MariaDB auth |
-| **1.1.1** | 2026-07-26 | PMA config, session lifetime |
-| **1.1.0** | 2026-07-25 | PHP upload limits |
-| **1.0.0** | 2026-07-19 | Initial phpup fork — native apt, 19 fixes |
+| **1.0.1-nix** | 2026-08-11 | Homebrew `fu` numbered menu, formula-aware `u` |
+| **1.0.0-nix** | 2026-08-11 | First stable, MacPorts backend |
+| **0.11.0-beta-nix** | 2026-08-09 | MacPorts hardening, Apache LoadModule fix |
+| **0.10.0-beta-nix** | 2026-08-07 | MacPorts backend for older Intel Macs |
+| **0.9.0-beta-nix** | 2026-08-07 | Cross-series PHP upgrade, dashboard parity |
+| **0.8.0-beta-nix** | 2026-08-06 | pma tarball, MariaDB.org repo |
+| **0.7.3-beta-nix** | 2026-08-06 | Suppress meta sync noise in `fu` |
+| **0.7.2-beta-nix** | 2026-08-04 | Latest PHP on fresh installs, pma control DB fix |
+| **0.6.2-beta-nix** | 2026-08-04 | `fu` PHP version switching on apt |
+| **0.5.11-beta-nix** | 2026-08-01 | First Linux apt support |
+| **0.4.8-beta-nix** | 2026-07-30 | Service overhaul, PMA storage, delete hardening |
+| **1.1.1-nix** | 2026-07-26 | PMA config, session lifetime |
+| **1.1.0-nix** | 2026-07-25 | PHP upload limits |
+| **1.0.0-nix** | 2026-07-19 | Initial phpup fork — native apt, 19 fixes |
 
-[0.8.0-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.8.0-beta
-[0.7.3-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.7.3-beta
-[0.7.2-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.7.2-beta
-[0.6.2-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.6.2-beta
-[0.5.11-beta]: https://github.com/DaFa66/phpup/releases/tag/v0.5.11-beta
-[0.4.8-beta]: https://github.com/DaFa66/phpup/releases/tag/v2.2.2+0.4.8-beta
-[2.2.1]: https://github.com/DaFa66/phpup/releases/tag/v2.2.1+1.1.1
-[2.2.0]: https://github.com/DaFa66/phpup/releases/tag/v2.2.0+1.1.0
-[2.1.1]: https://github.com/DaFa66/phpup/releases/tag/v2.1.1
-[2.1.0]: https://github.com/DaFa66/phpup/releases/tag/v2.1.0
-[2.0.0]: https://github.com/DaFa66/phpup/releases/tag/v2.0.0
-[1.0.6]: https://github.com/DaFa66/phpup/releases/tag/v1.0.6
-[1.0.5]: https://github.com/DaFa66/phpup/releases/tag/v1.0.5
-[1.0.2]: https://github.com/DaFa66/phpup/releases/tag/v1.0.2
-[1.0.0]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0-win
+[1.0.1-nix]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0-nix
+[1.0.0-nix]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0-nix
+[0.11.0-beta-nix]: https://github.com/DaFa66/phpup/releases/tag/v0.9.0-beta-nix
+[0.10.0-beta-nix]: https://github.com/DaFa66/phpup/releases/tag/v0.9.0-beta-nix
+[0.9.0-beta-nix]: https://github.com/DaFa66/phpup/releases/tag/v0.9.0-beta-nix
+[0.8.0-beta-nix]: https://github.com/DaFa66/phpup/releases/tag/v0.9.0-beta-nix
+[0.7.3-beta-nix]: https://github.com/DaFa66/phpup/releases/tag/v0.9.0-beta-nix
+[0.7.2-beta-nix]: https://github.com/DaFa66/phpup/releases/tag/v0.9.0-beta-nix
+[0.6.2-beta-nix]: https://github.com/DaFa66/phpup/releases/tag/v0.9.0-beta-nix
+[0.5.11-beta-nix]: https://github.com/DaFa66/phpup/releases/tag/v0.9.0-beta-nix
+[0.4.8-beta-nix]: https://github.com/DaFa66/phpup/releases/tag/v0.9.0-beta-nix
+[2.2.2-win]: https://github.com/DaFa66/phpup/releases/tag/v2.2.0-win
+[2.2.1-win]: https://github.com/DaFa66/phpup/releases/tag/v2.2.0-win
+[2.2.0-win]: https://github.com/DaFa66/phpup/releases/tag/v2.2.0-win
+[1.1.1-nix]: https://github.com/DaFa66/phpup/releases/tag/v1.1.0-nix
+[1.1.0-nix]: https://github.com/DaFa66/phpup/releases/tag/v1.1.0-nix
+[2.1.1-win]: https://github.com/DaFa66/phpup/releases/tag/v2.0.0-win
+[2.1.0-win]: https://github.com/DaFa66/phpup/releases/tag/v2.0.0-win
+[2.0.0-win]: https://github.com/DaFa66/phpup/releases/tag/v2.0.0-win
+[1.0.6-win]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0-win
+[1.0.5-win]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0-win
+[1.0.4-win]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0-win
+[1.0.3-win]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0-win
+[1.0.2-win]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0-win
+[1.0.1-win]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0-win
+[1.0.0-win]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0-win
