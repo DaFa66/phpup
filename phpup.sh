@@ -6,7 +6,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-08-11
-#  Version: 1.0.0
+#  Version: 1.0.1
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -248,6 +248,19 @@ detect_mariadb() {
     fi
 }
 
+# Resolve the ACTIVE Homebrew PHP formula from the linked binary:
+# meta 'php' (Cellar/php) or a versioned one (Cellar/php@X.Y after a fu
+# switch). Falls back to 'php' when nothing is linked.
+brew_active_php() {
+    local php_link
+    php_link=$(readlink "${BREW_PREFIX}/bin/php" 2>/dev/null || true)
+    if [[ "$php_link" == *"/php@"* ]]; then
+        printf 'php@%s' "$(printf '%s' "$php_link" | sed -n 's|.*/php@\([0-9.]*\)/.*|\1|p')"
+    else
+        printf 'php'
+    fi
+}
+
 detect_php() {
     if [[ $USE_APT == 1 ]]; then
         if command -v php &>/dev/null 2>&1; then
@@ -261,9 +274,26 @@ detect_php() {
     elif [[ $USE_PORTS == 1 ]] && command -v php &>/dev/null 2>&1; then
         PHP=1
         PHP_VERSION=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
-    elif [[ -d "${BREW_PREFIX}/Cellar/php" ]]; then
+    elif [[ -d "${BREW_PREFIX}/Cellar/php" ]] || compgen -G "${BREW_PREFIX}/Cellar/php@*" >/dev/null 2>&1; then
         PHP=1
-        PHP_VERSION=$(find "${BREW_PREFIX}/Cellar/php" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
+        # Report the ACTIVE version from the linked binary — after a fu switch
+        # the linked formula may be a versioned one (php@8.4), NOT the meta
+        # 'php'; the Cellar/php dir alone would keep reporting the old meta.
+        PHP_VERSION=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
+        if [[ -z "$PHP_VERSION" ]]; then
+            # Nothing linked/in PATH — fall back to the highest installed
+            # version across the meta formula and any php@X.Y kegs.
+            local best_ver=""
+            for d in "${BREW_PREFIX}/Cellar/php" "${BREW_PREFIX}"/Cellar/php@*; do
+                [[ -d "$d" ]] || continue
+                local v
+                v=$(find "$d" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
+                if [[ -n "$v" && "$v" > "$best_ver" ]]; then
+                    best_ver="$v"
+                fi
+            done
+            PHP_VERSION="$best_ver"
+        fi
     else
         PHP=0
         PHP_VERSION=""
@@ -732,7 +762,9 @@ start_services() {
         fi
 
         if [[ $PHP == 1 ]]; then
-            brew services start php 2>/dev/null
+            local brew_php_svc
+            brew_php_svc=$(brew_active_php)
+            brew services start "$brew_php_svc" 2>/dev/null
             for ((_i=0; _i<5; _i++)); do
                 pgrep -f "(^|/)php-fpm" &>/dev/null && { print_ok "PHP-FPM started"; break; }
                 sleep 1
@@ -767,7 +799,7 @@ stop_services() {
         fi
         [[ $MARIADB == 1 ]] && brew services stop mariadb
         [[ $MARIADB == 1 ]] && pkill -x mariadbd 2>/dev/null || pkill -x mysqld 2>/dev/null || true
-        [[ $PHP == 1 ]] && brew services stop php
+        [[ $PHP == 1 ]] && brew services stop "$(brew_active_php)"
         [[ $PHP == 1 ]] && pkill -f "(^|/)php-fpm" 2>/dev/null || true
     fi
     sleep 3
@@ -2187,11 +2219,28 @@ cmd_update() {
         start_services
     else
         brew update &>/dev/null
+        # Detect the ACTIVE PHP formula — meta 'php' or a versioned php@X.Y
+        # (after a fu switch, the versioned formula is the one linked into
+        # the prefix; update THAT, not the unlinked meta).
+        local active_php
+        active_php=$(brew_active_php)
+        # Newest PHP line available in Homebrew — used for the fu hint so a
+        # user on an older line knows a newer one exists (u only patches
+        # within the ACTIVE line; fu is the line switcher).
+        local newest_line
+        newest_line=$(brew search '/php@/' 2>/dev/null | tr ' ' '\n' | grep -E '^php@[0-9]+\.[0-9]+$' | sort -V | tail -1)
         local outdated
-        outdated=$(brew outdated --formula httpd mariadb php phpmyadmin 2>/dev/null)
+        outdated=$(brew outdated --formula httpd mariadb "$active_php" phpmyadmin 2>/dev/null)
 
         if [[ -z "$outdated" ]]; then
             print_ok "All stack components are up to date"
+            local cur_ver
+            cur_ver=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
+            [[ -z "$cur_ver" ]] && cur_ver="$PHP_VERSION"
+            print_info "PHP ${cur_ver} (${active_php}) is up to date within its version line"
+            if [[ -n "$newest_line" && "$newest_line" != "$active_php" ]]; then
+                print_info "PHP ${newest_line#php@} is available in Homebrew — use fu to switch PHP versions."
+            fi
             printf "\n"
             read -r -p "Press Enter to continue..."
             return
@@ -2199,6 +2248,9 @@ cmd_update() {
 
         printf "\n${CYAN}Updates available:${RESET}\n"
         printf "%s\n" "$outdated"
+        if [[ -n "$newest_line" && "$newest_line" != "$active_php" ]]; then
+            print_info "PHP ${newest_line#php@} is also available in Homebrew — use fu to switch PHP versions."
+        fi
         printf "\n"
 
         printf "${BOLD}Apply these updates? [y/N]:${RESET} "
@@ -2213,7 +2265,7 @@ cmd_update() {
         stop_services
         printf "\n"
         print_info "Upgrading packages via Homebrew..."
-        HOMEBREW_NO_AUTO_UPDATE=1 printf 'y\n' | brew upgrade httpd mariadb php phpmyadmin
+        HOMEBREW_NO_AUTO_UPDATE=1 printf 'y\n' | brew upgrade httpd mariadb "$active_php" phpmyadmin
         detect_all
         configure_apache
         configure_php
@@ -2803,52 +2855,113 @@ cmd_forced_update() {
         return
     fi
 
-    # Homebrew path — PHP version switching only
+    # Homebrew path — PHP version switching (numbered menu, same UX as ports)
+    local -a php_names
+    local php_list current_php i choice target formula
     printf "${CYAN}Available PHP versions:${RESET}\n"
-    local php_versions
-    php_versions=$(brew search '/php@/' 2>/dev/null | grep -E 'php@[0-9]+\.[0-9]+' | sort -V)
-    if [[ -z "$php_versions" ]]; then
-        print_warn "No versioned PHP formulae found"
-    else
-        printf "%s\n" "$php_versions"
-    fi
-    printf "\n"
-
-    printf "${BOLD}Enter PHP version to switch to (e.g. 8.3) or press Enter to skip:${RESET} "
-    read -r php_ver
-
-    if [[ -n "$php_ver" ]]; then
-        local formula="php@${php_ver}"
-        if brew info "$formula" &>/dev/null; then
-            printf "\n"
-            print_info "Switching PHP to ${formula}..."
-
-            # Stop services
-            sudo "${BREW_PREFIX}/bin/apachectl" stop 2>/dev/null
-            brew services stop php 2>/dev/null
-
-            # Unlink current, install and link target
-            brew unlink php 2>/dev/null || true
-            brew install "$formula" 2>/dev/null
-            brew link --overwrite --force "$formula" 2>/dev/null
-
-            # Re-apply Apache config (PHP module path may have changed)
-            BREW_PREFIX=$(brew --prefix)
-            detect_all
-            configure_apache
-            configure_php
-
-            # Start services
-            brew services start php 2>/dev/null
-            sudo "${BREW_PREFIX}/bin/apachectl" restart 2>/dev/null
-
-            detect_all
-            save_config "$BASE_DIR" "$APACHE_VERSION" "$MARIADB_VERSION" "$PHP_VERSION" "$PHPMYADMIN_VERSION"
-
-            print_ok "PHP switched to ${PHP_VERSION}"
+    # brew search returns space-separated formulae on one line — split and filter
+    php_list=$(brew search '/php@/' 2>/dev/null | tr ' ' '\n' | grep -E '^php@[0-9]+\.[0-9]+$' | sort -V)
+    # current = the versioned formula matching the ACTIVE php binary
+    current_php="php@$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)"
+    i=0
+    while read -r formula; do
+        i=$((i+1))
+        php_names[$i]="$formula"
+        if [[ "$formula" == "$current_php" ]]; then
+            printf "  ${GREEN}%d) %s${RESET} (current)\n" "$i" "$formula"
         else
-            print_err "Formula '${formula}' not found in Homebrew"
+            printf "  %d) %s\n" "$i" "$formula"
         fi
+    done <<< "$php_list"
+    if [[ $i -eq 0 ]]; then
+        print_warn "No versioned PHP formulae found in Homebrew — run Update (U) to refresh first"
+        printf "\n"
+        read -r -p "Press Enter to return to the dashboard..."
+        return
+    fi
+    printf "\n${BOLD}Enter the number of the version to switch to (e.g. 3), a version like 8.4, or press Enter to skip:${RESET} "
+    read -r choice
+    if [[ -n "$choice" ]]; then
+        # Validate FIRST — only a menu number or a plain version/formula string
+        # may reach the brew commands below (no free-form injection).
+        target=""
+        if [[ "$choice" =~ ^[0-9]+$ ]]; then
+            if [[ "$choice" -ge 1 && "$choice" -le "$i" ]]; then
+                target="${php_names[$choice]}"
+            else
+                print_err "Invalid choice '${choice}' — pick a number from the list (nothing was changed)"
+                printf "\n"
+                read -r -p "Press Enter to return to the dashboard..."
+                return
+            fi
+        elif [[ "$choice" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            # dotted version (8.4) → formula (php@8.4)
+            target="php@${choice}"
+            if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
+                print_err "PHP ${choice} is not available in Homebrew (nothing was changed)"
+                printf "\n"
+                read -r -p "Press Enter to return to the dashboard..."
+                return
+            fi
+        elif [[ "$choice" =~ ^php@[0-9]+\.[0-9]+$ ]]; then
+            target="$choice"
+            if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
+                print_err "PHP ${choice} is not available in Homebrew (nothing was changed)"
+                printf "\n"
+                read -r -p "Press Enter to return to the dashboard..."
+                return
+            fi
+        else
+            print_err "Invalid input '${choice}' — expected a number or a version like 8.4 (nothing was changed)"
+            printf "\n"
+            read -r -p "Press Enter to return to the dashboard..."
+            return
+        fi
+        # If the user picked the version already active, no work needed
+        if [[ "$target" == "$current_php" ]]; then
+            print_ok "${target} is already the active PHP version — nothing to do"
+            printf "\n"
+            read -r -p "Press Enter to return to the dashboard..."
+            return
+        fi
+        printf "\n"
+        print_info "Switching PHP to ${target}..."
+
+        # Stop services (the ACTIVE php service — may be php@X.Y, not meta)
+        sudo "${BREW_PREFIX}/bin/apachectl" stop 2>/dev/null
+        brew services stop "$(brew_active_php)" 2>/dev/null
+
+        # Unlink any currently-linked PHP formula (meta or versioned), then
+        # install + link the target — stream live so the user sees progress;
+        # $? captures brew's real exit status so a failed install can never
+        # be reported as a successful switch.
+        for f in "${php_names[@]}" php; do
+            brew unlink "$f" 2>/dev/null || true
+        done
+        HOMEBREW_NO_AUTO_UPDATE=1 brew install "$target" 2>&1
+        local install_status=$?
+        if [[ $install_status -ne 0 ]]; then
+            print_err "Failed to install ${target} (brew install exited ${install_status}) — nothing was switched"
+            printf "\n"
+            read -r -p "Press Enter to return to the dashboard..."
+            return
+        fi
+        HOMEBREW_NO_AUTO_UPDATE=1 brew link --overwrite --force "$target" 2>&1
+
+        # Re-apply Apache config (PHP module path may have changed)
+        BREW_PREFIX=$(brew --prefix)
+        detect_all
+        configure_apache
+        configure_php
+
+        # Start services (the NEW php service = the target formula)
+        brew services start "$target" 2>/dev/null
+        sudo "${BREW_PREFIX}/bin/apachectl" restart 2>/dev/null
+
+        detect_all
+        save_config "$BASE_DIR" "$APACHE_VERSION" "$MARIADB_VERSION" "$PHP_VERSION" "$PHPMYADMIN_VERSION"
+
+        print_ok "PHP switched to ${PHP_VERSION}"
     fi
 
     printf "\n"

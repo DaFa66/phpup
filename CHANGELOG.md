@@ -9,6 +9,31 @@ Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked indepe
 
 ---
 
+## [1.0.1] — 2026-08-11
+
+### macOS & Linux (phpup.sh v1.0.1)
+
+Patch release: Homebrew backend `fu` parity with the MacPorts numbered menu, formula-aware `u`/service management, and accurate PHP version reporting after a switch.
+
+**Added**
+- `fu` on the Homebrew backend now presents a numbered PHP version menu exactly like MacPorts: lists `php@X.Y` formulae, marks the active one `(current)`, and accepts a menu number, a dotted version (8.4), or a formula name (php@8.4) — validated against the actual formula list before any brew command runs
+- `fu` guards against switching to the already-active PHP version — prints a clear message instead of reinstalling; invalid/out-of-range/unavailable input is rejected with "nothing was changed"
+- `u` on Homebrew now confirms the active PHP is current within its version line (e.g. `PHP 8.4.24 (php@8.4) is up to date within its version line`) and, when a newer PHP line exists, hints `PHP 8.5 is available in Homebrew — use fu to switch PHP versions.` (shown as "also available" when updates are pending)
+- `brew_active_php()` helper resolves the ACTIVE formula from the linked `bin/php` symlink — meta `php` or versioned `php@X.Y`
+
+**Changed**
+- `u` on Homebrew now checks/upgrades the ACTIVE PHP formula (via `brew_active_php()`) instead of the hardcoded meta `php` — after a `fu` switch to `php@8.4`, updates target `php@8.4`, not the unlinked meta
+- `fu`, `start_services()` and `stop_services()` manage the ACTIVE php service (stop the current formula before switching, start the target after) instead of always `brew services ... php`
+- `detect_php()` on Homebrew reports the version of the ACTIVE linked formula — after `fu` switched to `php@8.4`, the dashboard shows 8.4.24 instead of the meta formula's 8.5.9; falls back to the highest installed Cellar version when nothing is linked, and supports versioned-only installs (no meta `php`)
+- `brew install`/`brew link` in `fu` stream live output and capture `$?` — a failed install is never reported as a successful switch
+
+**Fixed**
+- `current_php` detection in `fu` used a malformed PHP one-liner (escaped quotes) that failed under real php — `(current)` marker now resolves correctly
+
+**Verified**
+- Ad-hoc behavioral harness 21/21: menu render + current marker, number/dotted/formula input, guards, service stop/start formula-awareness, u hint in all four scenarios (older line + hint, newest line + no hint, updates + 'also', stale-global safety), detect_php active/fallback/no-php
+- PTY boot smoke test: dashboard renders with correct active PHP version, clean `q` exit
+
 ## [1.0.0] — 2026-08-11
 
 ### macOS & Linux (phpup.sh v1.0.0)
