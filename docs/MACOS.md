@@ -32,17 +32,17 @@ On a modern Mac, phpup uses Homebrew. Always. Here's exactly when:
 
 Running an older Intel Mac? You want the [MacPorts install guide](INSTALL-OLDER-MAC.md) instead — that's the one with screenshots and coffee recommendations.
 
-### Forcing a backend
+## Forcing a backend
 
 If you know what you're doing:
 
-# Force Homebrew (even on older Intel Macs where phpup would pick MacPorts)
+### Force Homebrew (even on older Intel Macs where phpup would pick MacPorts)
 
 ```bash
 PHPPUP_BACKEND=brew /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)"
 ```
 
-# Force MacPorts (even on Apple Silicon or modern Intel)
+### Force MacPorts (even on Apple Silicon or modern Intel)
 
 ```bash
 PHPPUP_BACKEND=port /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)"
