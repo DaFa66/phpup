@@ -47,7 +47,7 @@ After launching, press **I** to install. On subsequent runs the script remembers
 | macOS    | x86_64 + arm64 | [Homebrew](https://brew.sh) / [MacPorts](https://www.macports.org/) | ✅ Stable | [docs/MACOS.md](docs/MACOS.md)     |
 | Linux    | x86_64 + arm64 | apt (Debian/Ubuntu/WSL2)                                            | ✅ Stable | [docs/LINUX.md](docs/LINUX.md)     |
 
-### macOS Backends
+## Special mention on macOS backends for Apple silicon and Intel Macs
 
 phpup picks the right package manager for your Mac automatically:
 
@@ -59,13 +59,13 @@ phpup picks the right package manager for your Mac automatically:
 
 You can override the automatic selection with an environment variable:
 
-# Force Homebrew (even on older Intel Macs where phpup would pick MacPorts)
+### Force Homebrew (even on older Intel Macs where phpup would pick MacPorts)
 
 ```bash
 PHPPUP_BACKEND=brew /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)"
 ```
 
-# Force MacPorts (even on Apple Silicon or modern Intel)
+### Force MacPorts (even on Apple Silicon or modern Intel)
 
 ```bash
 PHPPUP_BACKEND=port /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)"
