@@ -491,7 +491,14 @@ install_macports() {
     printf "\n"
     print_warn "MacPorts not found. Installing MacPorts ${MACPORTS_VERSION}..."
     local osver token
-    osver=$(sw_vers -productVersion | cut -d. -f1-2)
+    osver=$(sw_vers -productVersion)
+    if [[ "${osver%%.*}" -ge 11 ]]; then
+        # 11+ tokens are single-component (11, 12, ... 26) — drop the minor
+        osver="${osver%%.*}"
+    else
+        # 10.x tokens are two-component (10.6 ... 10.15) — keep major.minor
+        osver=$(echo "$osver" | cut -d. -f1-2)
+    fi
     case "$osver" in
         10.6) token="10.6-SnowLeopard";; 10.7) token="10.7-Lion";;
         10.8) token="10.8-MountainLion";; 10.9) token="10.9-Mavericks";;
