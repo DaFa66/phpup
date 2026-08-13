@@ -189,9 +189,14 @@ detect_apache() {
             APACHE=0
             APACHE_VERSION=""
         fi
-    elif [[ $USE_PORTS == 1 ]] && [[ -f "${PORT_PREFIX}/etc/apache2/httpd.conf" ]]; then
-        APACHE=1
-        APACHE_VERSION=$("${PORT_PREFIX}/sbin/httpd" -v 2>/dev/null | sed -n 's/.*Apache\/\([0-9.]*\).*/\1/p')
+    elif [[ $USE_PORTS == 1 ]]; then
+        if [[ -f "${PORT_PREFIX}/etc/apache2/httpd.conf" ]]; then
+            APACHE=1
+            APACHE_VERSION=$("${PORT_PREFIX}/sbin/httpd" -v 2>/dev/null | sed -n 's/.*Apache\/\([0-9.]*\).*/\1/p')
+        else
+            APACHE=0
+            APACHE_VERSION=""
+        fi
     elif [[ -d "${BREW_PREFIX}/Cellar/httpd" ]]; then
         APACHE=1
         APACHE_VERSION=$(find "${BREW_PREFIX}/Cellar/httpd" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
@@ -230,11 +235,6 @@ detect_mariadb() {
             MARIADB_VERSION=$("$maria_client" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
             [[ -z "$MARIADB_VERSION" ]] && \
                 MARIADB_VERSION=$("${PORT_PREFIX}/bin/mariadb" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-        elif [[ -d "${BREW_PREFIX}/Cellar/mariadb" ]]; then
-            # Ports datadir absent (mixed machine or forced PHPPUP_BACKEND=port)
-            # — fall back to brew detection, mirroring detect_apache's fall-through.
-            MARIADB=1
-            MARIADB_VERSION=$(find "${BREW_PREFIX}/Cellar/mariadb" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
         else
             MARIADB=0
             MARIADB_VERSION=""
@@ -271,9 +271,14 @@ detect_php() {
             PHP=0
             PHP_VERSION=""
         fi
-    elif [[ $USE_PORTS == 1 ]] && command -v php &>/dev/null 2>&1; then
-        PHP=1
-        PHP_VERSION=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
+    elif [[ $USE_PORTS == 1 ]]; then
+        if [[ -x "${PORT_PREFIX}/bin/php" ]]; then
+            PHP=1
+            PHP_VERSION=$("${PORT_PREFIX}/bin/php" -r 'echo PHP_VERSION;' 2>/dev/null)
+        else
+            PHP=0
+            PHP_VERSION=""
+        fi
     elif [[ -d "${BREW_PREFIX}/Cellar/php" ]] || compgen -G "${BREW_PREFIX}/Cellar/php@*" >/dev/null 2>&1; then
         PHP=1
         # Report the ACTIVE version from the linked binary — after a fu switch
@@ -313,9 +318,14 @@ detect_phpmyadmin() {
             PHPMYADMIN=0
             PHPMYADMIN_VERSION=""
         fi
-    elif [[ $USE_PORTS == 1 ]] && [[ -f "${PMA_DIR}/phpup-version.txt" ]]; then
-        PHPMYADMIN=1
-        PHPMYADMIN_VERSION=$(cat "${PMA_DIR}/phpup-version.txt")
+    elif [[ $USE_PORTS == 1 ]]; then
+        if [[ -f "${PMA_DIR}/phpup-version.txt" ]]; then
+            PHPMYADMIN=1
+            PHPMYADMIN_VERSION=$(cat "${PMA_DIR}/phpup-version.txt")
+        else
+            PHPMYADMIN=0
+            PHPMYADMIN_VERSION=""
+        fi
     elif [[ -d "${BREW_PREFIX}/Cellar/phpmyadmin" ]]; then
         PHPMYADMIN=1
         PHPMYADMIN_VERSION=$(find "${BREW_PREFIX}/Cellar/phpmyadmin" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | sort -V | tail -1)
