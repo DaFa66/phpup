@@ -5,7 +5,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-08-17
-#  Version: 2.3.0
+#  Version: 2.4.0
 # =======================================================================
 
 param(
@@ -129,6 +129,17 @@ function Get-VersionFromZipName([string]$filename, [string]$component) {
         return ($parts -join '.')
     }
     return $null
+}
+
+function Get-PhpZipLabel([string]$filename) {
+# Human-readable PHP version label including pre-release suffix, e.g.
+# php-8.6.0alpha3-Win32-vs18-x64.zip → "8.6.0 alpha3". Stable builds
+# return the plain version ("8.5.9").
+    if ($filename -match 'php-([\d.]+)(RC\d+|alpha\d+|beta\d+)?-') {
+        if ($matches[2]) { return "$($matches[1]) $($matches[2])" }
+        return $matches[1]
+    }
+    return $filename
 }
 
 # ---- Config Persistence --------------------------------------
@@ -541,6 +552,53 @@ function Get-LatestPhpUrl {
     }
 }
 
+function Get-PhpReleasesJson {
+# Fetches windows.php.net releases.json once. Returns $null if unreachable.
+    $maxRetries = 3
+    $retryDelay = 5
+
+    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            return Invoke-RestMethod -Uri "https://windows.php.net/downloads/releases/releases.json"
+        }
+        catch {
+            if ($attempt -lt $maxRetries) {
+                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
+                Write-Info "  Retrying in $retryDelay seconds..."
+                Start-Sleep -Seconds $retryDelay
+            }
+            else {
+                Write-Warn "Could not reach windows.php.net — running with cached versions only."
+                return $null
+            }
+        }
+    }
+    return $null
+}
+
+function Resolve-PhpSeriesUrl($json, [string]$series) {
+# Returns the latest stable TS x64 zip for one PHP series (e.g. "8.4")
+# from an already-fetched releases.json. Prefers VS17, falls back to VS16.
+# Returns $null if the series has no stable build.
+    $entry = $json.$series
+    if (-not $entry -or -not $entry.version) { return $null }
+    if ($entry.version -notmatch '^\d+\.\d+\.\d+$') { return $null }  # not a stable patch
+
+    # Prefer VS17, fall back to VS16 (mirrors Get-LatestPhpUrl)
+    foreach ($key in @('ts-vs17-x64', 'ts-vs16-x64')) {
+        if ($entry.$key -and $entry.$key.zip) {
+            $path = $entry.$key.zip.path
+            return @{
+                Version = $entry.version
+                Url     = "https://windows.php.net/downloads/releases/$path"
+                File    = $path
+            }
+        }
+    }
+    return $null
+}
+
 function Get-LatestMariadbUrl {
     Write-Info "Resolving MariaDB (latest stable, Windows x64)..."
 
@@ -677,6 +735,54 @@ function Get-LatestPhpMyAdminUrl {
 # ============================================================
 #  DOWNLOAD & EXTRACT
 # ============================================================
+
+function Invoke-DownloadToCache($url, $label) {
+# Downloads a zip into the download cache without extracting (used by fu).
+# Returns the full cache path, or $null on failure. Uses the cached copy if present.
+    New-Item -ItemType Directory -Force -Path $DOWNLOAD_CACHE | Out-Null
+    $filename = [IO.Path]::GetFileName($url)
+    $zipPath  = Join-Path $DOWNLOAD_CACHE $filename
+
+    if (Test-Path $zipPath) {
+        Write-Ok "$label zip already cached — using $filename"
+        return $zipPath
+    }
+
+    $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    $maxRetries = 3
+    $retryDelay = 5
+
+    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+        try {
+            if ($attempt -gt 1) {
+                Write-Info "  Retry $attempt of $maxRetries..."
+            }
+            try {
+                Invoke-WebRequest -Uri $url -OutFile $zipPath -Headers @{ "User-Agent" = $ua }
+            }
+            catch [System.Management.Automation.MethodInvocationException] {
+                Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -Headers @{ "User-Agent" = $ua }
+            }
+            Write-Ok "Downloaded $label -> $filename"
+            return $zipPath
+        }
+        catch {
+            if ($attempt -lt $maxRetries) {
+                Write-Warn "  Download attempt $attempt failed: $($_.Exception.Message)"
+                Write-Info "  Retrying in $retryDelay seconds..."
+                [System.GC]::Collect()
+                [System.GC]::WaitForPendingFinalizers()
+                Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds $retryDelay
+            }
+            else {
+                Write-Err "Download failed for $label after $maxRetries attempts: $($_.Exception.Message)"
+                return $null
+            }
+        }
+    }
+    return $null
+}
 
 function Invoke-DownloadAndExtract($url, $dest, $label) {
     $prevProgress = $ProgressPreference
@@ -1988,9 +2094,310 @@ function Invoke-UpdateWebStack {
 #  FORCED UPDATE (offline — scans $DOWNLOAD_CACHE only)
 # ============================================================
 
+function Show-PhpSwitchMenu {
+# Series-aware PHP version switcher for fu.
+#
+# Lists cached PHP zips grouped by series (8.2 → newest stable), with:
+#   - pre-release labels (8.6.0 alpha3, 8.6.0 beta1)
+#   - newer/older/current tags vs the installed version
+#   - stale hints when a newer patch exists ("8.2.32 (older → 8.2.33 is available)")
+#   - '*' on entries whose series has multiple cached variants
+#   - offers to download & install series that are missing from the cache
+#
+# Selecting an entry with multiple variants opens a sub-menu where each
+# variant can be installed or deleted ([d] delete). Selecting a stale entry
+# offers to install the newer patch (download + delete-or-keep the old) or
+# use the cached one as-is.
+#
+# Returns $null if nothing chosen, otherwise a hashtable:
+#   @{ Chosen = $true; Version = '8.5.9'; Path = 'C:\...zip' }            — install cached
+#   @{ Chosen = $true; Version = '8.2.33'; Download = 'https://...'; PruneOld = 'C:\...\8.2.32.zip' } — download then install
+    param(
+        [object[]]$PhpVersions,
+        [string]$Installed
+    )
+
+    # 1. Resolve latest stable per series (online only; offline = cached-only hints)
+    $latestBySeries = @{}
+    $phpJson = $null
+    if (-not $Offline) {
+        $phpJson = Get-PhpReleasesJson
+        if ($phpJson) {
+            # releases.json arrives as PSCustomObject (Invoke-RestMethod); accept
+            # hashtable-shaped test doubles too.
+            if ($phpJson -is [System.Collections.IDictionary]) {
+                $seriesKeys = @($phpJson.Keys)
+            } else {
+                $seriesKeys = @($phpJson.PSObject.Properties.Name)
+            }
+            foreach ($key in $seriesKeys) {
+                if ($key -match '^8\.\d+$') {
+                    $resolved = Resolve-PhpSeriesUrl $phpJson $key
+                    if ($resolved) { $latestBySeries[$key] = $resolved }
+                }
+            }
+        }
+    }
+
+    # 2. Series for each cached zip: "8.5.9" → "8.5"
+    function Get-PhpSeries([string]$version) {
+        if ($version -match '^(\d+\.\d+)\.') { return $matches[1] }
+        return $version
+    }
+
+    # 3. Group cached by series (descending version), keep labels
+    $seriesMap = @{}
+    foreach ($pv in $PhpVersions) {
+        $series = Get-PhpSeries $pv.Version
+        if (-not $seriesMap.ContainsKey($series)) { $seriesMap[$series] = @() }
+        $seriesMap[$series] += $pv
+    }
+
+    # 4. Determine candidate series: every cached series + every stable series with a resolved latest
+    $allSeries = @()
+    foreach ($s in $seriesMap.Keys) { $allSeries += $s }
+    foreach ($s in $latestBySeries.Keys) { $allSeries += $s }
+    $allSeries = @($allSeries | Sort-Object { [version]$_ } -Descending | Select-Object -Unique)
+
+    # 5. Build menu rows
+    $rows = @()   # @{ Series; Kind='cached'|'missing'; Label; Version; Path; Latest; Stale; Variants }
+    foreach ($series in $allSeries) {
+        $latest = $null
+        if ($latestBySeries.ContainsKey($series)) { $latest = $latestBySeries[$series] }
+
+        $cached = @()
+        if ($seriesMap.ContainsKey($series)) { $cached = @($seriesMap[$series]) }
+        if ($cached.Count -gt 0) {
+            foreach ($pv in $cached) {
+                $stale = $false
+                if ($latest) {
+                    try { $stale = ([version]$pv.Version -lt [version]$latest.Version) } catch { }
+                }
+                $rows += @{
+                    Series   = $series
+                    Kind     = 'cached'
+                    Label    = if ($pv.Label) { $pv.Label } else { $pv.Version }
+                    Version  = $pv.Version
+                    Path     = $pv.Path
+                    Latest   = if ($latest) { $latest.Version } else { $null }
+                    LatestUrl = if ($latest) { $latest.Url } else { $null }
+                    Stale    = $stale
+                    Variants = $cached.Count
+                }
+            }
+        }
+        elseif ($latest) {
+            # Series has a stable target but nothing cached → offer to download & install
+            $rows += @{
+                Series    = $series
+                Kind      = 'missing'
+                Label     = $latest.Version
+                Version   = $latest.Version
+                Path      = $null
+                Latest    = $latest.Version
+                LatestUrl = $latest.Url
+                Stale     = $false
+                Variants  = 0
+            }
+        }
+    }
+
+    if ($rows.Count -eq 0) {
+        Write-Info "No PHP versions cached and nothing to download."
+        return $null
+    }
+
+    # 6. Render menu
+    Write-Host ""
+    Write-Host "PHP:" -ForegroundColor White
+    for ($i = 0; $i -lt $rows.Count; $i++) {
+        $r = $rows[$i]
+        $tag = ""
+        $tagColor = "Cyan"
+
+        if ($r.Kind -eq 'missing') {
+            $tag = " (not cached — download & install)"
+            $tagColor = "Yellow"
+        }
+        else {
+            if ($Installed) {
+                try {
+                    if ([version]$r.Version -gt [version]$Installed) { $tag = " (newer)"; $tagColor = "Yellow" }
+                    elseif ([version]$r.Version -lt [version]$Installed) { $tag = " (older)"; $tagColor = "DarkGray" }
+                    else { $tag = " (current)"; $tagColor = "Green" }
+                } catch { }
+            }
+            if ($r.Stale -and $r.Latest) {
+                $tag += " → $($r.Latest) is available"
+                $tagColor = "Yellow"
+            }
+            if ($r.Variants -gt 1) { $tag += " *" }
+        }
+
+        Write-Host "  [$($i + 1)] $($r.Label)" -NoNewline -ForegroundColor Cyan
+        if ($tag) { Write-Host $tag -ForegroundColor $tagColor } else { Write-Host "" }
+    }
+    Write-Host "  [S] skip" -ForegroundColor DarkGray
+
+    # 7. Selection
+    $choice = Read-Host "  Choose"
+    if ($choice -match '^[Ss]$' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+
+    try { $idx = [int]$choice - 1 } catch { Write-Warn "  Invalid choice — skipping PHP"; return $null }
+    if ($idx -lt 0 -or $idx -ge $rows.Count) { Write-Warn "  Invalid choice — skipping PHP"; return $null }
+
+    $row = $rows[$idx]
+
+    # 8a. Missing series → download & install
+    if ($row.Kind -eq 'missing') {
+        return @{ Chosen = $true; Version = $row.Version; Download = $row.LatestUrl }
+    }
+
+    # 8b. Multiple variants in this series → sub-menu
+    if ($row.Variants -gt 1) {
+        $sub = Show-PhpVariantSubMenu -Series $row.Series -Variants @($seriesMap[$row.Series]) -LatestVersion $row.Latest -LatestUrl $row.LatestUrl -Installed $Installed
+        if (-not $sub) { return $null }
+        return $sub
+    }
+
+    # 8c. Single cached entry, stale → offer newer patch
+    if ($row.Stale -and $row.Latest) {
+        Write-Host ""
+        Write-Info "$($row.Latest) is available for PHP $($row.Series)."
+        $ans = Read-Host "  [I]nstall latest / [U]se existing ($($row.Version))"
+        if ($ans -match '^[Ii]$') {
+            Write-Host ""
+            $del = Read-Host "  Delete cached $($row.Version)? [Y]es/[N]o (keep both)"
+            $prune = $null
+            if ($del -match '^[Yy]$') { $prune = $row.Path }
+            return @{ Chosen = $true; Version = $row.Latest; Download = $row.LatestUrl; PruneOld = $prune }
+        }
+        # fall through → use existing
+    }
+
+    # 8d. Single cached entry (or user chose "use existing")
+    return @{ Chosen = $true; Version = $row.Version; Path = $row.Path }
+}
+
+function Show-PhpVariantSubMenu {
+# Sub-menu for a PHP series with multiple cached variants. Each variant can be
+# installed (by number) or deleted ([d] delete with Yes/No confirm). If a newer
+# patch is available it is offered as an extra option.
+    param(
+        [string]$Series,
+        [object[]]$Variants,
+        [string]$LatestVersion,
+        [string]$LatestUrl,
+        [string]$Installed
+    )
+
+    $sorted = @($Variants | Sort-Object { [version]$_.Version } -Descending)
+
+    Write-Host ""
+    Write-Host "PHP $Series — variants:" -ForegroundColor White
+    for ($i = 0; $i -lt $sorted.Count; $i++) {
+        $v = $sorted[$i]
+        $vLabel = if ($v.Label) { $v.Label } else { $v.Version }
+        $tag = ""
+        $tagColor = "Cyan"
+        if ($Installed) {
+            try {
+                if ([version]$v.Version -gt [version]$Installed) { $tag = " (newer)"; $tagColor = "Yellow" }
+                elseif ([version]$v.Version -lt [version]$Installed) { $tag = " (older)"; $tagColor = "DarkGray" }
+                else { $tag = " (current)"; $tagColor = "Green" }
+            } catch { }
+        }
+        Write-Host "  [$($i + 1)] $vLabel" -NoNewline -ForegroundColor Cyan
+        if ($tag) { Write-Host $tag -ForegroundColor $tagColor } else { Write-Host "" }
+        Write-Host "        [d] delete this cached copy" -ForegroundColor DarkGray
+    }
+
+    $offerIndex = $sorted.Count + 1
+    if ($LatestVersion) {
+        $anyStale = $false
+        foreach ($v in $sorted) {
+            try { if ([version]$v.Version -lt [version]$LatestVersion) { $anyStale = $true } } catch { }
+        }
+        if ($anyStale) {
+            Write-Host "  [$offerIndex] $LatestVersion (newer — download)" -ForegroundColor Yellow
+        }
+    }
+    Write-Host "  [S] skip" -ForegroundColor DarkGray
+
+    while ($true) {
+        $choice = Read-Host "  Choose"
+        if ($choice -match '^[Ss]$' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+
+        # Delete action: "d1", "d2", ...
+        if ($choice -match '^[Dd](\d+)$') {
+            $dIdx = [int]$matches[1] - 1
+            if ($dIdx -lt 0 -or $dIdx -ge $sorted.Count) {
+                Write-Warn "  Invalid delete choice."
+                continue
+            }
+            $target = $sorted[$dIdx]
+            $targetLabel = if ($target.Label) { $target.Label } else { $target.Version }
+            Write-Host ""
+            $confirm = Read-Host "  Delete $targetLabel from cache? [Y]es/[N]o"
+            if ($confirm -match '^[Yy]$') {
+                Remove-Item $target.Path -Force -ErrorAction SilentlyContinue
+                Write-Ok "Deleted $targetLabel from cache."
+                # Rebuild list
+                $sorted = @($sorted | Where-Object { $_.Path -ne $target.Path })
+                if ($sorted.Count -eq 0) {
+                    Write-Info "No PHP variants left for $Series."
+                    return $null
+                }
+                Write-Host ""
+                Write-Host "PHP $Series — variants:" -ForegroundColor White
+                for ($i = 0; $i -lt $sorted.Count; $i++) {
+                    Write-Host "  [$($i + 1)] $($sorted[$i].Version)" -ForegroundColor Cyan
+                    Write-Host "        [d] delete this cached copy" -ForegroundColor DarkGray
+                }
+                if ($LatestVersion) { Write-Host "  [$($sorted.Count + 1)] $LatestVersion (newer — download)" -ForegroundColor Yellow }
+                Write-Host "  [S] skip" -ForegroundColor DarkGray
+                continue
+            }
+            Write-Info "Keeping $($target.Version)."
+            continue
+        }
+
+        # Install choice
+        try { $idx = [int]$choice - 1 } catch { Write-Warn "  Invalid choice."; continue }
+        if ($idx -lt 0 -or $idx -ge $sorted.Count) {
+            # Maybe they picked the "newer — download" row
+            if ($LatestVersion -and $idx -eq ($sorted.Count)) {
+                return @{ Chosen = $true; Version = $LatestVersion; Download = $LatestUrl }
+            }
+            Write-Warn "  Invalid choice."
+            continue
+        }
+
+        $target = $sorted[$idx]
+        # Stale variant → offer the newer patch
+        if ($LatestVersion) {
+            try {
+                if ([version]$target.Version -lt [version]$LatestVersion) {
+                    Write-Host ""
+                    Write-Info "$($LatestVersion) is available for PHP $Series."
+                    $ans = Read-Host "  [I]nstall latest / [U]se existing ($($target.Version))"
+                    if ($ans -match '^[Ii]$') {
+                        Write-Host ""
+                        $del = Read-Host "  Delete cached $($target.Version)? [Y]es/[N]o (keep both)"
+                        $prune = $null
+                        if ($del -match '^[Yy]$') { $prune = $target.Path }
+                        return @{ Chosen = $true; Version = $LatestVersion; Download = $LatestUrl; PruneOld = $prune }
+                    }
+                }
+            } catch { }
+        }
+        return @{ Chosen = $true; Version = $target.Version; Path = $target.Path }
+    }
+}
+
 function Invoke-ForcedUpdate {
     Write-Host ""
-    Write-Warn "Forced update (offline) — scanning $DOWNLOAD_CACHE for cached versions..."
+    Write-Warn "PHP version switching — scanning $DOWNLOAD_CACHE for cached versions..."
     Write-Host ""
 
     $zipFiles = Get-ChildItem -Path $DOWNLOAD_CACHE -Filter "*.zip" -ErrorAction SilentlyContinue
@@ -2018,7 +2425,7 @@ function Invoke-ForcedUpdate {
                 continue
             }
             $ver = Get-VersionFromZipName $name 'php'
-            if ($ver) { $phpVersions += @{ Path = $zip.FullName; Version = $ver } }
+            if ($ver) { $phpVersions += @{ Path = $zip.FullName; Version = $ver; Label = Get-PhpZipLabel $name } }
         }
         elseif ($name -like "*mariadb*") {
             $ver = Get-VersionFromZipName $name 'mariadb'
@@ -2058,7 +2465,7 @@ function Invoke-ForcedUpdate {
         if ($cachedList.Count -eq 0) {
             Write-Host "none" -ForegroundColor DarkGray
         } else {
-            $labels = @($cachedList | ForEach-Object { $_.Version })
+            $labels = @($cachedList | ForEach-Object { if ($_.Label) { $_.Label } else { $_.Version } })
             Write-Host ($labels -join ", ") -ForegroundColor Cyan
         }
     }
@@ -2069,19 +2476,30 @@ function Invoke-ForcedUpdate {
     Show-ComponentSummary "phpMyAdmin" $currentPmaVer     $pmaVersions
 
     # ---- Interactive selection ----
-    $components = @(
-        @{ Name = 'Apache';     Installed = $currentApacheVer;  Cached = $apacheVersions;  Var = 'selectedApache' }
-        @{ Name = 'PHP';        Installed = $currentPhpVer;     Cached = $phpVersions;     Var = 'selectedPhp' }
-        @{ Name = 'MariaDB';    Installed = $currentMariadbVer; Cached = $mariadbVersions; Var = 'selectedMariadb' }
-        @{ Name = 'phpMyAdmin'; Installed = $currentPmaVer;     Cached = $pmaVersions;     Var = 'selectedPma' }
-    )
-
+    # PHP gets its own series-aware menu; the other three keep the flat list.
     $selectedApache  = $null
     $selectedPhp     = $null
     $selectedMariadb = $null
     $selectedPma     = $null
 
     $anyChoice = $false
+
+    # --- PHP: series-aware version switching ---
+    if ($phpVersions.Count -gt 0) {
+        $phpMenu = Show-PhpSwitchMenu -PhpVersions $phpVersions -Installed $currentPhpVer
+        if ($phpMenu -and $phpMenu.Chosen) {
+            $selectedPhp = $phpMenu
+            $anyChoice = $true
+        }
+        Write-Host ""
+    }
+
+    # --- Apache / MariaDB / phpMyAdmin: flat cached list ---
+    $components = @(
+        @{ Name = 'Apache';     Installed = $currentApacheVer;  Cached = $apacheVersions;  Var = 'selectedApache' }
+        @{ Name = 'MariaDB';    Installed = $currentMariadbVer; Cached = $mariadbVersions; Var = 'selectedMariadb' }
+        @{ Name = 'phpMyAdmin'; Installed = $currentPmaVer;     Cached = $pmaVersions;     Var = 'selectedPma' }
+    )
 
     foreach ($comp in $components) {
         if ($comp.Cached.Count -eq 0) { continue }
@@ -2091,7 +2509,6 @@ function Invoke-ForcedUpdate {
             continue
         }
 
-        Write-Host ""
         Write-Host "$($comp.Name):" -ForegroundColor White
 
         for ($i = 0; $i -lt $comp.Cached.Count; $i++) {
@@ -2143,6 +2560,23 @@ function Invoke-ForcedUpdate {
     $needsPhp     = ($null -ne $selectedPhp)
     $needsMariadb = ($null -ne $selectedMariadb)
     $needsPma     = ($null -ne $selectedPma)
+
+    # If PHP chose a fresh download, fetch it into the cache before stopping services
+    if ($needsPhp -and $selectedPhp.Download) {
+        Write-Host ""
+        Write-Info "Downloading PHP $($selectedPhp.Version)..."
+        $zipPath = Invoke-DownloadToCache $selectedPhp.Download "PHP $($selectedPhp.Version)"
+        if (-not $zipPath) {
+            Write-Err "PHP download failed — aborting."
+            return
+        }
+        $selectedPhp.Path = $zipPath
+        if ($selectedPhp.PruneOld) {
+            Write-Ok "Deleted old cached zip: $($selectedPhp.PruneOld)"
+            Remove-Item $selectedPhp.PruneOld -Force -ErrorAction SilentlyContinue
+            $selectedPhp.PruneOld = $null
+        }
+    }
 
     Stop-WebStackServices
     Start-Sleep -Seconds 2
