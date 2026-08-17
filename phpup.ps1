@@ -370,7 +370,7 @@ function Install-VcRedist {
                     Write-Info "  Retry $attempt of $maxRetries..."
                 }
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                Invoke-WebRequest -Uri "https://aka.ms/vc14/vc_redist.x64.exe" -OutFile $installer
+                Invoke-WebRequest -Uri $FALLBACK_URLS.Redist -OutFile $installer
                 $downloaded = $true
                 break
             }
@@ -381,7 +381,7 @@ function Install-VcRedist {
                 }
                 else {
                     Write-Err "Failed to download VC++ Redistributable after $maxRetries attempts: $_"
-                    Write-Info "Install manually: https://aka.ms/vc14/vc_redist.x64.exe"
+                    Write-Info "Install manually: $($FALLBACK_URLS.Redist)"
                     return
                 }
             }
@@ -397,7 +397,7 @@ function Install-VcRedist {
     }
     else {
         Write-Warn "Installer exited with code $($proc.ExitCode). Install manually:"
-        Write-Info "  https://aka.ms/vc14/vc_redist.x64.exe"
+        Write-Info "  $($FALLBACK_URLS.Redist)"
     }
 }
 
@@ -1366,7 +1366,7 @@ function Start-WebStackServices {
             Write-Host $testResult -ForegroundColor DarkGray
             Write-Info "If the error mentions missing DLLs (VCRUNTIME, MSVCP, etc.),"
             Write-Info "install the Visual C++ Redistributable from:"
-            Write-Info "  https://aka.ms/vc14/vc_redist.x64.exe"
+            Write-Info "  $($FALLBACK_URLS.Redist)"
             return
         }
 
