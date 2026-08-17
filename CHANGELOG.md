@@ -10,6 +10,15 @@ using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 
 ---
 
+## [2.2.4-win] — 2026-08-17
+
+### Windows (phpup.ps1 v2.2.4)
+
+**Fixed**
+- `opcache.enable_cli` is now set to `0` (was `1`) — with opcache + JIT tracing enabled for CLI, phar tools (Composer, artisan) segfaulted with exit 139. Web SAPI keeps opcache and JIT; only CLI runs without them, so one-shot tools work again.
+
+---
+
 ## [1.0.1-nix] — 2026-08-11
 
 ### macOS & Linux (phpup.sh v1.0.1)

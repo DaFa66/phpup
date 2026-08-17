@@ -4,8 +4,8 @@
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-08-06
-#  Version: 2.2.3
+#  Date: 2026-08-17
+#  Version: 2.2.4
 # =======================================================================
 
 param(
@@ -1009,7 +1009,7 @@ function Invoke-ConfigurePhp {
 
     # Enable OPCache for performance
     $ini = $ini -replace ';?opcache\.enable\s*=\s*\d', 'opcache.enable=1'
-    $ini = $ini -replace ';?opcache\.enable_cli\s*=\s*\d', 'opcache.enable_cli=1'
+    $ini = $ini -replace ';?opcache\.enable_cli\s*=\s*\d', 'opcache.enable_cli=0'
     $ini = $ini -replace ';?opcache\.memory_consumption\s*=\s*\d+', 'opcache.memory_consumption=256'
     $ini = $ini -replace ';?opcache\.interned_strings_buffer\s*=\s*\d+', 'opcache.interned_strings_buffer=16'
     $ini = $ini -replace ';?opcache\.max_accelerated_files\s*=\s*\d+', 'opcache.max_accelerated_files=20000'
