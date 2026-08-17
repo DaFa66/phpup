@@ -10,6 +10,19 @@ using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 
 ---
 
+## [2.3.0-win] — 2026-08-17
+
+### Windows (phpup.ps1 v2.3.0)
+
+**Added**
+- ARM64 support (soft): the hard architecture block is replaced with a warning — the x64 stack runs under Windows-on-ARM emulation (Prism), expected to work but untested and slower than native x64. 32-bit Windows remains hard-blocked
+- VC++ Redistributable install now passes `--architecture x64` to winget so it resolves correctly on ARM64 hosts (the stack is x64-only, so the x64 runtime is required even under emulation)
+
+**Fixed**
+- Stale pinned PHP fallback URL bumped 8.5.8 → 8.5.9 (the 8.5.8 zip 404s; live resolution was covering it, but the safety net is now valid again)
+
+---
+
 ## [2.2.4-win] — 2026-08-17
 
 ### Windows (phpup.ps1 v2.2.4)

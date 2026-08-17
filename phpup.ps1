@@ -5,7 +5,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-08-17
-#  Version: 2.2.4
+#  Version: 2.3.0
 # =======================================================================
 
 param(
@@ -33,7 +33,7 @@ $BANNER_ART = @'
 $FALLBACK_URLS = @{
     Redist     = "https://aka.ms/vc14/vc_redist.x64.exe"
     Apache     = "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.68-260617-Win64-VS18.zip"
-    PHP        = "https://windows.php.net/downloads/releases/php-8.5.8-Win32-vs17-x64.zip"
+    PHP        = "https://windows.php.net/downloads/releases/php-8.5.9-Win32-vs17-x64.zip"
     MariaDB    = "https://archive.mariadb.org/mariadb-12.3.2/winx64-packages/mariadb-12.3.2-winx64.zip"
     phpMyAdmin = "https://files.phpmyadmin.net/phpMyAdmin/5.2.3/phpMyAdmin-5.2.3-all-languages.zip"
 }
@@ -333,11 +333,15 @@ function Install-VcRedist {
 
     Write-Info "Installing/upgrading Visual C++ Redistributable (VS 2017-2026) x64..."
 
-    # winget handles upgrades correctly (direct installer skips when already present)
+    # winget handles upgrades correctly (direct installer skips when already present).
+    # The stack is x64-only, so force x64 even on ARM64 hosts (x64 binaries run
+    # under emulation there and still need the x64 runtime — the arm64 redist is
+    # for native ARM64 apps, which this stack has none of).
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
         $proc = Start-Process -FilePath 'winget.exe' -ArgumentList @(
             'install', '--id', 'Microsoft.VCRedist.2015+.x64',
+            '--architecture', 'x64',
             '--exact', '--silent', '--accept-package-agreements', '--accept-source-agreements'
         ) -Wait -PassThru -NoNewWindow
 
@@ -2500,24 +2504,26 @@ if (-not $isAdmin) {
     exit 1
 }
 
-# CPU architecture check — only x64 (AMD64) is supported
+# CPU architecture check.
+# 32-bit Windows cannot run this stack at all — hard block.
 if (-not [Environment]::Is64BitOperatingSystem) {
     Write-Err "A 64-bit version of Windows is required."
     exit 1
 }
 
+# ARM64 is not natively supported: Apache Lounge, PHP and MariaDB ship no
+# ARM64 Windows binaries, so the x64 stack runs under Windows-on-ARM
+# emulation (Prism). Warn and continue — it usually works, but it is
+# untested territory and slower than native x64.
 $cpu_arch = $env:PROCESSOR_ARCHITECTURE
 
 if ($cpu_arch -ne 'AMD64') {
     Write-Host ""
-    Write-Err "Unsupported CPU architecture: $cpu_arch"
+    Write-Warn "Architecture: $cpu_arch — not natively supported."
+    Write-Info "phpup's stack is x64-only (Apache Lounge, PHP, MariaDB ship no"
+    Write-Info "native ARM64 Windows binaries). On ARM64 it runs under x64"
+    Write-Info "emulation: expected to work, but untested and slower than x64."
     Write-Host ""
-    Write-Info "phpup currently only supports x64 (Intel/AMD 64-bit)."
-    Write-Info "ARM64 (Snapdragon, Apple Silicon running Windows, etc.) is not supported."
-    Write-Info "Apache Lounge and MariaDB do not currently provide native ARM64 Windows binaries."
-    Write-Host ""
-    Pause
-    exit 1
 }
 
 # ---- VC++ Redistributable: system prerequisite (BLOCKING) ----
