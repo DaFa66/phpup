@@ -10,6 +10,31 @@ using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 
 ---
 
+## [2.4.0-win] — 2026-08-17
+
+### Windows (phpup.ps1 v2.4.0)
+
+**Added**
+- `fu` now manages PHP versions by series (8.2 → newest stable): a series with nothing cached is offered as `(not cached — download & install)`; a cached version behind the latest patch in its series is flagged (`8.2.32 (older → 8.2.33 is available)`) and selecting it asks install-latest vs use-existing, offering to delete the old cached copy after a fresh download
+- Multiple cached variants of a PHP series are marked `*`; selecting one opens a sub-menu where each variant can be installed or deleted (`[d]` + row number, Yes/No confirm) — gives pre-release zips their first in-app delete path. The currently installed build is never offered for deletion, and selecting it is a no-op ("already installed")
+- Pre-release builds now show their suffix in the fu menu (`8.6.0 alpha3`, `8.6.0 beta1`) instead of both rendering as `8.6.0`
+- `fu` checks windows.php.net online for the latest stable per series; `-Offline` keeps it cache-only (labels and variant markers still apply)
+- New config key `php_min_series` (default `8.2`) sets the oldest PHP series offered as a download candidate; cached zips are always listed regardless
+- `php_min_series` accepts 7.x floors too (e.g. `7.0`): the series filter now covers every `N.M` series present in releases.json, and the resolver falls back to the VC15 toolchain used by 7.x builds (`ts-vc15-x64`)
+- Variant sub-menus re-render through a shared renderer after a delete; deleting down to only the installed build returns to the version-switch menu (re-scanning the cache) instead of a dead-end list
+- Delete accepts both `d<number>` and `<number>d` forms (`d2` and `2d`); a bare `d` prints the format hint. Install and menu choices are strictly numeric — `2d`/`2x` are rejected with "Invalid choice" instead of being silently coerced
+- Selecting a PHP version now prints a confirmation (`PHP → 8.2.33`) matching the component menus, so the choice is visible before the next menu appears
+- Stack dashboard and fu summary flag pre-release installs (`8.6.0 beta1 (pre-release)` in yellow) instead of a bare numeric version that implies a stable release
+- Apache PHP module follows the installed PHP major: 7.x loads `php7apache2_4.dll` with `LoadModule php7_module`, 8.x loads `php8apache2_4.dll` with `LoadModule php_module` (the symbol PHP 8 exports). httpd.conf is re-pointed automatically after any PHP switch, so 8↔7 switches keep Apache loadable
+- `php_min_series` is now persisted to `config.json` by `Save-Config` (default `8.2`) — visible and editable instead of an invisible code default; an existing user-set value is preserved, and older configs missing the key fall back to the default
+- `versions.php` in config.json records the full pre-release label (`8.6.0 beta1`) instead of a bare numeric version
+
+**Changed**
+- `fu` header no longer says "(offline)" — it scans cached zips and may consult the network
+- New helpers: `Get-PhpReleasesJson`, `Resolve-PhpSeriesUrl`, `Invoke-DownloadToCache`, `Get-PhpZipLabel`
+
+---
+
 ## [2.3.0-win] — 2026-08-17
 
 ### Windows (phpup.ps1 v2.3.0)

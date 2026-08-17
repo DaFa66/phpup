@@ -67,6 +67,27 @@ function Get-PhpVersion {
     return $null
 }
 
+function Get-PhpVersionLabel {
+# Installed PHP version including pre-release suffix, e.g. "8.6.0 beta1".
+# Display-only: keeps numeric Get-PhpVersion for version comparisons.
+    if (Test-PhpInstalled) {
+        $out = & "$PHP_PATH\php.exe" -v 2>&1 | Select-Object -First 1
+        if ($out -match "PHP\s+([\d.]+[a-zA-Z0-9]*)") {
+            $raw = $matches[1]
+            if ($raw -match '^([\d.]+)(RC\d+|alpha\d+|beta\d+)$') {
+                return "$($matches[1]) $($matches[2])"
+            }
+            return $raw
+        }
+    }
+    return $null
+}
+
+function Test-PhpIsPreRelease([string]$label) {
+# True when a PHP display label carries a pre-release suffix (alpha/beta/RC).
+    return ($label -match ' (RC\d+|alpha\d+|beta\d+)$')
+}
+
 function Get-MariaDbVersion {
     if (Test-MariaDbInstalled) {
         $exe = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
@@ -142,6 +163,15 @@ function Get-PhpZipLabel([string]$filename) {
     return $filename
 }
 
+function Get-PhpPreReleaseRank($pv) {
+# Release-cycle rank for sorting same-numeric-version builds:
+# stable (1) < alpha (2) < beta (3) < RC (4) — newest wins on a tie.
+    if ($pv.Label -match ' RC')   { return 4 }
+    if ($pv.Label -match ' beta') { return 3 }
+    if ($pv.Label -match ' alpha'){ return 2 }
+    return 1
+}
+
 # ---- Config Persistence --------------------------------------
 
 $CONFIG_FILE = "$env:APPDATA\phpup\config.json"
@@ -175,11 +205,20 @@ function Save-Config {
         New-Item -ItemType Directory -Force -Path $configDir | Out-Null
     }
 
+    # Preserve the fu download floor (php_min_series): keep an existing
+    # user-set value, else persist the 8.2 default so it is visible/editable.
+    $existingConfig = Get-Config
+    $minSeries = '8.2'
+    if ($existingConfig -and $existingConfig.php_min_series) {
+        $minSeries = [string]$existingConfig.php_min_series
+    }
+
     # Start with base structure (always fresh)
     $config = [ordered]@{
         install_path        = $InstallPath
         installed_at        = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
         services_registered = $ServicesRegistered
+        php_min_series      = $minSeries
         paths               = @{
             apache     = "$InstallPath\apache"
             php        = "$InstallPath\php"
@@ -579,14 +618,15 @@ function Get-PhpReleasesJson {
 
 function Resolve-PhpSeriesUrl($json, [string]$series) {
 # Returns the latest stable TS x64 zip for one PHP series (e.g. "8.4")
-# from an already-fetched releases.json. Prefers VS17, falls back to VS16.
-# Returns $null if the series has no stable build.
+# from an already-fetched releases.json. Prefers VS17, falls back to VS16,
+# then VC15 (the toolchain used for 7.x builds). Returns $null if the series
+# has no stable build.
     $entry = $json.$series
     if (-not $entry -or -not $entry.version) { return $null }
     if ($entry.version -notmatch '^\d+\.\d+\.\d+$') { return $null }  # not a stable patch
 
-    # Prefer VS17, fall back to VS16 (mirrors Get-LatestPhpUrl)
-    foreach ($key in @('ts-vs17-x64', 'ts-vs16-x64')) {
+    # Prefer VS17, fall back to VS16, then VC15 (7.x)
+    foreach ($key in @('ts-vs17-x64', 'ts-vs16-x64', 'ts-vc15-x64')) {
         if ($entry.$key -and $entry.$key.zip) {
             $path = $entry.$key.zip.path
             return @{
@@ -935,6 +975,22 @@ function Invoke-ExtractZip($zipPath, $dest, $label) {
 #  CONFIGURATION
 # ============================================================
 
+function Get-PhpApacheModuleName([string]$version = (Get-PhpVersion)) {
+# Apache module DLL for a PHP major version: php7apache2_4.dll for 7.x,
+# php8apache2_4.dll for 8.x (the file name differs per major).
+    if ($version -match '^7\.') { return 'php7apache2_4.dll' }
+    return 'php8apache2_4.dll'
+}
+
+function Get-PhpApacheModuleSymbol([string]$version = (Get-PhpVersion)) {
+# LoadModule directive name for a PHP major version. Apache matches the
+# directive name to the symbol exported by the module DLL, and the exports
+# differ: php7apache2_4.dll exports php7_module, php8apache2_4.dll exports
+# php_module (that is the symbol the official docs use for PHP 8+).
+    if ($version -match '^7\.') { return 'php7_module' }
+    return 'php_module'
+}
+
 function Invoke-ConfigureApache {
     Write-Host ""
     Write-Warn "Configuring Apache..."
@@ -1017,21 +1073,33 @@ function Invoke-ConfigureApache {
         Write-Ok "Options Indexes FollowSymLinks set"
     }
 
-    # 8. PHP integration
-    $phpModuleUnix = "$($PHP_PATH -replace '\\','/')/php8apache2_4.dll"
-    $phpIniUnix    = $PHP_PATH -replace '\\','/'
+    # 8. PHP integration — module DLL name AND LoadModule symbol depend on the
+    # PHP major version (7.x: php7apache2_4.dll/php7_module; 8.x: php8apache2_4.dll/
+    # php_module). Rewrite the existing line when present so version switches
+    # keep Apache loadable.
+    $phpModuleName   = Get-PhpApacheModuleName
+    $phpModuleSymbol = Get-PhpApacheModuleSymbol
+    $phpModuleUnix   = "$($PHP_PATH -replace '\\','/')/$phpModuleName"
+    $phpIniUnix      = $PHP_PATH -replace '\\','/'
 
-    if ($conf -notmatch 'php_module') {
+    if ($conf -match 'LoadModule\s+php\d*_module\s+"[^"]*"') {
+        $conf = $conf -replace 'LoadModule\s+php\d*_module\s+"[^"]*"', "LoadModule $phpModuleSymbol `"$phpModuleUnix`""
+        Write-Ok "PHP module updated to $phpModuleName ($phpModuleSymbol)"
+    }
+    elseif ($conf -notmatch 'php\d*_module') {
         $phpBlock = @"
 
 # PHP integration (phpup)
-LoadModule php_module "$phpModuleUnix"
+LoadModule $phpModuleSymbol "$phpModuleUnix"
 AddHandler application/x-httpd-php .php
 PHPIniDir "$phpIniUnix"
 "@
         $conf += $phpBlock
+        Write-Ok "PHP module loaded"
     }
-    Write-Ok "PHP module loaded"
+    else {
+        Write-Ok "PHP module already configured"
+    }
 
     # 9. phpMyAdmin Alias
     if ($conf -notmatch 'Alias /phpmyadmin') {
@@ -1965,7 +2033,7 @@ function Save-PostUpdateConfig {
     $existingConfig = Get-Config
     $versions = @{
         apache     = Get-ApacheVersion
-        php        = Get-PhpVersion
+        php        = Get-PhpVersionLabel
         mariadb    = Get-MariaDbVersion
         phpmyadmin = Get-PhpMyAdminVersion
     }
@@ -2130,8 +2198,17 @@ function Show-PhpSwitchMenu {
             } else {
                 $seriesKeys = @($phpJson.PSObject.Properties.Name)
             }
+            # Optional floor from config (php_min_series, default 8.2) — series
+            # below it are never offered as download candidates.
+            $minSeries = [version]'8.2'
+            $config = Get-Config
+            if ($config -and $config.php_min_series) {
+                try { $minSeries = [version]$config.php_min_series } catch { }
+            }
             foreach ($key in $seriesKeys) {
-                if ($key -match '^8\.\d+$') {
+                # Any N.M series (7.4, 8.0, ...) that the JSON actually lists;
+                # the config floor (php_min_series) is the only gate below.
+                if ($key -match '^\d+\.\d+$' -and ([version]$key -ge $minSeries)) {
                     $resolved = Resolve-PhpSeriesUrl $phpJson $key
                     if ($resolved) { $latestBySeries[$key] = $resolved }
                 }
@@ -2159,7 +2236,8 @@ function Show-PhpSwitchMenu {
     foreach ($s in $latestBySeries.Keys) { $allSeries += $s }
     $allSeries = @($allSeries | Sort-Object { [version]$_ } -Descending | Select-Object -Unique)
 
-    # 5. Build menu rows
+    # 5. Build menu rows — ONE row per series (newest cached variant as the
+    #    label, '*' when the series has multiple cached variants).
     $rows = @()   # @{ Series; Kind='cached'|'missing'; Label; Version; Path; Latest; Stale; Variants }
     foreach ($series in $allSeries) {
         $latest = $null
@@ -2168,22 +2246,24 @@ function Show-PhpSwitchMenu {
         $cached = @()
         if ($seriesMap.ContainsKey($series)) { $cached = @($seriesMap[$series]) }
         if ($cached.Count -gt 0) {
-            foreach ($pv in $cached) {
-                $stale = $false
-                if ($latest) {
-                    try { $stale = ([version]$pv.Version -lt [version]$latest.Version) } catch { }
-                }
-                $rows += @{
-                    Series   = $series
-                    Kind     = 'cached'
-                    Label    = if ($pv.Label) { $pv.Label } else { $pv.Version }
-                    Version  = $pv.Version
-                    Path     = $pv.Path
-                    Latest   = if ($latest) { $latest.Version } else { $null }
-                    LatestUrl = if ($latest) { $latest.Url } else { $null }
-                    Stale    = $stale
-                    Variants = $cached.Count
-                }
+            # Newest cached variant: version desc, then pre-release rank desc
+            # (RC > beta > alpha) for same-numeric-version builds.
+            $newest = @($cached | Sort-Object @{ Expression = { [version]$_.Version }; Descending = $true }, @{ Expression = { Get-PhpPreReleaseRank $_ }; Descending = $true })[0]
+
+            $stale = $false
+            if ($latest) {
+                try { $stale = ([version]$newest.Version -lt [version]$latest.Version) } catch { }
+            }
+            $rows += @{
+                Series    = $series
+                Kind      = 'cached'
+                Label     = if ($newest.Label) { $newest.Label } else { $newest.Version }
+                Version   = $newest.Version
+                Path      = $newest.Path
+                Latest    = if ($latest) { $latest.Version } else { $null }
+                LatestUrl = if ($latest) { $latest.Url } else { $null }
+                Stale     = $stale
+                Variants  = $cached.Count
             }
         }
         elseif ($latest) {
@@ -2220,6 +2300,7 @@ function Show-PhpSwitchMenu {
             $tagColor = "Yellow"
         }
         else {
+            # Tag relative to the newest cached patch
             if ($Installed) {
                 try {
                     if ([version]$r.Version -gt [version]$Installed) { $tag = " (newer)"; $tagColor = "Yellow" }
@@ -2227,9 +2308,22 @@ function Show-PhpSwitchMenu {
                     else { $tag = " (current)"; $tagColor = "Green" }
                 } catch { }
             }
+            # The installed build lives in this series but is not the newest
+            # cached patch — keep the "current" visible in the list.
+            if ($Installed -and (Get-PhpSeries $Installed) -eq $r.Series) {
+                try {
+                    if ([version]$r.Version -eq [version]$Installed) {
+                        $tag = " (current)"; $tagColor = "Green"
+                    }
+                    elseif ($tag -notmatch 'current') {
+                        $tag += " — current: $Installed"
+                    }
+                } catch { }
+            }
             if ($r.Stale -and $r.Latest) {
                 $tag += " → $($r.Latest) is available"
-                $tagColor = "Yellow"
+                # Keep "(current)" green even when a newer patch is hinted
+                if ($tag -notmatch 'current') { $tagColor = "Yellow" }
             }
             if ($r.Variants -gt 1) { $tag += " *" }
         }
@@ -2239,11 +2333,11 @@ function Show-PhpSwitchMenu {
     }
     Write-Host "  [S] skip" -ForegroundColor DarkGray
 
-    # 7. Selection
+    # 7. Selection — strict: only a plain number is accepted (rejects "2d" etc.)
     $choice = Read-Host "  Choose"
     if ($choice -match '^[Ss]$' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
-
-    try { $idx = [int]$choice - 1 } catch { Write-Warn "  Invalid choice — skipping PHP"; return $null }
+    if ($choice -notmatch '^\d+$') { Write-Warn "  Invalid choice — skipping PHP"; return $null }
+    $idx = [int]$choice - 1
     if ($idx -lt 0 -or $idx -ge $rows.Count) { Write-Warn "  Invalid choice — skipping PHP"; return $null }
 
     $row = $rows[$idx]
@@ -2275,8 +2369,69 @@ function Show-PhpSwitchMenu {
         # fall through → use existing
     }
 
+    # Selecting the already-installed build is a no-op
+    if ($Installed) {
+        try {
+            if ([version]$row.Version -eq [version]$Installed) {
+                Write-Info "$($row.Version) is already installed — no changes made."
+                return $null
+            }
+        } catch { }
+    }
+
     # 8d. Single cached entry (or user chose "use existing")
     return @{ Chosen = $true; Version = $row.Version; Path = $row.Path }
+}
+
+function Show-PhpVariantList {
+# Renders the variant sub-menu list (shared by the initial render and the
+# re-render after a delete, so both obey the same rules: pre-release labels,
+# newer/older/current tags, no delete on the installed build, and the
+# "newer — download" row only when the latest patch is NOT already cached).
+    param(
+        [string]$Series,
+        [object[]]$Sorted,
+        [string]$LatestVersion,
+        [string]$Installed
+    )
+
+    Write-Host ""
+    Write-Host "PHP $Series — variants:" -ForegroundColor White
+    for ($i = 0; $i -lt $Sorted.Count; $i++) {
+        $v = $Sorted[$i]
+        $vLabel = if ($v.Label) { $v.Label } else { $v.Version }
+        $tag = ""
+        $tagColor = "Cyan"
+        if ($Installed) {
+            try {
+                if ([version]$v.Version -gt [version]$Installed) { $tag = " (newer)"; $tagColor = "Yellow" }
+                elseif ([version]$v.Version -lt [version]$Installed) { $tag = " (older)"; $tagColor = "DarkGray" }
+                else { $tag = " (current)"; $tagColor = "Green" }
+            } catch { }
+        }
+        Write-Host "  [$($i + 1)] $vLabel" -NoNewline -ForegroundColor Cyan
+        if ($tag) { Write-Host $tag -ForegroundColor $tagColor } else { Write-Host "" }
+        # Never offer to delete the currently installed build
+        $isCurrent = $false
+        if ($Installed) {
+            try { $isCurrent = ([version]$v.Version -eq [version]$Installed) } catch { }
+        }
+        if (-not $isCurrent) {
+            Write-Host "        [d] delete this cached copy" -ForegroundColor DarkGray
+        }
+    }
+
+    # Offer a download row only when the series' latest patch is NOT already cached
+    $latestCached = $false
+    if ($LatestVersion) {
+        foreach ($v in $Sorted) {
+            try { if ([version]$v.Version -eq [version]$LatestVersion) { $latestCached = $true } } catch { }
+        }
+    }
+    if ($LatestVersion -and -not $latestCached) {
+        Write-Host "  [$($Sorted.Count + 1)] $LatestVersion (newer — download)" -ForegroundColor Yellow
+    }
+    Write-Host "  [S] skip" -ForegroundColor DarkGray
 }
 
 function Show-PhpVariantSubMenu {
@@ -2291,82 +2446,94 @@ function Show-PhpVariantSubMenu {
         [string]$Installed
     )
 
-    $sorted = @($Variants | Sort-Object { [version]$_.Version } -Descending)
+    $sorted = @($Variants | Sort-Object @{ Expression = { [version]$_.Version }; Descending = $true }, @{ Expression = { Get-PhpPreReleaseRank $_ }; Descending = $true })
 
-    Write-Host ""
-    Write-Host "PHP $Series — variants:" -ForegroundColor White
-    for ($i = 0; $i -lt $sorted.Count; $i++) {
-        $v = $sorted[$i]
-        $vLabel = if ($v.Label) { $v.Label } else { $v.Version }
-        $tag = ""
-        $tagColor = "Cyan"
-        if ($Installed) {
-            try {
-                if ([version]$v.Version -gt [version]$Installed) { $tag = " (newer)"; $tagColor = "Yellow" }
-                elseif ([version]$v.Version -lt [version]$Installed) { $tag = " (older)"; $tagColor = "DarkGray" }
-                else { $tag = " (current)"; $tagColor = "Green" }
-            } catch { }
-        }
-        Write-Host "  [$($i + 1)] $vLabel" -NoNewline -ForegroundColor Cyan
-        if ($tag) { Write-Host $tag -ForegroundColor $tagColor } else { Write-Host "" }
-        Write-Host "        [d] delete this cached copy" -ForegroundColor DarkGray
-    }
+    Show-PhpVariantList -Series $Series -Sorted $sorted -LatestVersion $LatestVersion -Installed $Installed
 
-    $offerIndex = $sorted.Count + 1
-    if ($LatestVersion) {
-        $anyStale = $false
-        foreach ($v in $sorted) {
-            try { if ([version]$v.Version -lt [version]$LatestVersion) { $anyStale = $true } } catch { }
-        }
-        if ($anyStale) {
-            Write-Host "  [$offerIndex] $LatestVersion (newer — download)" -ForegroundColor Yellow
-        }
-    }
-    Write-Host "  [S] skip" -ForegroundColor DarkGray
+    $anyDelete = $false
 
     while ($true) {
         $choice = Read-Host "  Choose"
-        if ($choice -match '^[Ss]$' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+        if ($choice -match '^[Ss]$' -or [string]::IsNullOrWhiteSpace($choice)) {
+            if ($anyDelete) { return @{ Refresh = $true } }
+            return $null
+        }
 
-        # Delete action: "d1", "d2", ...
-        if ($choice -match '^[Dd](\d+)$') {
-            $dIdx = [int]$matches[1] - 1
-            if ($dIdx -lt 0 -or $dIdx -ge $sorted.Count) {
+        # Bare "d" — explain the delete format
+        if ($choice -match '^[Dd]$') {
+            Write-Info "  To delete a cached copy, type d<number> — e.g. d2 deletes variant [2]."
+            continue
+        }
+
+        # Delete action: "d2" or "2d" (bare "d" explains the format)
+        $deleteRow = -1
+        if ($choice -match '^[Dd](\d+)$')    { $deleteRow = [int]$matches[1] - 1 }
+        elseif ($choice -match '^(\d+)[Dd]$') { $deleteRow = [int]$matches[1] - 1 }
+        if ($deleteRow -ge 0) {
+            if ($deleteRow -ge $sorted.Count) {
                 Write-Warn "  Invalid delete choice."
                 continue
             }
+            $dIdx = $deleteRow
             $target = $sorted[$dIdx]
             $targetLabel = if ($target.Label) { $target.Label } else { $target.Version }
+            # Never delete the currently installed build
+            $targetIsCurrent = $false
+            if ($Installed) {
+                try { $targetIsCurrent = ([version]$target.Version -eq [version]$Installed) } catch { }
+            }
+            if ($targetIsCurrent) {
+                Write-Warn "  $targetLabel is the installed build — cannot delete it."
+                continue
+            }
             Write-Host ""
             $confirm = Read-Host "  Delete $targetLabel from cache? [Y]es/[N]o"
             if ($confirm -match '^[Yy]$') {
                 Remove-Item $target.Path -Force -ErrorAction SilentlyContinue
                 Write-Ok "Deleted $targetLabel from cache."
+                $anyDelete = $true
                 # Rebuild list
                 $sorted = @($sorted | Where-Object { $_.Path -ne $target.Path })
                 if ($sorted.Count -eq 0) {
                     Write-Info "No PHP variants left for $Series."
-                    return $null
+                    return @{ Refresh = $true }
                 }
-                Write-Host ""
-                Write-Host "PHP $Series — variants:" -ForegroundColor White
-                for ($i = 0; $i -lt $sorted.Count; $i++) {
-                    Write-Host "  [$($i + 1)] $($sorted[$i].Version)" -ForegroundColor Cyan
-                    Write-Host "        [d] delete this cached copy" -ForegroundColor DarkGray
+                # If nothing actionable remains (only the installed build left),
+                # bounce back to the version-switch menu instead of a dead end.
+                $actionable = $false
+                foreach ($v in $sorted) {
+                    if (-not $Installed) { $actionable = $true; break }
+                    try {
+                        if ([version]$v.Version -ne [version]$Installed) { $actionable = $true; break }
+                    } catch { $actionable = $true; break }
                 }
-                if ($LatestVersion) { Write-Host "  [$($sorted.Count + 1)] $LatestVersion (newer — download)" -ForegroundColor Yellow }
-                Write-Host "  [S] skip" -ForegroundColor DarkGray
+                if (-not $actionable) {
+                    Write-Info "Only the installed build remains for PHP $Series — returning to the version list."
+                    return @{ Refresh = $true }
+                }
+                Show-PhpVariantList -Series $Series -Sorted $sorted -LatestVersion $LatestVersion -Installed $Installed
                 continue
             }
             Write-Info "Keeping $($target.Version)."
             continue
         }
 
-        # Install choice
-        try { $idx = [int]$choice - 1 } catch { Write-Warn "  Invalid choice."; continue }
+        # Install choice — strict: only a plain number is accepted. This
+        # rejects garbage like "2d" that [int] would silently parse as 2.
+        if ($choice -notmatch '^\d+$') {
+            Write-Warn "  Invalid choice."
+            continue
+        }
+        $idx = [int]$choice - 1
         if ($idx -lt 0 -or $idx -ge $sorted.Count) {
-            # Maybe they picked the "newer — download" row
-            if ($LatestVersion -and $idx -eq ($sorted.Count)) {
+            # "newer — download" row, only valid when the latest is not cached
+            $latestCached2 = $false
+            if ($LatestVersion) {
+                foreach ($v in $sorted) {
+                    if ([version]$v.Version -eq [version]$LatestVersion) { $latestCached2 = $true; break }
+                }
+            }
+            if ($LatestVersion -and -not $latestCached2 -and $idx -eq ($sorted.Count)) {
                 return @{ Chosen = $true; Version = $LatestVersion; Download = $LatestUrl }
             }
             Write-Warn "  Invalid choice."
@@ -2374,6 +2541,17 @@ function Show-PhpVariantSubMenu {
         }
 
         $target = $sorted[$idx]
+
+        # Selecting the already-installed build is a no-op
+        if ($Installed) {
+            try {
+                if ([version]$target.Version -eq [version]$Installed) {
+                    Write-Info "$($target.Version) is already installed — no changes made."
+                    return $null
+                }
+            } catch { }
+        }
+
         # Stale variant → offer the newer patch
         if ($LatestVersion) {
             try {
@@ -2382,6 +2560,18 @@ function Show-PhpVariantSubMenu {
                     Write-Info "$($LatestVersion) is available for PHP $Series."
                     $ans = Read-Host "  [I]nstall latest / [U]se existing ($($target.Version))"
                     if ($ans -match '^[Ii]$') {
+                        # If the latest is already cached, install it from cache
+                        $latestZip = $null
+                        foreach ($v in $sorted) {
+                            if ([version]$v.Version -eq [version]$LatestVersion) { $latestZip = $v; break }
+                        }
+                        if ($latestZip) {
+                            Write-Host ""
+                            $del = Read-Host "  Delete cached $($target.Version)? [Y]es/[N]o (keep both)"
+                            $prune = $null
+                            if ($del -match '^[Yy]$') { $prune = $target.Path }
+                            return @{ Chosen = $true; Version = $LatestVersion; Path = $latestZip.Path; PruneOld = $prune }
+                        }
                         Write-Host ""
                         $del = Read-Host "  Delete cached $($target.Version)? [Y]es/[N]o (keep both)"
                         $prune = $null
@@ -2393,6 +2583,26 @@ function Show-PhpVariantSubMenu {
         }
         return @{ Chosen = $true; Version = $target.Version; Path = $target.Path }
     }
+}
+
+function Get-CachedPhpVersions {
+# Scans the download cache for PHP TS builds, sorted by version descending
+# then pre-release rank (RC > beta > alpha). Skips NTS builds. Used both for
+# the initial fu listing and to re-scan after a variant delete.
+    $result = @()
+    foreach ($zip in (Get-ChildItem -Path $DOWNLOAD_CACHE -Filter "*.zip" -ErrorAction SilentlyContinue)) {
+        $name = $zip.BaseName
+        if ($name -like "*php-*" -and $name -notlike "*phpmyadmin*") {
+            if ($name -like "*-nts-*") {
+                Write-Info "Skipping non-thread-safe (NTS) PHP build (incompatible with Apache): $($zip.Name)"
+                Write-Host ""
+                continue
+            }
+            $ver = Get-VersionFromZipName $name 'php'
+            if ($ver) { $result += @{ Path = $zip.FullName; Version = $ver; Label = Get-PhpZipLabel $name } }
+        }
+    }
+    return @($result | Sort-Object @{ Expression = { [version]$_.Version }; Descending = $true }, @{ Expression = { Get-PhpPreReleaseRank $_ }; Descending = $true })
 }
 
 function Invoke-ForcedUpdate {
@@ -2439,7 +2649,8 @@ function Invoke-ForcedUpdate {
 
     # Sort each by version descending
     $apacheVersions  = @($apacheVersions  | Sort-Object { [version]$_.Version } -Descending)
-    $phpVersions     = @($phpVersions     | Sort-Object { [version]$_.Version } -Descending)
+    # PHP: break numeric-version ties by pre-release rank (RC > beta > alpha)
+    $phpVersions     = @($phpVersions | Sort-Object @{ Expression = { [version]$_.Version }; Descending = $true }, @{ Expression = { Get-PhpPreReleaseRank $_ }; Descending = $true })
     $mariadbVersions = @($mariadbVersions | Sort-Object { [version]$_.Version } -Descending)
     $pmaVersions     = @($pmaVersions     | Sort-Object { [version]$_.Version } -Descending)
 
@@ -2457,7 +2668,12 @@ function Invoke-ForcedUpdate {
         Write-Host "$label" -NoNewline -ForegroundColor White
         Write-Host " — installed: " -NoNewline
         if ($installed) {
-            Write-Host $installed.PadRight(7) -NoNewline -ForegroundColor Green
+            # Flag pre-release builds (newer than the latest stable)
+            if (Test-PhpIsPreRelease $installed) {
+                Write-Host "$installed (pre-release)".PadRight(20) -NoNewline -ForegroundColor Yellow
+            } else {
+                Write-Host $installed.PadRight(7) -NoNewline -ForegroundColor Green
+            }
         } else {
             Write-Host "none    " -NoNewline -ForegroundColor DarkGray
         }
@@ -2471,7 +2687,7 @@ function Invoke-ForcedUpdate {
     }
 
     Show-ComponentSummary "Apache    " $currentApacheVer  $apacheVersions
-    Show-ComponentSummary "PHP       " $currentPhpVer     $phpVersions
+    Show-ComponentSummary "PHP       " (Get-PhpVersionLabel) $phpVersions
     Show-ComponentSummary "MariaDB   " $currentMariadbVer $mariadbVersions
     Show-ComponentSummary "phpMyAdmin" $currentPmaVer     $pmaVersions
 
@@ -2484,15 +2700,23 @@ function Invoke-ForcedUpdate {
 
     $anyChoice = $false
 
-    # --- PHP: series-aware version switching ---
-    if ($phpVersions.Count -gt 0) {
+    # --- PHP: series-aware version switching (loop: variant deletes refresh
+    # the listing, since the cache changed under us) ---
+    while ($true) {
         $phpMenu = Show-PhpSwitchMenu -PhpVersions $phpVersions -Installed $currentPhpVer
+        if ($phpMenu -and $phpMenu.Refresh) {
+            # A variant was deleted from the cache — re-scan and re-show the menu
+            $phpVersions = @(Get-CachedPhpVersions)
+            continue
+        }
         if ($phpMenu -and $phpMenu.Chosen) {
             $selectedPhp = $phpMenu
             $anyChoice = $true
+            Write-Ok "PHP → $($phpMenu.Version)"
         }
-        Write-Host ""
+        break
     }
+    Write-Host ""
 
     # --- Apache / MariaDB / phpMyAdmin: flat cached list ---
     $components = @(
@@ -2599,6 +2823,9 @@ function Invoke-ForcedUpdate {
         Invoke-ConfigurePhp
         Invoke-FixSqliteDll
         Invoke-CopyPhpDlls
+        # PHP major may have changed (e.g. 8.x → 7.x): the Apache module DLL
+        # name follows the major version, so re-point httpd.conf at it.
+        Invoke-ConfigureApache
         Write-Host ""
     }
     if ($needsMariadb) {
@@ -2819,7 +3046,13 @@ function Show-Dashboard {
 
     Write-Host "PHP ----------> " -NoNewline
     if (Test-PhpInstalled) {
-        Write-Host (Get-PhpVersion) -ForegroundColor Green
+        $phpInstalledLabel = Get-PhpVersionLabel
+        if (Test-PhpIsPreRelease $phpInstalledLabel) {
+            Write-Host "$phpInstalledLabel (pre-release)" -ForegroundColor Yellow
+        }
+        else {
+            Write-Host $phpInstalledLabel -ForegroundColor Green
+        }
     }
     else {
         Write-Host "not installed" -ForegroundColor Red

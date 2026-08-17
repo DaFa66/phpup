@@ -97,7 +97,7 @@ The dashboard shows installed versions, running services, useful paths, and avai
 | ------ | ----------------------------------------------------------------------------------------------- |
 | **I**  | Install the web stack                                                                           |
 | **U**  | Update outdated components                                                                      |
-| **fu** | _(hidden)_ PHP version switch (package manager on Mac/Linux, offline zips on Windows)           |
+| **fu** | _(hidden)_ PHP version switch (package manager on Mac/Linux, offline zips on Windows — fills missing series, flags newer patches, handles pre-release labels) |
 | **R**  | Restart Apache + MariaDB                                                                        |
 | **S**  | Toggle services — stops if running, starts if stopped. On Windows, offers service registration. |
 | **D**  | Delete the stack (preserves `www/` and databases)                                               |
@@ -114,7 +114,7 @@ phpup doesn't hardcode version numbers. Every install and update dynamically res
 | **MariaDB**    | [mariadb.org](https://mariadb.org)                                                         | REST API, sorts by support policy (Rolling > LTS), then version |
 | **phpMyAdmin** | [phpmyadmin.net](https://www.phpmyadmin.net)                                               | Latest stable release                                           |
 
-PHP is always the latest stable major version (8.2+, currently 8.5). Use the hidden **`fu`** command to switch versions.
+PHP is always the latest stable major version (8.2+, currently 8.5). Use the hidden **`fu`** command to switch versions — on Windows it manages cached zips and can fill missing series (including EOL ones like 7.4 if the `php_min_series` floor is lowered), flags newer patches, shows pre-release labels (`8.6.0 beta1`), and re-points Apache's PHP module automatically when you cross major versions.
 
 ## After Installation
 

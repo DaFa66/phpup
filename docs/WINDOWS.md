@@ -127,6 +127,24 @@ Requires pre-downloaded zips in `C:\phpup\downloads\`. Run the script online onc
 
 Once multiple versions are cached, the hidden **`fu`** command lets you switch between them interactively — upgrades, downgrades, or snapshots — without touching the network. MariaDB databases are automatically backed up and restored across version changes.
 
+### `fu` on Windows — PHP series management
+
+`fu` manages **PHP only** on Windows (Apache, MariaDB, and phpMyAdmin keep the simple cached-zip list). It groups cached PHP builds by series (8.2 → newest stable) and:
+
+- **Pre-release labels** — alpha/beta/RC builds show their suffix (e.g. `8.6.0 alpha3` vs `8.6.0 beta1`) instead of collapsing to the same version
+- **Pre-release installs flagged** — the dashboard stack list and the fu cache summary show the full label (`8.6.0 beta1 (pre-release)`, yellow) when the installed PHP is newer than the latest stable (alpha/beta/RC)
+- **Missing series** — a series with nothing cached is offered as `(not cached — download & install)`; choosing it downloads the latest stable patch and installs it. Any `N.M` series listed by windows.php.net is a candidate, bounded by `php_min_series` (default `8.2`); 7.x builds resolve via their VC15 toolchain builds
+- **Newer patch hints** — a cached version behind the latest in its series is flagged: `8.2.32 (older → 8.2.33 is available)`. Selecting it asks whether to install the newer patch (downloading it first, with an option to delete the old cached copy) or use the cached one as-is
+- **Multiple variants** — when a series has more than one cached patch, entries show `*`; selecting one opens a sub-menu of the variants, where each can be installed or deleted (`[d]` + row number, with a Yes/No confirm). Delete accepts both `d<number>` and `<number>d` (`d2` and `2d` both work); a bare `d` prints a format hint. After a delete that leaves only the installed build, `fu` returns you to the series list (re-scanning the cache) instead of showing a dead-end list
+- **Strict input** — menu choices must be plain numbers. `2d`/`2x`/garbage are rejected with "Invalid choice" rather than being silently coerced
+- **Selection confirmation** — picking a PHP version prints `PHP → 8.2.33` before the next component menu, matching the Apache/MariaDB/phpMyAdmin confirmations
+
+Online, `fu` checks windows.php.net for the latest stable per series. Run with `-Offline` to skip the network check — the menu then lists cached versions only (labels and variant markers still apply, but no hints or download offers).
+
+A configurable floor (`php_min_series` in `%APPDATA%\phpup\config.json`, default `8.2`) controls the oldest PHP series offered as a download candidate — set it to `8.0` to keep offering EOL series, or raise it to narrow the list. Cached zips are always listed regardless of the floor. The key is written to config.json automatically (visible and editable), and an older config that predates the key simply falls back to the `8.2` default.
+
+Apache's PHP module follows the installed PHP major: 7.x loads `php7apache2_4.dll` with `LoadModule php7_module`, 8.x loads `php8apache2_4.dll` with `LoadModule php_module` (the symbol PHP 8 actually exports — there is no `php8_module`). httpd.conf is re-pointed automatically after any PHP switch, so going 8 ↔ 7 keeps Apache loadable.
+
 ## Service Registration
 
 During install, you're prompted to register Apache and MariaDB as Windows services for auto-start on boot. If you skip it, the **S** toggle will offer registration later. Services are named `phpup_Apache` and `phpup_MariaDB`. The dashboard shows current registration state and the **S** command works in both directions — it can also unregister services when they're no longer needed.
@@ -142,9 +160,10 @@ On reinstall, the script detects both backups and offers to restore your databas
 The script saves state to `%APPDATA%\phpup\config.json`:
 
 - **Install path** — prompted once, remembered thereafter
-- **Component versions** — tracked after each install/update
+- **Component versions** — tracked after each install/update (PHP records the full label, e.g. `8.6.0 beta1`)
 - **Service registration state** — persisted between runs
 - **PATH entries** — tracked for clean uninstall
+- **PHP floor (`php_min_series`)** — written on first save (default `8.2`); edit it to change the oldest PHP series `fu` offers as a download candidate
 
 Example:
 
@@ -153,9 +172,10 @@ Example:
   "install_path": "C:\\phpup",
   "installed_at": "2026-06-05T20:45:00",
   "services_registered": true,
+  "php_min_series": "8.2",
   "versions": {
-    "apache": "2.4.67",
-    "php": "8.5.7",
+    "apache": "2.4.68",
+    "php": "8.5.9",
     "mariadb": "12.3.2",
     "phpmyadmin": "5.2.3"
   }
