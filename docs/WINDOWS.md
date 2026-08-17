@@ -5,7 +5,7 @@
 
 ## Prerequisites
 
-- **Windows 10 or 11** (x64 only — Intel/AMD 64-bit; ARM64 is not supported)
+- **Windows 10 or 11** (x64 — Intel/AMD 64-bit; ARM64 devices run the x64 stack under emulation, see [ARM64 & Emulation](#arm64--emulation))
 - **Run as Administrator** (required for port 80 binding and service registration)
 - **Visual C++ Redistributable** — [VC++ 2015–2022 x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170), minimum version 14.51.36231. phpup checks on startup and offers a one-click upgrade if needed.
 
@@ -92,7 +92,7 @@ phpup doesn't hardcode version numbers. Every install and update dynamically res
 - **Extensions:** `curl`, `fileinfo`, `gd`, `intl`, `mbstring`, `mysqli`, `openssl`, `pdo_mysql`, `pdo_sqlite`, `sodium`, `sqlite3`
 - `display_errors = On`
 - Error log routed to `logs/php_errors.log`
-- OPCache enabled with 256 MB memory, JIT tracing, 100 MB buffer
+- OPCache enabled with 256 MB memory, JIT tracing, 100 MB buffer — web server only; CLI runs with opcache off so phar tools (Composer, artisan) work reliably
 - PHP dependency DLLs copied to Apache `bin/` for clean extension loading
 - Added to user PATH
 
@@ -180,9 +180,22 @@ Press **D** to delete the stack. Your website files in `www\` and databases in `
 
 For a complete wipe, delete `C:\phpup\` and `%APPDATA%\phpup\` manually after running Delete.
 
+## ARM64 & Emulation
+
+phpup's stack is **x64-only** — Apache Lounge, PHP, and MariaDB do not ship native ARM64 Windows binaries, so there is nothing native to install on ARM64 devices (Snapdragon laptops, Surface Pro X, Apple Silicon running Windows, etc.).
+
+On ARM64, phpup installs the x64 stack anyway, and Windows runs it under its built-in **x64 emulation (Prism)**:
+
+- **Expected to work** — x64 emulation is a mature, general-purpose Windows feature; the stack behaves like it does on x64 hardware.
+- **Untested by phpup** — we have no ARM64 device in the test loop, so treat it as best-effort.
+- **Slower than native x64** — emulated code carries an overhead; expect a measurable performance hit, especially for CPU-bound PHP work (JIT is still active, but emulated).
+- **The VC++ Redistributable** is installed as x64 regardless of host — the emulated x64 binaries load the x64 runtime. The arm64 redist is only for native ARM64 apps, which this stack has none of.
+
+phpup prints a warning on ARM64 at startup (rather than refusing to run) so you know what you're getting into. 32-bit Windows is still hard-blocked — the stack cannot run there at all.
+
 ## Known Limitations
 
-- **Windows ARM64 not supported.** Apache Lounge and MariaDB do not provide native ARM64 Windows binaries. The script detects ARM64 at startup and exits.
+- **Windows ARM64 is emulation-only, not natively supported.** Apache Lounge, PHP, and MariaDB provide no native ARM64 Windows binaries. phpup warns and continues under x64 emulation — see [ARM64 & Emulation](#arm64--emulation).
 
 ## Support
 

@@ -21,6 +21,10 @@ using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 **Fixed**
 - Stale pinned PHP fallback URL bumped 8.5.8 → 8.5.9 (the 8.5.8 zip 404s; live resolution was covering it, but the safety net is now valid again)
 
+**Changed**
+- README platform table and `docs/WINDOWS.md` updated — ARM64 is documented as emulation-only with the VC++ runtime explanation, and the CLI-opcache note (phar tools) is now explicit
+- Redistributable URL now referenced from `$FALLBACK_URLS.Redist` everywhere (was hardcoded in four places) — single source of truth
+
 ---
 
 ## [2.2.4-win] — 2026-08-17

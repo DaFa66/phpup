@@ -41,11 +41,11 @@ After launching, press **I** to install. On subsequent runs the script remembers
 
 ## Platform Support
 
-| Platform | Architecture   | Package Manager                                                     | Status    | Docs                               |
-| -------- | -------------- | ------------------------------------------------------------------- | --------- | ---------------------------------- |
-| Windows  | x64            | Direct binary downloads                                             | ✅ Stable | [docs/WINDOWS.md](docs/WINDOWS.md) |
-| macOS    | x86_64 + arm64 | [Homebrew](https://brew.sh) / [MacPorts](https://www.macports.org/) | ✅ Stable | [docs/MACOS.md](docs/MACOS.md)     |
-| Linux    | x86_64 + arm64 | apt (Debian/Ubuntu/WSL2)                                            | ✅ Stable | [docs/LINUX.md](docs/LINUX.md)     |
+| Platform | Architecture                   | Package Manager                                                     | Status    | Docs                               |
+| -------- | ------------------------------ | ------------------------------------------------------------------- | --------- | ---------------------------------- |
+| Windows  | x64 (+ ARM64 via emulation)    | Direct binary downloads                                             | ✅ Stable | [docs/WINDOWS.md](docs/WINDOWS.md) |
+| macOS    | x86_64 + arm64                 | [Homebrew](https://brew.sh) / [MacPorts](https://www.macports.org/) | ✅ Stable | [docs/MACOS.md](docs/MACOS.md)     |
+| Linux    | x86_64 + arm64                 | apt (Debian/Ubuntu/WSL2)                                            | ✅ Stable | [docs/LINUX.md](docs/LINUX.md)     |
 
 ## Special mention on macOS backends for Apple silicon and Intel Macs
 
