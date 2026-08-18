@@ -10,6 +10,16 @@ using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 
 ---
 
+## [2.4.1-win] — 2026-08-18
+
+### Windows (phpup.ps1 v2.4.1)
+
+**Fixed**
+- `fu` (forced update) no longer orphans the phpMyAdmin `Alias` on a subsequent run — the `DocumentRoot` `<Directory>` block rewrite is now scoped to the old document root exactly, instead of greedily rewriting every quoted `<Directory>` block to `www`. (Fixes a 403 Access Denied when switching PHP versions on a stack with phpMyAdmin installed).
+- `fu` now properly self-heals a missing phpMyAdmin `<Directory>` block (access grant) if it was dropped or corrupted, instead of skipping the grant check when the `Alias` alone is present.
+
+---
+
 ## [2.4.0-win] — 2026-08-17
 
 ### Windows (phpup.ps1 v2.4.0)

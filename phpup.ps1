@@ -4,8 +4,8 @@
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-08-17
-#  Version: 2.4.0
+#  Date: 2026-08-18
+#  Version: 2.4.1
 # =======================================================================
 
 param(
@@ -1044,11 +1044,19 @@ function Invoke-ConfigureApache {
     }
 
     # 3. DocumentRoot
+    $oldDocRoot = ''
+    if ($conf -match 'DocumentRoot\s+"([^"]*)"') { $oldDocRoot = $Matches[1] }
     $conf = $conf -replace 'DocumentRoot\s+".*"', "DocumentRoot `"$wwwUnix`""
     Write-Ok "DocumentRoot set to $WWW_PATH"
 
-    # 4. Directory block for www
-    $conf = $conf -replace '<Directory\s+".*">', "<Directory `"$wwwUnix`">"
+    # 4. Directory block for www — rewrite ONLY the old DocumentRoot's own
+    # <Directory> block. A blanket '<Directory\s+"…">' replace rewrites EVERY
+    # quoted Directory block (cgi-bin, and phpMyAdmin's on a re-run), which
+    # orphans phpMyAdmin's grant → 403 (Apache 2.4 "Require all denied").
+    if ($oldDocRoot) {
+        $oldDocEscaped = [regex]::Escape($oldDocRoot)
+        $conf = $conf -replace "<Directory\s+`"$oldDocEscaped`">", "<Directory `"$wwwUnix`">"
+    }
 
     # 5. DirectoryIndex - PHP first
     if ($conf -match 'DirectoryIndex\s+index.html') {
@@ -1101,20 +1109,16 @@ PHPIniDir "$phpIniUnix"
         Write-Ok "PHP module already configured"
     }
 
-    # 9. phpMyAdmin Alias
+    # 9. phpMyAdmin Alias + access grant (self-healing)
+    #    The Alias alone is not enough on Apache 2.4 — a matching <Directory>
+    #    block with "Require all granted" is required, or the root "Require all
+    #    denied" applies and phpMyAdmin 403s. Add whichever piece is missing.
+    $pmaUnix = $PHPMYADMIN_PATH -replace '\\', '/'
     if ($conf -notmatch 'Alias /phpmyadmin') {
-        $pmaUnix = $PHPMYADMIN_PATH -replace '\\', '/'
-        $pmaBlock = @"
-
-# phpMyAdmin (phpup)
-Alias /phpmyadmin "$pmaUnix"
-<Directory "$pmaUnix">
-    Options Indexes FollowSymLinks MultiViews
-    AllowOverride All
-    Require all granted
-</Directory>
-"@
-        $conf += $pmaBlock
+        $conf += "`r`n# phpMyAdmin (phpup)`r`nAlias /phpmyadmin `"$pmaUnix`"`r`n"
+    }
+    if ($conf -notmatch "<Directory\s+`"$pmaUnix`">") {
+        $conf += "<Directory `"$pmaUnix`">`r`n    Options Indexes FollowSymLinks MultiViews`r`n    AllowOverride All`r`n    Require all granted`r`n</Directory>`r`n"
     }
     Write-Ok "phpMyAdmin alias configured"
 
