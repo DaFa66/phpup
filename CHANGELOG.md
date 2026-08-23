@@ -8,9 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked independently
 using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 
+Jump to the [Version History Summary](#version-history-summary) table for a quick
+overview of every release.
+
+---
+
+## [1.0.2-nix] — 2026-08-21
+
+### macOS & Linux (phpup.sh v1.0.2)
+
+Patch release from the dual-stack test (MacPorts alongside Homebrew on one Mac): ports-backend fixes and machine-level self-healing so a fresh install "just works" on any Mac. *Previous platform update: [1.0.1-nix](#101-nix--2026-08-11).*
+
+**Fixed**
+- `detect_*` in ports mode no longer falls through to the brew Cellar — a dual-stack machine now reports the correct stack (previously a brew install hid the Install option)
+- macOS version token for the MacPorts installer: 11+ drops the minor (15.7 → `15-Sequoia`); 10.x keeps major.minor — previously the token fell through to "not viable" on every 11+ release with a minor
+- Service-start/stop verification is now stack-aware: `stack_proc()` pins the process to the active backend by executable path, so "Apache started"/"MariaDB started" can no longer be false positives from a coexisting brew stack, and stopping one stack never kills the other's processes
+- phpMyAdmin blowfish secret: per-install random 32 bytes on ALL backends (was a static known-default on brew, absent on ports — PMA showed the "temporary key" warning)
+- MariaDB data-dir init is verified post-install (mysql system DB present) — a partial/raced init wipes and retries once instead of silently failing later with "Table 'mysql.plugin' doesn't exist"
+
+**Added**
+- Detect damaged CLT 16 C++ headers before a ports source build and print the known fix (MacPorts hotlist #clts16 — `'new' file not found`)
+- Detect and repair a world-writable sudo timestamp dir (the "password spam" UX: sudo prompts on every invocation because it distrusts the cache)
+
+### Notes
+- No tag: patch-level per RELEASES.md (milestone tags only; CHANGELOG is the record)
+
+
 ---
 
 ## [2.4.1-win] — 2026-08-18
+
+*Previous platform update: [2.4.0-win](#240-win--2026-08-17).*
 
 ### Windows (phpup.ps1 v2.4.1)
 
@@ -21,6 +49,8 @@ using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 ---
 
 ## [2.4.0-win] — 2026-08-17
+
+*Previous platform update: [2.3.0-win](#230-win--2026-08-17).*
 
 ### Windows (phpup.ps1 v2.4.0)
 
@@ -47,6 +77,8 @@ using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 
 ## [2.3.0-win] — 2026-08-17
 
+*Previous platform update: [2.2.4-win](#224-win--2026-08-17).*
+
 ### Windows (phpup.ps1 v2.3.0)
 
 **Added**
@@ -64,32 +96,14 @@ using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 
 ## [2.2.4-win] — 2026-08-17
 
+*Previous platform update: [2.2.1-win](#221-win--111-nix--2026-07-26).*
+
 ### Windows (phpup.ps1 v2.2.4)
 
 **Fixed**
 - `opcache.enable_cli` is now set to `0` (was `1`) — with opcache + JIT tracing enabled for CLI, phar tools (Composer, artisan) segfaulted with exit 139. Web SAPI keeps opcache and JIT; only CLI runs without them, so one-shot tools work again.
 
 ---
-
-## [1.0.2-nix] — 2026-08-21
-
-### macOS & Linux (phpup.sh v1.0.2)
-
-Patch release from the dual-stack test (MacPorts alongside Homebrew on one Mac): ports-backend fixes and machine-level self-healing so a fresh install "just works" on any Mac.
-
-**Fixed**
-- `detect_*` in ports mode no longer falls through to the brew Cellar — a dual-stack machine now reports the correct stack (previously a brew install hid the Install option)
-- macOS version token for the MacPorts installer: 11+ drops the minor (15.7 → `15-Sequoia`); 10.x keeps major.minor — previously the token fell through to "not viable" on every 11+ release with a minor
-- Service-start/stop verification is now stack-aware: `stack_proc()` pins the process to the active backend by executable path, so "Apache started"/"MariaDB started" can no longer be false positives from a coexisting brew stack, and stopping one stack never kills the other's processes
-- phpMyAdmin blowfish secret: per-install random 32 bytes on ALL backends (was a static known-default on brew, absent on ports — PMA showed the "temporary key" warning)
-- MariaDB data-dir init is verified post-install (mysql system DB present) — a partial/raced init wipes and retries once instead of silently failing later with "Table 'mysql.plugin' doesn't exist"
-
-**Added**
-- Detect damaged CLT 16 C++ headers before a ports source build and print the known fix (MacPorts hotlist #clts16 — `'new' file not found`)
-- Detect and repair a world-writable sudo timestamp dir (the "password spam" UX: sudo prompts on every invocation because it distrusts the cache)
-
-### Notes
-- No tag: patch-level per RELEASES.md (milestone tags only; CHANGELOG is the record)
 
 ## [1.0.1-nix] — 2026-08-11
 
@@ -643,37 +657,42 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**2.4.1-win**](#241-win--2026-08-18) | 2026-08-18 | fu phpMyAdmin Alias fix, Directory self-heal |
+| [**2.4.0-win**](#240-win--2026-08-17) | 2026-08-17 | fu series management, variants, pre-release labels |
+| [**2.3.0-win**](#230-win--2026-08-17) | 2026-08-17 | Soft ARM64 (Prism), VC++ arch-aware |
+| [**2.2.4-win**](#224-win--2026-08-17) | 2026-08-17 | opcache CLI off — phar tools segfault fix |
 | **2.2.2-win** | 2026-07-27 | Banner colour fix |
-| **2.2.1-win** | 2026-07-26 | PMA config, upload limits, session lifetime |
-| **2.2.0-win** | 2026-07-25 | Forced update, config persistence, upload limits |
-| **2.1.1-win** | 2026-07-05 | PowerShell alias, VC++ section fix |
-| **2.1.0-win** | 2026-07-05 | S+T toggle merge, dashboard reorder |
-| **2.0.0-win** | 2026-06-28 | Rebrand to phpup |
-| **1.0.6-win** | 2026-06-20 | RC regex, admin message fix |
-| **1.0.5-win** | 2026-06-16 | Forced update (`fu`) |
-| **1.0.4-win** | 2026-06-14 | Sodium, offline switch, extraction fixes |
-| **1.0.3-win** | 2026-06-13 | Zip caching, MariaDB fixes, log consolidation |
-| **1.0.2-win** | 2026-06-08 | JIT, fallback URLs, service registration |
-| **1.0.1-win** | 2026-06-06 | Smart update, service registration |
-| **1.0.0-win** | 2026-06-05 | Initial release |
+| [**2.2.1-win**](#221-win--111-nix--2026-07-26) | 2026-07-26 | PMA config, upload limits, session lifetime |
+| [**2.2.0-win**](#220-win--110-nix--2026-07-25) | 2026-07-25 | Forced update, config persistence, upload limits |
+| [**2.1.1-win**](#211-win--2026-07-05) | 2026-07-05 | PowerShell alias, VC++ section fix |
+| [**2.1.0-win**](#210-win--2026-07-05) | 2026-07-05 | S+T toggle merge, dashboard reorder |
+| [**2.0.0-win**](#200-win--2026-06-28) | 2026-06-28 | Rebrand to phpup |
+| [**1.0.6-win**](#106-win--2026-06-20) | 2026-06-20 | RC regex, admin message fix |
+| [**1.0.5-win**](#105-win--2026-06-16) | 2026-06-16 | Forced update (`fu`) |
+| [**1.0.4-win**](#104-win--2026-06-14) | 2026-06-14 | Sodium, offline switch, extraction fixes |
+| [**1.0.3-win**](#103-win--2026-06-13) | 2026-06-13 | Zip caching, MariaDB fixes, log consolidation |
+| [**1.0.2-win**](#102-win--2026-06-08) | 2026-06-08 | JIT, fallback URLs, service registration |
+| [**1.0.1-win**](#101-win--2026-06-06) | 2026-06-06 | Smart update, service registration |
+| [**1.0.0-win**](#100-win--2026-06-05) | 2026-06-05 | Initial release |
 
 ### Mac & Linux (phpup.sh)
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| **1.0.1-nix** | 2026-08-11 | Homebrew `fu` numbered menu, formula-aware `u` |
-| **1.0.0-nix** | 2026-08-11 | First stable, MacPorts backend |
-| **0.11.0-beta-nix** | 2026-08-09 | MacPorts hardening, Apache LoadModule fix |
-| **0.10.0-beta-nix** | 2026-08-07 | MacPorts backend for older Intel Macs |
-| **0.9.0-beta-nix** | 2026-08-07 | Cross-series PHP upgrade, dashboard parity |
-| **0.8.0-beta-nix** | 2026-08-06 | pma tarball, MariaDB.org repo |
-| **0.7.3-beta-nix** | 2026-08-06 | Suppress meta sync noise in `fu` |
-| **0.7.2-beta-nix** | 2026-08-04 | Latest PHP on fresh installs, pma control DB fix |
-| **0.6.2-beta-nix** | 2026-08-04 | `fu` PHP version switching on apt |
+| [**1.0.2-nix**](#102-nix--2026-08-21) | 2026-08-21 | Dual-stack machine fixes, stack-aware services, PMA blowfish |
+| [**1.0.1-nix**](#101-nix--2026-08-11) | 2026-08-11 | Homebrew `fu` numbered menu, formula-aware `u` |
+| [**1.0.0-nix**](#100-nix--2026-08-11) | 2026-08-11 | First stable, MacPorts backend |
+| [**0.11.0-beta-nix**](#0110-beta-nix--2026-08-09) | 2026-08-09 | MacPorts hardening, Apache LoadModule fix |
+| [**0.10.0-beta-nix**](#0100-beta-nix--2026-08-07) | 2026-08-07 | MacPorts backend for older Intel Macs |
+| [**0.9.0-beta-nix**](#090-beta-nix--2026-08-07) | 2026-08-07 | Cross-series PHP upgrade, dashboard parity |
+| [**0.8.0-beta-nix**](#080-beta-nix--2026-08-06) | 2026-08-06 | pma tarball, MariaDB.org repo |
+| [**0.7.3-beta-nix**](#073-beta-nix--2026-08-06) | 2026-08-06 | Suppress meta sync noise in `fu` |
+| [**0.7.2-beta-nix**](#072-beta-nix--2026-08-04) | 2026-08-04 | Latest PHP on fresh installs, pma control DB fix |
+| [**0.6.2-beta-nix**](#062-beta-nix--2026-08-04) | 2026-08-04 | `fu` PHP version switching on apt |
 | **0.5.11-beta-nix** | 2026-08-01 | First Linux apt support |
 | **0.4.8-beta-nix** | 2026-07-30 | Service overhaul, PMA storage, delete hardening |
-| **1.1.1-nix** | 2026-07-26 | PMA config, session lifetime |
-| **1.1.0-nix** | 2026-07-25 | PHP upload limits |
+| [**1.1.1-nix**](#221-win--111-nix--2026-07-26) | 2026-07-26 | PMA config, session lifetime |
+| [**1.1.0-nix**](#220-win--110-nix--2026-07-25) | 2026-07-25 | PHP upload limits |
 | **1.0.0-nix** | 2026-07-19 | Initial phpup fork — native apt, 19 fixes |
 
 [1.0.1-nix]: https://github.com/DaFa66/phpup/releases/tag/v1.0.0-nix
