@@ -71,7 +71,7 @@ using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 
 ---
 
-## [1.0.2-nix] — 2026-08-14
+## [1.0.2-nix] — 2026-08-21
 
 ### macOS & Linux (phpup.sh v1.0.2)
 

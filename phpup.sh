@@ -5,7 +5,7 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-08-11
+#  Date: 2026-08-21
 #  Version: 1.0.2
 # ============================================================
 
@@ -384,6 +384,9 @@ is_service_running() {
 stack_proc() {
     local prefix="$PORT_PREFIX"
     [[ $USE_PORTS == 1 ]] || prefix="$BREW_PREFIX"
+    # Empty prefix (broken/absent brew with USE_PORTS=0) would match every
+    # process — degenerate to the old false-positive. Treat as no-match.
+    [[ -n "$prefix" ]] || return 1
     local pid
     for pid in $(pgrep "$@" 2>/dev/null); do
         ps -o command= -p "$pid" 2>/dev/null | grep -qF "$prefix" && return 0
@@ -866,7 +869,7 @@ stop_services() {
         if [[ $APACHE == 1 ]] && is_service_running apache; then
             sudo "${BREW_PREFIX}/bin/apachectl" stop >/dev/null 2>&1
             sleep 1
-            if ! pgrep -x httpd &>/dev/null; then
+            if ! stack_proc -x httpd &>/dev/null; then
                 print_ok "Apache stopped"
             fi
         fi
@@ -1564,7 +1567,9 @@ configure_mariadb_ports() {
         print_warn "MariaDB data dir incomplete — wiping and re-initializing"
         sudo "${PORT_PREFIX}/bin/port" unload "${MARIADB_PORT}-server" >/dev/null 2>&1
         sleep 1
-        sudo rm -rf "$datadir" 2>/dev/null || true
+        if [[ -d "$datadir" ]]; then
+            sudo rm -rf "$datadir" 2>/dev/null || true
+        fi
         sudo mkdir -p "$datadir"
         sudo chown _mysql:_mysql "$datadir"
         sudo -u _mysql "${PORT_PREFIX}/lib/${MARIADB_PORT}/bin/mariadb-install-db" \
@@ -1656,10 +1661,15 @@ configure_phpmyadmin() {
     print_info "Configuring phpMyAdmin..."
 
     # Blowfish secret (brew config has trailing comment after '';). Per-install
-    # random 32 bytes — never a static known-default.
-    local pma_secret_val
-    pma_secret_val=$(pma_secret)
-    sed -i.bak "s/\$cfg\['blowfish_secret'\] = '';.*/\$cfg\['blowfish_secret'\] = '${pma_secret_val}';/" "$pma_conf"
+    # random 32 bytes — never a static known-default. Remediate existing installs
+    # too: the ≤1.0.1 static value 12345678901234567890123456789012 is replaced,
+    # an already-random secret is left untouched (no rotation on re-configure).
+    if grep -q "12345678901234567890123456789012" "$pma_conf" 2>/dev/null || \
+       grep -q "\$cfg\['blowfish_secret'\] = '';" "$pma_conf" 2>/dev/null; then
+        local pma_secret_val
+        pma_secret_val=$(pma_secret)
+        sed -i.bak "s/\$cfg\['blowfish_secret'\] = '.*';.*/\$cfg\['blowfish_secret'\] = '${pma_secret_val}';/" "$pma_conf"
+    fi
     print_ok "Set blowfish secret"
 
     # Allow passwordless root login
@@ -1890,6 +1900,12 @@ configure_phpmyadmin_ports() {
     local pma_override_dir="${PORT_PREFIX}/etc/phpmyadmin/conf.d"
     local pma_override="${pma_override_dir}/phpup.php"
     sudo mkdir -p "$pma_override_dir" 2>/dev/null || true
+    # Capture the existing blowfish secret BEFORE the overwriting heredoc below
+    # erases it — re-appending the SAME value keeps re-configures idempotent
+    # (a fresh random secret per run would rotate PMA cookies/sessions on every U).
+    local pma_secret_val
+    pma_secret_val=$(sed -n "s/.*'\([0-9a-f]\{32\}\)'.*/\1/p" "$pma_override" 2>/dev/null | tail -1)
+    [[ -n "$pma_secret_val" ]] || pma_secret_val=$(pma_secret)
     sudo tee "$pma_override" > /dev/null <<'PMACONF'
 <?php
 // phpup — phpMyAdmin configuration overrides (MacPorts)
@@ -1901,14 +1917,10 @@ PMACONF
     # TempDir needs shell expansion (quoted heredoc above), so append separately
     echo "\$cfg['TempDir'] = '${PMA_DIR}/tmp';" | sudo tee -a "$pma_override" > /dev/null
     # Blowfish secret: PMA warns on missing (temporary key) — ports path writes
-    # none by default (brew's static sed doesn't exist here). Per-install random
-    # 32 bytes, idempotent across re-configures.
-    if ! grep -q "blowfish_secret" "$pma_override" 2>/dev/null; then
-        local pma_secret_val
-        pma_secret_val=$(pma_secret)
-        echo "\$cfg['blowfish_secret'] = '${pma_secret_val}';" | sudo tee -a "$pma_override" > /dev/null
-        print_ok "Set blowfish secret"
-    fi
+    # none by default. Always (re)append the captured/generated 32-byte secret so
+    # the file is complete after the heredoc rewrite without rotating it.
+    echo "\$cfg['blowfish_secret'] = '${pma_secret_val}';" | sudo tee -a "$pma_override" > /dev/null
+    print_ok "Set blowfish secret"
     print_ok "Applied phpMyAdmin overrides (performance, 4h cookie)"
 
     # Tarball ships without config.inc.php — create one that loads the conf.d
