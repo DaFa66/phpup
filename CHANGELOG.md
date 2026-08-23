@@ -71,6 +71,26 @@ using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 
 ---
 
+## [1.0.2-nix] — 2026-08-14
+
+### macOS & Linux (phpup.sh v1.0.2)
+
+Patch release from the dual-stack test (MacPorts alongside Homebrew on one Mac): ports-backend fixes and machine-level self-healing so a fresh install "just works" on any Mac.
+
+**Fixed**
+- `detect_*` in ports mode no longer falls through to the brew Cellar — a dual-stack machine now reports the correct stack (previously a brew install hid the Install option)
+- macOS version token for the MacPorts installer: 11+ drops the minor (15.7 → `15-Sequoia`); 10.x keeps major.minor — previously the token fell through to "not viable" on every 11+ release with a minor
+- Service-start/stop verification is now stack-aware: `stack_proc()` pins the process to the active backend by executable path, so "Apache started"/"MariaDB started" can no longer be false positives from a coexisting brew stack, and stopping one stack never kills the other's processes
+- phpMyAdmin blowfish secret: per-install random 32 bytes on ALL backends (was a static known-default on brew, absent on ports — PMA showed the "temporary key" warning)
+- MariaDB data-dir init is verified post-install (mysql system DB present) — a partial/raced init wipes and retries once instead of silently failing later with "Table 'mysql.plugin' doesn't exist"
+
+**Added**
+- Detect damaged CLT 16 C++ headers before a ports source build and print the known fix (MacPorts hotlist #clts16 — `'new' file not found`)
+- Detect and repair a world-writable sudo timestamp dir (the "password spam" UX: sudo prompts on every invocation because it distrusts the cache)
+
+### Notes
+- No tag: patch-level per RELEASES.md (milestone tags only; CHANGELOG is the record)
+
 ## [1.0.1-nix] — 2026-08-11
 
 ### macOS & Linux (phpup.sh v1.0.1)

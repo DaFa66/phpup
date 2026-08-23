@@ -6,7 +6,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-08-11
-#  Version: 1.0.1
+#  Version: 1.0.2
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -373,6 +373,24 @@ is_service_running() {
     fi
 }
 
+# True if any process matching the pgrep args ($@) belongs to the ACTIVE
+# backend. pgrep -x alone matches whichever stack owns the name (brew AND
+# ports both run "httpd", and MacPorts' MariaDB daemon is "mysqld" while
+# brew/apt run "mariadbd") — on a dual-stack machine that false-positives.
+# The process command line includes the binary/config path, which pins it to
+# one backend. brew php-fpm's master prints "php-fpm: master process
+# (/usr/local/etc/php/8.4/php-fpm.conf)" — no binary path in argv[0], but the
+# config path carries the prefix, so grep the whole command line.
+stack_proc() {
+    local prefix="$PORT_PREFIX"
+    [[ $USE_PORTS == 1 ]] || prefix="$BREW_PREFIX"
+    local pid
+    for pid in $(pgrep "$@" 2>/dev/null); do
+        ps -o command= -p "$pid" 2>/dev/null | grep -qF "$prefix" && return 0
+    done
+    return 1
+}
+
 detect_all() {
     if [[ $USE_APT == 0 ]] && [[ $HOMEBREW == 0 ]] && [[ $MACPORTS == 0 ]]; then
         return
@@ -392,6 +410,14 @@ print_ok()    { printf "[${GREEN}  OK  ${RESET}] %s\n" "$1"; }
 print_err()   { printf "[${RED} ERROR ${RESET}] %s\n" "$1"; }
 print_warn()  { printf "[${YELLOW}  WAIT ${RESET}] %s\n" "$1"; }
 print_info()  { printf "${CYAN}%s${RESET}\n" "$1"; }
+
+# 32-byte phpMyAdmin blowfish secret. PMA warns on missing AND on >32 bytes —
+# token_hex(16) is exactly 32 chars = 32 bytes. Generated per-install; never a
+# static known-default.
+pma_secret() {
+    python3 -c 'import secrets; print(secrets.token_hex(16))' 2>/dev/null \
+        || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'
+}
 
 # Quiet apt update: suppress the "no stable CLI" warning apt emits when its
 # output is piped (non-TTY), plus the "can be upgraded" notices. Real errors pass through.
@@ -437,6 +463,28 @@ check_prerequisites() {
         fi
         if [[ $USE_PORTS == 1 ]]; then
             print_info "MacPorts backend: packages compile from source — Xcode CLT is required."
+            # CLT 16+ installer bug (MacPorts hotlist #clts16): updating an older
+            # CLT leaves /usr/include/c++/v1 stripped to a __cxx_version marker —
+            # clang then fails EVERY C++ compile ('new' file not found) even when
+            # the SDK is intact. Detect BEFORE a ports source build burns 10-20
+            # minutes. A healthy CLT has ~185 headers; <10 means damage.
+            local clt_cpp="${DEVELOPER_DIR:-$(xcode-select -p)}/usr/include/c++/v1"
+            if [[ -d "$clt_cpp" ]] && [[ "$(ls -A "$clt_cpp" 2>/dev/null | wc -l | tr -d ' ')" -lt 10 ]]; then
+                print_warn "CLT C++ headers appear damaged (${clt_cpp} is near-empty)."
+                print_warn "This breaks source C++ builds (e.g. MariaDB). Fix:"
+                print_warn "  sudo rm -rf /Library/Developer/CommandLineTools/usr/include/c++"
+                print_warn "  (MacPorts hotlist: https://trac.macports.org/wiki/ProblemHotlist#clts16)"
+            fi
+        fi
+        # sudo timestamp dir world-writable (e.g. 702/733) makes sudo distrust
+        # the cache and prompt on EVERY invocation — the "password spam" UX
+        # (seen live 2026-08-13: 3-4 instant asks, no 5-min caching). One-line
+        # fix; detection signature: writable but NOT readable (the broken modes
+        # grant others write-only; a healthy 755 dir is readable).
+        if [[ -d /var/db/sudo/ts ]] && [[ -w /var/db/sudo/ts ]] && [[ ! -r /var/db/sudo/ts ]]; then
+            print_warn "sudo timestamp dir /var/db/sudo/ts is world-writable — sudo cannot cache credentials (prompts every time)."
+            sudo chmod 755 /var/db/sudo /var/db/sudo/ts 2>/dev/null && print_ok "Fixed sudo ts dir permissions (755)" \
+                || print_warn "Could not fix — run: sudo chmod 755 /var/db/sudo /var/db/sudo/ts"
         fi
     fi
 }
@@ -733,10 +781,10 @@ start_services() {
         if [[ $APACHE == 1 ]]; then
             sudo "${PORT_PREFIX}/bin/port" load apache2 >/dev/null 2>&1
             for ((_i=0; _i<10; _i++)); do
-                pgrep -x httpd &>/dev/null && { print_ok "Apache started on port 80"; break; }
+                stack_proc -x httpd &>/dev/null && { print_ok "Apache started on port 80"; break; }
                 sleep 1
             done
-            if ! pgrep -x httpd &>/dev/null; then
+            if ! stack_proc -x httpd &>/dev/null; then
                 print_err "Apache may have failed to start — check ${LOGS_DIR}/apache_error.log"
                 sudo "${PORT_PREFIX}/sbin/apachectl" configtest 2>&1 | tail -3
             fi
@@ -744,10 +792,10 @@ start_services() {
         if [[ $MARIADB == 1 ]]; then
             sudo "${PORT_PREFIX}/bin/port" load "${MARIADB_PORT}-server" >/dev/null 2>&1
             for ((_i=0; _i<10; _i++)); do
-                { pgrep -x mariadbd &>/dev/null || pgrep -x mysqld &>/dev/null; } && { print_ok "MariaDB started"; break; }
+                { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; } && { print_ok "MariaDB started"; break; }
                 sleep 1
             done
-            if ! { pgrep -x mariadbd &>/dev/null || pgrep -x mysqld &>/dev/null; }; then
+            if ! { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; }; then
                 print_err "MariaDB failed to start — check ${PORT_PREFIX}/var/log/${MARIADB_PORT}/mariadb_error.log"
                 tail -50 "${PORT_PREFIX}/var/log/${MARIADB_PORT}/mariadb_error.log" 2>/dev/null || \
                     tail -50 "${PORT_PREFIX}/var/db/${MARIADB_PORT}/"*.err 2>/dev/null || true
@@ -758,7 +806,7 @@ start_services() {
         if [[ $APACHE == 1 ]]; then
             sudo "${BREW_PREFIX}/bin/apachectl" restart >/dev/null 2>&1
             sleep 1
-            if pgrep -x httpd &>/dev/null; then
+            if stack_proc -x httpd &>/dev/null; then
                 print_ok "Apache started on port 80"
             else
                 print_err "Apache may have failed to start — check ${LOGS_DIR}/apache_error.log"
@@ -769,10 +817,10 @@ start_services() {
         if [[ $MARIADB == 1 ]]; then
             brew services start mariadb 2>/dev/null
             for ((_i=0; _i<5; _i++)); do
-                { pgrep -x mariadbd &>/dev/null || pgrep -x mysqld &>/dev/null; } && { print_ok "MariaDB started"; break; }
+                { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; } && { print_ok "MariaDB started"; break; }
                 sleep 1
             done
-            if ! { pgrep -x mariadbd &>/dev/null || pgrep -x mysqld &>/dev/null; }; then
+            if ! { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; }; then
                 print_err "MariaDB failed to start — check ${LOGS_DIR}/mariadb_error.log"
                 tail -50 "${LOGS_DIR}/mariadb_error.log" 2>/dev/null || true
             fi
@@ -783,10 +831,10 @@ start_services() {
             brew_php_svc=$(brew_active_php)
             brew services start "$brew_php_svc" 2>/dev/null
             for ((_i=0; _i<5; _i++)); do
-                pgrep -f "(^|/)php-fpm" &>/dev/null && { print_ok "PHP-FPM started"; break; }
+                stack_proc -f "(^|/)php-fpm" &>/dev/null && { print_ok "PHP-FPM started"; break; }
                 sleep 1
             done
-            pgrep -f "(^|/)php-fpm" &>/dev/null || print_err "PHP-FPM failed to start — check ${LOGS_DIR}/php_errors.log"
+            stack_proc -f "(^|/)php-fpm" &>/dev/null || print_err "PHP-FPM failed to start — check ${LOGS_DIR}/php_errors.log"
         fi
     fi
     sleep 2
@@ -802,11 +850,19 @@ stop_services() {
     elif [[ $USE_PORTS == 1 ]]; then
         [[ $APACHE == 1 ]] && sudo "${PORT_PREFIX}/bin/port" unload apache2 >/dev/null 2>&1 || true
         [[ $MARIADB == 1 ]] && sudo "${PORT_PREFIX}/bin/port" unload "${MARIADB_PORT}-server" >/dev/null 2>&1 || true
-        # Belt-and-braces: launchd will not restart after unload
-        pkill -x httpd 2>/dev/null || true
-        pkill -x mariadbd 2>/dev/null || pkill -x mysqld 2>/dev/null || true
+        # Belt-and-braces: launchd will not restart after unload. Kill only the
+        # ACTIVE backend's processes (stack_proc-pinned) so stopping the ports
+        # stack never takes down a coexisting brew stack's httpd/mysqld.
+        local _sp
+        for _sp in $(pgrep -x httpd 2>/dev/null); do
+            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$PORT_PREFIX" && kill "$_sp" 2>/dev/null || true
+        done
+        for _sp in $(pgrep -x mysqld 2>/dev/null; pgrep -x mariadbd 2>/dev/null); do
+            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$PORT_PREFIX" && kill "$_sp" 2>/dev/null || true
+        done
     else
-        # Kill any httpd process, then stop the launchd service to prevent restart
+        # Kill the brew stack's httpd only (path-pinned; a coexisting ports
+        # stack may be running its own httpd on another machine state)
         if [[ $APACHE == 1 ]] && is_service_running apache; then
             sudo "${BREW_PREFIX}/bin/apachectl" stop >/dev/null 2>&1
             sleep 1
@@ -815,9 +871,14 @@ stop_services() {
             fi
         fi
         [[ $MARIADB == 1 ]] && brew services stop mariadb
-        [[ $MARIADB == 1 ]] && pkill -x mariadbd 2>/dev/null || pkill -x mysqld 2>/dev/null || true
+        local _sp
+        for _sp in $(pgrep -x mysqld 2>/dev/null; pgrep -x mariadbd 2>/dev/null); do
+            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$BREW_PREFIX" && kill "$_sp" 2>/dev/null || true
+        done
         [[ $PHP == 1 ]] && brew services stop "$(brew_active_php)"
-        [[ $PHP == 1 ]] && pkill -f "(^|/)php-fpm" 2>/dev/null || true
+        for _sp in $(pgrep -f "(^|/)php-fpm" 2>/dev/null); do
+            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$BREW_PREFIX" && kill "$_sp" 2>/dev/null || true
+        done
     fi
     sleep 3
     print_ok "Services stopped"
@@ -1480,6 +1541,9 @@ configure_mariadb_ports() {
 
     # 2. Initialize data dir if empty (server port pre-creates /opt/local/var/db/<port> owned by _mysql)
     local datadir="${PORT_PREFIX}/var/db/${MARIADB_PORT}"
+    datadir_initialized() {
+        [[ -d "$datadir/mysql" ]] && [[ -n "$(ls -A "$datadir/mysql" 2>/dev/null)" ]]
+    }
     if [[ -d "$datadir" ]] && [[ -z "$(ls -A "$datadir" 2>/dev/null)" ]]; then
         print_info "Initializing MariaDB data directory..."
         # Prefer --auth-root-authentication-method=normal (native-password root, no
@@ -1490,6 +1554,23 @@ configure_mariadb_ports() {
             || sudo -u _mysql "${PORT_PREFIX}/lib/${MARIADB_PORT}/bin/mariadb-install-db" \
                 --datadir="$datadir" 2>/dev/null \
             || print_warn "mariadb-install-db failed — data dir may need manual init"
+    fi
+    # Verify the init actually produced the mysql system DB (privilege tables).
+    # A partial/raced init leaves InnoDB files but no mysql/ dir — mariadbd then
+    # aborts with "Table 'mysql.plugin' doesn't exist" (seen live 2026-08-13).
+    # Wipe and retry once; a second failure surfaces as a warning, not a silent
+    # "MariaDB started" false positive.
+    if ! datadir_initialized; then
+        print_warn "MariaDB data dir incomplete — wiping and re-initializing"
+        sudo "${PORT_PREFIX}/bin/port" unload "${MARIADB_PORT}-server" >/dev/null 2>&1
+        sleep 1
+        sudo rm -rf "$datadir" 2>/dev/null || true
+        sudo mkdir -p "$datadir"
+        sudo chown _mysql:_mysql "$datadir"
+        sudo -u _mysql "${PORT_PREFIX}/lib/${MARIADB_PORT}/bin/mariadb-install-db" \
+            --datadir="$datadir" --auth-root-authentication-method=normal 2>/dev/null \
+            || sudo -u _mysql "${PORT_PREFIX}/lib/${MARIADB_PORT}/bin/mariadb-install-db" --datadir="$datadir" 2>/dev/null || true
+        datadir_initialized || print_warn "MariaDB data dir still incomplete — manual init required"
     fi
 
     # 3. Start
@@ -1574,8 +1655,11 @@ configure_phpmyadmin() {
 
     print_info "Configuring phpMyAdmin..."
 
-    # Blowfish secret (brew config has trailing comment after '';)
-    sed -i.bak "s/\$cfg\['blowfish_secret'\] = '';.*/\$cfg\['blowfish_secret'\] = '12345678901234567890123456789012';/" "$pma_conf"
+    # Blowfish secret (brew config has trailing comment after '';). Per-install
+    # random 32 bytes — never a static known-default.
+    local pma_secret_val
+    pma_secret_val=$(pma_secret)
+    sed -i.bak "s/\$cfg\['blowfish_secret'\] = '';.*/\$cfg\['blowfish_secret'\] = '${pma_secret_val}';/" "$pma_conf"
     print_ok "Set blowfish secret"
 
     # Allow passwordless root login
@@ -1816,6 +1900,15 @@ $cfg['LoginCookieValidity'] = 14400;
 PMACONF
     # TempDir needs shell expansion (quoted heredoc above), so append separately
     echo "\$cfg['TempDir'] = '${PMA_DIR}/tmp';" | sudo tee -a "$pma_override" > /dev/null
+    # Blowfish secret: PMA warns on missing (temporary key) — ports path writes
+    # none by default (brew's static sed doesn't exist here). Per-install random
+    # 32 bytes, idempotent across re-configures.
+    if ! grep -q "blowfish_secret" "$pma_override" 2>/dev/null; then
+        local pma_secret_val
+        pma_secret_val=$(pma_secret)
+        echo "\$cfg['blowfish_secret'] = '${pma_secret_val}';" | sudo tee -a "$pma_override" > /dev/null
+        print_ok "Set blowfish secret"
+    fi
     print_ok "Applied phpMyAdmin overrides (performance, 4h cookie)"
 
     # Tarball ships without config.inc.php — create one that loads the conf.d
