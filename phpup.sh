@@ -1937,6 +1937,12 @@ configure_phpmyadmin_apt() {
     # Use conf.d override — works across all phpMyAdmin versions without fragile sed
     local pma_override="/etc/phpmyadmin/conf.d/phpup.php"
     sudo mkdir -p /etc/phpmyadmin/conf.d 2>/dev/null || true
+    # Capture the existing blowfish secret BEFORE the overwriting heredoc below
+    # erases it — re-appending the SAME value keeps re-configures idempotent
+    # (a fresh random secret per run would rotate PMA cookies/sessions on every U).
+    local pma_secret_val
+    pma_secret_val=$(sed -n "s/.*'\\([0-9a-f]\\{32\\}\\)'.*/\\1/p" "$pma_override" 2>/dev/null | tail -1)
+    [[ -n "$pma_secret_val" ]] || pma_secret_val=$(pma_secret)
     sudo tee "$pma_override" > /dev/null <<'PMACONF'
 <?php
 // phpup — phpMyAdmin configuration overrides
@@ -1948,7 +1954,11 @@ $cfg['SendErrorReports'] = 'never';
 $cfg['LoginCookieValidity'] = 14400;
 $cfg['TempDir'] = '/usr/share/phpmyadmin/tmp';
 PMACONF
-    print_ok "Applied phpMyAdmin overrides (performance, 4h cookie)"
+    # Blowfish secret: PMA warns on missing (temporary key). Always (re)append the
+    # captured/generated 32-byte secret so the file is complete after the heredoc
+    # rewrite without rotating it.
+    echo "\$cfg['blowfish_secret'] = '${pma_secret_val}';" | sudo tee -a "$pma_override" > /dev/null
+    print_ok "Applied phpMyAdmin overrides (performance, 4h cookie, blowfish secret)"
 
     # Tarball install: phpMyAdmin ships without config.inc.php (uses config.default.php
     # internally). Create one that loads /etc/conf.d/ overrides so AllowNoPassword
