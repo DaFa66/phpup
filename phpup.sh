@@ -261,12 +261,25 @@ brew_active_php() {
     fi
 }
 
+apt_php_bin() {
+    # The system PHP binary phpup manages on apt (update-alternatives).
+    # Resolves via the alternatives link so Homebrew/getphp shims on PATH
+    # (brew shellenv in ~/.bashrc) can't shadow it.
+    local bin
+    bin=$(readlink -f /etc/alternatives/php 2>/dev/null || true)
+    if [[ -z "$bin" || ! -x "$bin" ]]; then
+        bin=$(command -v php 2>/dev/null || true)
+    fi
+    [[ -n "$bin" && -x "$bin" ]] && echo "$bin"
+}
+
 detect_php() {
     if [[ $USE_APT == 1 ]]; then
         if command -v php &>/dev/null 2>&1; then
             PHP=1
-            # Report the active version from the binary (versioned installs have no php meta package)
-            PHP_VERSION=$(php -r 'echo PHP_VERSION;' 2>/dev/null || dpkg -s php 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
+            # Report the active version from the managed binary (versioned
+            # installs have no php meta package)
+            PHP_VERSION=$("$(apt_php_bin)" -r 'echo PHP_VERSION;' 2>/dev/null || dpkg -s php 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
         else
             PHP=0
             PHP_VERSION=""
@@ -1209,7 +1222,7 @@ configure_apache_apt() {
     # PHP-FPM integration — Apache proxies .php to the active FPM socket
     local fpm_ver
     fpm_ver=$(fpm_active_version || true)
-    [[ -z "$fpm_ver" ]] && fpm_ver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+    [[ -z "$fpm_ver" ]] && fpm_ver=$("$(apt_php_bin)" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
     if [[ -n "$fpm_ver" ]]; then
         write_apache_fpm_conf "$fpm_ver"
         enable_apache_fpm_modules
@@ -1406,7 +1419,7 @@ configure_php() {
 configure_php_apt() {
     print_info "Configuring PHP (apt)..."
     local php_ver
-    php_ver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+    php_ver=$("$(apt_php_bin)" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
     local inis=("/etc/php/${php_ver}/fpm/php.ini" "/etc/php/${php_ver}/cli/php.ini")
     local php_ini found=0
 
@@ -2348,7 +2361,7 @@ cmd_update() {
         # Also detect when PHP has been downgraded to an older series —
         # apt list won't flag cross-series switches because the packages differ.
         local php_current php_latest
-        php_current=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+        php_current=$("$(apt_php_bin)" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
 
         # Find the latest STABLE PHP series (skip alpha/beta/RC previews)
         # and capture its full version string for the prompt.
@@ -2366,7 +2379,7 @@ cmd_update() {
         if [[ -n "$php_latest" && "$php_current" != "$php_latest" ]]; then
             # Resolve full current version from the running binary
             local php_current_full
-            php_current_full=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
+            php_current_full=$("$(apt_php_bin)" -r 'echo PHP_VERSION;' 2>/dev/null)
             local msg="PHP ${php_current_full} → ${php_latest_full}"
             if [[ -z "$outdated" ]]; then
                 outdated="$msg"
@@ -2751,7 +2764,7 @@ latest_php_version() {
 php_active_pkgs() {
     # Versioned package set for the ACTIVE PHP version (e.g. php8.5-*), else meta fallback
     local pver
-    pver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+    pver=$("$(apt_php_bin)" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
     if [[ -n "$pver" ]]; then
         echo "php${pver} php${pver}-cli php${pver}-fpm php${pver}-curl php${pver}-gd php${pver}-intl php${pver}-mbstring php${pver}-mysql php${pver}-sqlite3 php${pver}-xml php${pver}-zip php${pver}-bcmath php${pver}-bz2"
     else
@@ -2899,7 +2912,7 @@ switch_php_apt() {
 
     # Current active version
     local current
-    current=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+    current=$("$(apt_php_bin)" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
 
     # Available versions (8.2 to latest)
     local versions
@@ -2978,7 +2991,7 @@ switch_php_apt() {
 
     print_ok "PHP switched to ${target} (previous version kept installed — switch back anytime with fu)"
     printf "\n${BOLD}Verification:${RESET}\n"
-    printf "  PHP CLI:    %s\n" "$(php -r 'echo PHP_VERSION;' 2>/dev/null)"
+    printf "  PHP CLI:    %s\n" "$("$(apt_php_bin)" -r 'echo PHP_VERSION;' 2>/dev/null)"
     printf "  PHP-FPM:    %s (%s)\n" "$target" "$(systemctl is-active "php${target}-fpm" 2>/dev/null)"
     printf "  Apache PHP: %s\n" "$(verify_apache_php || echo "unreachable")"
     printf "\n"
@@ -3362,6 +3375,10 @@ main() {
 
     # Main loop
     while true; do
+        # Re-detect each render so the dashboard reflects the live system
+        # (external changes — e.g. a fu switch in another terminal — can't
+        # leave the Web Stack row stale)
+        detect_all
         show_dashboard
 
         printf "${BOLD}==> Enter command:${RESET} "
