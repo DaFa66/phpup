@@ -1952,7 +1952,7 @@ error_reporting(E_ALL & ~E_DEPRECATED);
 $cfg['VersionCheck'] = false;
 $cfg['SendErrorReports'] = 'never';
 $cfg['LoginCookieValidity'] = 14400;
-$cfg['TempDir'] = '/usr/share/phpmyadmin/tmp';
+$cfg['TempDir'] = '/var/lib/phpmyadmin/tmp';
 PMACONF
     # Blowfish secret: PMA warns on missing (temporary key). Always (re)append the
     # captured/generated 32-byte secret so the file is complete after the heredoc
@@ -1980,8 +1980,11 @@ CONFDINCLUDE
         print_ok "Created tarball config with conf.d include"
     fi
 
-    # Create phpMyAdmin tmp directory (required for template cache)
-    local pma_tmp="/usr/share/phpmyadmin/tmp"
+    # Create phpMyAdmin tmp directory (required for template cache).
+    # NOT under /usr/share: Debian's php-fpm unit ships ProtectSystem=full,
+    # which makes /usr read-only to the FPM process, so a tmp dir there is
+    # unwritable no matter the permissions (is_writable false in web context).
+    local pma_tmp="/var/lib/phpmyadmin/tmp"
     local pma_tmp_ok=0
     sudo sh -c "mkdir -p '$pma_tmp' && chgrp www-data '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null && pma_tmp_ok=1
     if [[ $pma_tmp_ok == 0 ]] && [[ "$(stat -c '%G' "$pma_tmp" 2>/dev/null)" == "www-data" ]]; then
