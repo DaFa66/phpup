@@ -35,9 +35,9 @@ Patch release from the dual-stack test (MacPorts alongside Homebrew on one Mac):
 
 ---
 
-## [1.0.3-nix] — 2026-08-28
+## [1.1.0-nix] — 2026-08-28
 
-### macOS & Linux (phpup.sh v1.0.3)
+### macOS & Linux (phpup.sh v1.1.0)
 
 Feature release: the Linux web stack moves from the monolithic `mod_php` Apache module to **Apache + PHP-FPM** (`mod_proxy_fcgi` → `phpX.Y-fpm`), with automatic migration of existing mod_php installs. *Previous platform update: [1.0.2-nix](#102-nix--2026-08-21).*
 
@@ -716,7 +716,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| [**1.0.3-nix**](#103-nix--2026-08-28) | 2026-08-28 | Linux Apache + PHP-FPM, mod_php auto-migration, rollback-safe fu, PMA secret/tmp fixes |
+| [**1.1.0-nix**](#110-nix--2026-08-28) | 2026-08-28 | Linux Apache + PHP-FPM, mod_php auto-migration, rollback-safe fu, PMA secret/tmp fixes |
 | [**1.0.2-nix**](#102-nix--2026-08-21) | 2026-08-21 | Dual-stack machine fixes, stack-aware services, PMA blowfish |
 | [**1.0.1-nix**](#101-nix--2026-08-11) | 2026-08-11 | Homebrew `fu` numbered menu, formula-aware `u` |
 | [**1.0.0-nix**](#100-nix--2026-08-11) | 2026-08-11 | First stable, MacPorts backend |
