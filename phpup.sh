@@ -2983,7 +2983,11 @@ switch_php_apt() {
         return
     fi
 
-    if [[ "$target" == "$current" ]]; then
+    # Short-circuit only when FPM is already serving this version. On a
+    # legacy mod_php box (no FPM active) selecting the same version must still
+    # run the migration: install FPM packages, wire Apache to the socket,
+    # disable mod_php.
+    if [[ "$target" == "$current" ]] && [[ "$(fpm_active_version || true)" == "$target" ]]; then
         print_ok "PHP ${target} is already active."
         printf "\n"
         read -r -p "Press Enter to return to the dashboard..."
