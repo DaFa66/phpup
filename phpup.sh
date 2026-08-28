@@ -359,7 +359,11 @@ is_service_running() {
                 systemctl is-active --quiet mariadb 2>/dev/null && return 0 || return 1
                 ;;
             php)
-                systemctl is-active --quiet php*-fpm 2>/dev/null && return 0 || return 1
+                # FPM units don't reliably match the php*-fpm glob (verified:
+                # systemd returns no match), so check the ACTIVE version explicitly
+                local _fpm
+                _fpm=$(fpm_active_version || true)
+                [[ -n "$_fpm" ]] && systemctl is-active --quiet "php${_fpm}-fpm" 2>/dev/null && return 0 || return 1
                 ;;
             *) return 1 ;;
         esac
@@ -867,16 +871,16 @@ show_dashboard() {
         printf "${RED}Not available${RESET}\n"
     fi
 
-    printf "%-10s -----> " "PHP"
+    printf "%-10s -----> " "PHP-FPM"
     if [[ $PHP == 1 ]]; then
         if [[ $USE_APT == 1 ]]; then
             local fpm_ver
             fpm_ver=$(fpm_active_version || true)
             if [[ -n "$fpm_ver" ]]; then
                 if systemctl is-active --quiet "php${fpm_ver}-fpm" 2>/dev/null; then
-                    printf "${GREEN}%s-FPM (running)${RESET}\n" "$fpm_ver"
+                    printf "${GREEN}Running${RESET} (%s)\n" "$fpm_ver"
                 else
-                    printf "${RED}%s-FPM (stopped)${RESET}\n" "$fpm_ver"
+                    printf "${RED}Stopped${RESET} (%s)\n" "$fpm_ver"
                 fi
             elif dpkg -l 'php*-fpm' 2>/dev/null | grep -q '^ii'; then
                 printf "${RED}FPM installed — none active${RESET}\n"
@@ -1004,7 +1008,14 @@ stop_services() {
     if [[ $USE_APT == 1 ]]; then
         [[ $APACHE == 1 ]] && sudo systemctl stop apache2 2>/dev/null
         [[ $MARIADB == 1 ]] && sudo systemctl stop mariadb 2>/dev/null
-        [[ $PHP == 1 ]] && sudo systemctl stop php*-fpm 2>/dev/null
+        # php*-fpm glob does NOT match FPM units (systemd quirk) — stop each
+        # installed FPM version explicitly so nothing is left running
+        if [[ $PHP == 1 ]]; then
+            local _f
+            for _f in $(fpm_versions_installed); do
+                sudo systemctl stop "php${_f}-fpm" 2>/dev/null || true
+            done
+        fi
     elif [[ $USE_PORTS == 1 ]]; then
         [[ $APACHE == 1 ]] && sudo "${PORT_PREFIX}/bin/port" unload apache2 >/dev/null 2>&1 || true
         [[ $MARIADB == 1 ]] && sudo "${PORT_PREFIX}/bin/port" unload "${MARIADB_PORT}-server" >/dev/null 2>&1 || true
