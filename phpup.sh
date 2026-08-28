@@ -5,8 +5,8 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-08-21
-#  Version: 1.0.2
+#  Date: 2026-08-28
+#  Version: 1.1.0
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -261,12 +261,25 @@ brew_active_php() {
     fi
 }
 
+apt_php_bin() {
+    # The system PHP binary phpup manages on apt (update-alternatives).
+    # Resolves via the alternatives link so Homebrew/getphp shims on PATH
+    # (brew shellenv in ~/.bashrc) can't shadow it.
+    local bin
+    bin=$(readlink -f /etc/alternatives/php 2>/dev/null || true)
+    if [[ -z "$bin" || ! -x "$bin" ]]; then
+        bin=$(command -v php 2>/dev/null || true)
+    fi
+    [[ -n "$bin" && -x "$bin" ]] && echo "$bin"
+}
+
 detect_php() {
     if [[ $USE_APT == 1 ]]; then
         if command -v php &>/dev/null 2>&1; then
             PHP=1
-            # Report the active version from the binary (versioned installs have no php meta package)
-            PHP_VERSION=$(php -r 'echo PHP_VERSION;' 2>/dev/null || dpkg -s php 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
+            # Report the active version from the managed binary (versioned
+            # installs have no php meta package)
+            PHP_VERSION=$("$(apt_php_bin)" -r 'echo PHP_VERSION;' 2>/dev/null || dpkg -s php 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
         else
             PHP=0
             PHP_VERSION=""
@@ -346,7 +359,11 @@ is_service_running() {
                 systemctl is-active --quiet mariadb 2>/dev/null && return 0 || return 1
                 ;;
             php)
-                systemctl is-active --quiet php*-fpm 2>/dev/null && return 0 || return 1
+                # FPM units don't reliably match the php*-fpm glob (verified:
+                # systemd returns no match), so check the ACTIVE version explicitly
+                local _fpm
+                _fpm=$(fpm_active_version || true)
+                [[ -n "$_fpm" ]] && systemctl is-active --quiet "php${_fpm}-fpm" 2>/dev/null && return 0 || return 1
                 ;;
             *) return 1 ;;
         esac
@@ -372,6 +389,136 @@ is_service_running() {
         esac
     fi
 }
+
+# ---- PHP-FPM Helpers (apt) ----------------------------------
+fpm_service()       { echo "php${1}-fpm"; }
+fpm_socket()        { echo "/run/php/php${1}-fpm.sock"; }
+apache_fpm_conf()   { echo "/etc/apache2/conf-available/phpup-php-fpm.conf"; }
+
+fpm_versions_installed() {
+    # Installed PHP-FPM versions, e.g. "8.4 8.5" (excludes the php-fpm meta)
+    dpkg -l 'php*-fpm' 2>/dev/null | awk '/^ii/{print $2}' | grep -E '^php[0-9]' | sed 's/^php\([0-9.]*\)-fpm$/\1/' | sort -V
+}
+
+fpm_active_version() {
+    # The FPM version phpup currently wires into Apache: the managed conf is the
+    # source of truth, then an enabled FPM service, then the highest installed.
+    local conf ver
+    conf=$(apache_fpm_conf)
+    if [[ -f "$conf" ]]; then
+        ver=$(grep -oP 'php\K[0-9.]+(?=-fpm\.sock)' "$conf" 2>/dev/null | head -1)
+        [[ -n "$ver" ]] && { echo "$ver"; return 0; }
+    fi
+    local v
+    for v in $(fpm_versions_installed | sort -Vr); do
+        if systemctl is-enabled "php${v}-fpm" 2>/dev/null | grep -q enabled; then
+            echo "$v"; return 0
+        fi
+    done
+    return 1
+}
+
+write_apache_fpm_conf() {
+    # Regenerate the phpup-managed Apache PHP-FPM config for $1. Idempotent:
+    # full rewrite each time; the first run keeps a .phpup.bak of the original.
+    local version="$1" conf sock
+    conf=$(apache_fpm_conf)
+    sock=$(fpm_socket "$version")
+    [[ -f "$conf" && ! -f "${conf}.phpup.bak" ]] && sudo cp "$conf" "${conf}.phpup.bak"
+    sudo tee "$conf" > /dev/null <<EOF
+# phpup — PHP-FPM integration (managed; regenerated on version switch)
+<FilesMatch "\.php$">
+    SetHandler "proxy:unix:${sock}|fcgi://localhost"
+</FilesMatch>
+<Proxy "fcgi://localhost/">
+    Require all granted
+</Proxy>
+EOF
+    sudo a2enconf phpup-php-fpm 2>/dev/null || true
+}
+
+enable_apache_fpm_modules() {
+    # proxy + proxy_fcgi + setenvif — the modules FastCGI proxying needs
+    local mod
+    for mod in proxy proxy_fcgi setenvif; do
+        sudo a2enmod "$mod" 2>/dev/null || true
+    done
+}
+
+disable_mod_php() {
+    # Disable any enabled mod_php module (php7.4/php8.5…) — FPM is the runtime now
+    local mod
+    mod=$(a2query -m 2>/dev/null | awk '{print $1}' | grep '^php' | head -1)
+    if [[ -n "$mod" ]]; then
+        sudo a2dismod "$mod" 2>/dev/null || true
+        print_ok "Disabled Apache PHP module ($mod)"
+    fi
+}
+
+switch_fpm_apt() {
+    # Switch the Apache PHP-FPM runtime to $1, with rollback: on failure the
+    # previous FPM version + Apache conf are restored.
+    local target="$1"
+    local prev conf conf_backup
+    prev=$(fpm_active_version || true)
+    conf=$(apache_fpm_conf)
+    [[ -f "$conf" ]] && conf_backup=$(cat "$conf")
+
+    # Enable + start target FPM; disable + stop every other installed version
+    local v
+    for v in $(fpm_versions_installed); do
+        if [[ "$v" == "$target" ]]; then
+            sudo systemctl enable "php${v}-fpm" 2>/dev/null || true
+            sudo systemctl restart "php${v}-fpm" 2>/dev/null || true
+        else
+            sudo systemctl disable "php${v}-fpm" 2>/dev/null || true
+            sudo systemctl stop "php${v}-fpm" 2>/dev/null || true
+        fi
+    done
+
+    write_apache_fpm_conf "$target"
+    enable_apache_fpm_modules
+    disable_mod_php
+    sudo systemctl reload apache2 2>/dev/null || sudo systemctl restart apache2 2>/dev/null || true
+
+    # Verify the target FPM is actually up before declaring success
+    if ! systemctl is-active --quiet "php${target}-fpm" 2>/dev/null; then
+        print_err "php${target}-fpm failed to start"
+        # Always restore a sane Apache conf — never leave it pointing at a dead socket
+        if [[ -n "$conf_backup" ]]; then
+            printf '%s\n' "$conf_backup" | sudo tee "$conf" > /dev/null
+        else
+            sudo rm -f "$conf" 2>/dev/null || true
+        fi
+        if [[ -n "$prev" ]]; then
+            print_warn "Restoring previous PHP-FPM ${prev}..."
+            for v in $(fpm_versions_installed); do
+                if [[ "$v" == "$prev" ]]; then
+                    sudo systemctl enable "php${v}-fpm" 2>/dev/null || true
+                    sudo systemctl restart "php${v}-fpm" 2>/dev/null || true
+                else
+                    sudo systemctl disable "php${v}-fpm" 2>/dev/null || true
+                    sudo systemctl stop "php${v}-fpm" 2>/dev/null || true
+                fi
+            done
+            # CLI follows the FPM runtime — restore the previous alternative too
+            sudo update-alternatives --set php "/usr/bin/php${prev}" 2>/dev/null || true
+        fi
+        sudo systemctl reload apache2 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
+verify_apache_php() {
+    # Version string Apache actually serves through PHP-FPM (phpinfo probe)
+    local probe="${DOC_ROOT}/phpinfo.php"
+    if [[ ! -f "$probe" ]]; then
+        printf "<?php echo PHP_VERSION; ?>\n" | sudo tee "$probe" > /dev/null
+    fi
+    curl -s --max-time 5 "http://localhost/phpinfo.php" 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1
+}
+
 
 # True if any process matching the pgrep args ($@) belongs to the ACTIVE
 # backend. pgrep -x alone matches whichever stack owns the name (brew AND
@@ -724,12 +871,19 @@ show_dashboard() {
         printf "${RED}Not available${RESET}\n"
     fi
 
-    printf "%-10s -----> " "PHP"
+    printf "%-10s -----> " "PHP-FPM"
     if [[ $PHP == 1 ]]; then
         if [[ $USE_APT == 1 ]]; then
-            # apt uses mod_php (libapache2-mod-php) — check fpm only if installed
-            if dpkg -l 'php*-fpm' 2>/dev/null | grep -q '^ii'; then
-                is_service_running php && printf "${GREEN}Running (FPM)${RESET}\n" || printf "${RED}Stopped${RESET}\n"
+            local fpm_ver
+            fpm_ver=$(fpm_active_version || true)
+            if [[ -n "$fpm_ver" ]]; then
+                if systemctl is-active --quiet "php${fpm_ver}-fpm" 2>/dev/null; then
+                    printf "${GREEN}Running${RESET} (%s)\n" "$fpm_ver"
+                else
+                    printf "${RED}Stopped${RESET} (%s)\n" "$fpm_ver"
+                fi
+            elif dpkg -l 'php*-fpm' 2>/dev/null | grep -q '^ii'; then
+                printf "${RED}FPM installed — none active${RESET}\n"
             else
                 is_service_running apache && printf "${GREEN}Active (mod_php)${RESET}\n" || printf "${RED}Stopped${RESET}\n"
             fi
@@ -779,7 +933,12 @@ start_services() {
     if [[ $USE_APT == 1 ]]; then
         [[ $APACHE == 1 ]] && sudo systemctl start apache2 2>/dev/null
         [[ $MARIADB == 1 ]] && sudo systemctl start mariadb 2>/dev/null
-        [[ $PHP == 1 ]] && sudo systemctl start php*-fpm 2>/dev/null
+        # Start only the ACTIVE FPM version — others stay stopped
+        if [[ $PHP == 1 ]]; then
+            local fpm_ver
+            fpm_ver=$(fpm_active_version || true)
+            [[ -n "$fpm_ver" ]] && sudo systemctl start "php${fpm_ver}-fpm" 2>/dev/null
+        fi
     elif [[ $USE_PORTS == 1 ]]; then
         if [[ $APACHE == 1 ]]; then
             sudo "${PORT_PREFIX}/bin/port" load apache2 >/dev/null 2>&1
@@ -849,7 +1008,14 @@ stop_services() {
     if [[ $USE_APT == 1 ]]; then
         [[ $APACHE == 1 ]] && sudo systemctl stop apache2 2>/dev/null
         [[ $MARIADB == 1 ]] && sudo systemctl stop mariadb 2>/dev/null
-        [[ $PHP == 1 ]] && sudo systemctl stop php*-fpm 2>/dev/null
+        # php*-fpm glob does NOT match FPM units (systemd quirk) — stop each
+        # installed FPM version explicitly so nothing is left running
+        if [[ $PHP == 1 ]]; then
+            local _f
+            for _f in $(fpm_versions_installed); do
+                sudo systemctl stop "php${_f}-fpm" 2>/dev/null || true
+            done
+        fi
     elif [[ $USE_PORTS == 1 ]]; then
         [[ $APACHE == 1 ]] && sudo "${PORT_PREFIX}/bin/port" unload apache2 >/dev/null 2>&1 || true
         [[ $MARIADB == 1 ]] && sudo "${PORT_PREFIX}/bin/port" unload "${MARIADB_PORT}-server" >/dev/null 2>&1 || true
@@ -1064,6 +1230,16 @@ configure_apache_apt() {
     # Ensure Apache can traverse the home directory (default 700 blocks www-data)
     chmod o+x "$HOME" 2>/dev/null || true
 
+    # PHP-FPM integration — Apache proxies .php to the active FPM socket
+    local fpm_ver
+    fpm_ver=$(fpm_active_version || true)
+    [[ -z "$fpm_ver" ]] && fpm_ver=$("$(apt_php_bin)" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+    if [[ -n "$fpm_ver" ]]; then
+        write_apache_fpm_conf "$fpm_ver"
+        enable_apache_fpm_modules
+        disable_mod_php
+    fi
+
     # Reload Apache to apply changes
     sudo systemctl reload apache2 2>/dev/null || sudo systemctl start apache2 2>/dev/null
     print_ok "Apache configured"
@@ -1253,79 +1429,63 @@ configure_php() {
 # ---- PHP Configuration (apt) ---------------------------------
 configure_php_apt() {
     print_info "Configuring PHP (apt)..."
-
-    # Find the Apache PHP ini
     local php_ver
-    php_ver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
-    local php_ini="/etc/php/${php_ver}/apache2/php.ini"
+    php_ver=$("$(apt_php_bin)" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+    local inis=("/etc/php/${php_ver}/fpm/php.ini" "/etc/php/${php_ver}/cli/php.ini")
+    local php_ini found=0
 
-    if [[ ! -f "$php_ini" ]]; then
-        # Fallback: try CLI ini
-        php_ini=$(php -r 'echo php_ini_loaded_file();' 2>/dev/null)
-    fi
+    for php_ini in "${inis[@]}"; do
+        [[ -f "$php_ini" ]] || continue
+        found=1
+        if [[ ! -f "${php_ini}.phpup.bak" ]]; then
+            sudo cp "$php_ini" "${php_ini}.phpup.bak"
+        fi
 
-    if [[ ! -f "$php_ini" ]]; then
+        # Display errors
+        sudo sed -i "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
+        print_ok "Enabled display_errors ($(basename "$(dirname "$php_ini")"))"
+
+        # Error log
+        if ! grep -q "^error_log" "$php_ini" 2>/dev/null; then
+            echo "error_log = ${LOGS_DIR}/php_errors.log" | sudo tee -a "$php_ini" > /dev/null
+        else
+            sudo sed -i "s@^error_log.*@error_log = ${LOGS_DIR}/php_errors.log@" "$php_ini"
+        fi
+        print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
+
+        # OPCache (web runtime only — CLI keeps opcache off so phar tools work)
+        if [[ "$php_ini" == *"/fpm/php.ini" ]] && grep -q "^;*opcache.enable=" "$php_ini" 2>/dev/null; then
+            sudo sed -i "s/^;*opcache.enable=.*/opcache.enable=1/" "$php_ini"
+            sudo sed -i "s/^;*opcache.memory_consumption=.*/opcache.memory_consumption=256/" "$php_ini"
+            sudo sed -i "s/^;*opcache.interned_strings_buffer=.*/opcache.interned_strings_buffer=16/" "$php_ini"
+            sudo sed -i "s/^;*opcache.max_accelerated_files=.*/opcache.max_accelerated_files=20000/" "$php_ini"
+            print_ok "Configured OPCache (256MB, JIT-ready)"
+        fi
+
+        # File upload limits (50 MB import for phpMyAdmin, etc.)
+        for kv in "upload_max_filesize 50M" "post_max_size 55M" "max_execution_time 300" "max_input_time 300"; do
+            local key="${kv%% *}" val="${kv#* }"
+            if grep -q "^${key}" "$php_ini" 2>/dev/null; then
+                sudo sed -i "s/^${key}.*/${key} = ${val}/" "$php_ini"
+            else
+                echo "${key} = ${val}" | sudo tee -a "$php_ini" > /dev/null
+            fi
+        done
+        print_ok "Upload limits set: 50 MB files, 300s timeout"
+
+        # Session GC lifetime (match PMA LoginCookieValidity)
+        if grep -q "^session.gc_maxlifetime" "$php_ini" 2>/dev/null; then
+            sudo sed -i "s/^session.gc_maxlifetime.*/session.gc_maxlifetime = 14400/" "$php_ini"
+        else
+            echo "session.gc_maxlifetime = 14400" | sudo tee -a "$php_ini" > /dev/null
+        fi
+        print_ok "Session GC lifetime: 4 hours"
+    done
+
+    if [[ $found == 0 ]]; then
         print_warn "Could not locate php.ini — skipping PHP configuration"
         return
     fi
-
-    if [[ ! -f "${php_ini}.phpup.bak" ]]; then
-        sudo cp "$php_ini" "${php_ini}.phpup.bak"
-    fi
-
-    # Display errors
-    sudo sed -i "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
-    print_ok "Enabled display_errors"
-
-    # Error log
-    if ! grep -q "^error_log" "$php_ini" 2>/dev/null; then
-        echo "error_log = ${LOGS_DIR}/php_errors.log" | sudo tee -a "$php_ini" > /dev/null
-    else
-        sudo sed -i "s@^error_log.*@error_log = ${LOGS_DIR}/php_errors.log@" "$php_ini"
-    fi
-    print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
-
-    # OPCache
-    if grep -q "^;*opcache.enable=" "$php_ini" 2>/dev/null; then
-        sudo sed -i "s/^;*opcache.enable=.*/opcache.enable=1/" "$php_ini"
-        sudo sed -i "s/^;*opcache.memory_consumption=.*/opcache.memory_consumption=256/" "$php_ini"
-        sudo sed -i "s/^;*opcache.interned_strings_buffer=.*/opcache.interned_strings_buffer=16/" "$php_ini"
-        sudo sed -i "s/^;*opcache.max_accelerated_files=.*/opcache.max_accelerated_files=20000/" "$php_ini"
-        print_ok "Configured OPCache (256MB, JIT-ready)"
-    fi
-
-    # File upload limits (50 MB import for phpMyAdmin, etc.)
-    if grep -q "^upload_max_filesize" "$php_ini" 2>/dev/null; then
-        sudo sed -i "s/^upload_max_filesize.*/upload_max_filesize = 50M/" "$php_ini"
-    else
-        echo "upload_max_filesize = 50M" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    if grep -q "^post_max_size" "$php_ini" 2>/dev/null; then
-        sudo sed -i "s/^post_max_size.*/post_max_size = 55M/" "$php_ini"
-    else
-        echo "post_max_size = 55M" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    if grep -q "^max_execution_time" "$php_ini" 2>/dev/null; then
-        sudo sed -i "s/^max_execution_time.*/max_execution_time = 300/" "$php_ini"
-    else
-        echo "max_execution_time = 300" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    if grep -q "^max_input_time" "$php_ini" 2>/dev/null; then
-        sudo sed -i "s/^max_input_time.*/max_input_time = 300/" "$php_ini"
-    else
-        echo "max_input_time = 300" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    print_ok "Upload limits set: 50 MB files, 300s timeout"
-
-    # Session GC lifetime (match PMA LoginCookieValidity)
-    if grep -q "^session.gc_maxlifetime" "$php_ini" 2>/dev/null; then
-        sudo sed -i "s/^session.gc_maxlifetime.*/session.gc_maxlifetime = 14400/" "$php_ini"
-    else
-        echo "session.gc_maxlifetime = 14400" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    print_ok "Session GC lifetime: 4 hours"
-
-    # Extensions should already be enabled via apt package dependencies
     print_ok "PHP configured"
 }
 
@@ -1777,6 +1937,12 @@ configure_phpmyadmin_apt() {
     # Use conf.d override — works across all phpMyAdmin versions without fragile sed
     local pma_override="/etc/phpmyadmin/conf.d/phpup.php"
     sudo mkdir -p /etc/phpmyadmin/conf.d 2>/dev/null || true
+    # Capture the existing blowfish secret BEFORE the overwriting heredoc below
+    # erases it — re-appending the SAME value keeps re-configures idempotent
+    # (a fresh random secret per run would rotate PMA cookies/sessions on every U).
+    local pma_secret_val
+    pma_secret_val=$(sed -n "s/.*'\\([0-9a-f]\\{32\\}\\)'.*/\\1/p" "$pma_override" 2>/dev/null | tail -1)
+    [[ -n "$pma_secret_val" ]] || pma_secret_val=$(pma_secret)
     sudo tee "$pma_override" > /dev/null <<'PMACONF'
 <?php
 // phpup — phpMyAdmin configuration overrides
@@ -1786,9 +1952,13 @@ error_reporting(E_ALL & ~E_DEPRECATED);
 $cfg['VersionCheck'] = false;
 $cfg['SendErrorReports'] = 'never';
 $cfg['LoginCookieValidity'] = 14400;
-$cfg['TempDir'] = '/usr/share/phpmyadmin/tmp';
+$cfg['TempDir'] = '/var/lib/phpmyadmin/tmp';
 PMACONF
-    print_ok "Applied phpMyAdmin overrides (performance, 4h cookie)"
+    # Blowfish secret: PMA warns on missing (temporary key). Always (re)append the
+    # captured/generated 32-byte secret so the file is complete after the heredoc
+    # rewrite without rotating it.
+    echo "\$cfg['blowfish_secret'] = '${pma_secret_val}';" | sudo tee -a "$pma_override" > /dev/null
+    print_ok "Applied phpMyAdmin overrides (performance, 4h cookie, blowfish secret)"
 
     # Tarball install: phpMyAdmin ships without config.inc.php (uses config.default.php
     # internally). Create one that loads /etc/conf.d/ overrides so AllowNoPassword
@@ -1810,8 +1980,11 @@ CONFDINCLUDE
         print_ok "Created tarball config with conf.d include"
     fi
 
-    # Create phpMyAdmin tmp directory (required for template cache)
-    local pma_tmp="/usr/share/phpmyadmin/tmp"
+    # Create phpMyAdmin tmp directory (required for template cache).
+    # NOT under /usr/share: Debian's php-fpm unit ships ProtectSystem=full,
+    # which makes /usr read-only to the FPM process, so a tmp dir there is
+    # unwritable no matter the permissions (is_writable false in web context).
+    local pma_tmp="/var/lib/phpmyadmin/tmp"
     local pma_tmp_ok=0
     sudo sh -c "mkdir -p '$pma_tmp' && chgrp www-data '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null && pma_tmp_ok=1
     if [[ $pma_tmp_ok == 0 ]] && [[ "$(stat -c '%G' "$pma_tmp" 2>/dev/null)" == "www-data" ]]; then
@@ -2057,11 +2230,11 @@ cmd_install() {
                     PHP=1
                 else
                     print_warn "Versioned install failed — falling back to distro default PHP"
-                    sudo DEBIAN_FRONTEND=noninteractive apt install -y php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php && PHP=1
+                    sudo DEBIAN_FRONTEND=noninteractive apt install -y php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 php-fpm && PHP=1
                 fi
             else
                 print_warn "Could not detect latest PHP — installing distro default"
-                sudo DEBIAN_FRONTEND=noninteractive apt install -y php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php && PHP=1
+                sudo DEBIAN_FRONTEND=noninteractive apt install -y php php-curl php-fileinfo php-gd php-intl php-mbstring php-mysql php-sqlite3 php-fpm && PHP=1
             fi
         fi
         if [[ $PHPMYADMIN == 0 ]]; then
@@ -2212,7 +2385,7 @@ cmd_update() {
         # Also detect when PHP has been downgraded to an older series —
         # apt list won't flag cross-series switches because the packages differ.
         local php_current php_latest
-        php_current=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+        php_current=$("$(apt_php_bin)" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
 
         # Find the latest STABLE PHP series (skip alpha/beta/RC previews)
         # and capture its full version string for the prompt.
@@ -2230,7 +2403,7 @@ cmd_update() {
         if [[ -n "$php_latest" && "$php_current" != "$php_latest" ]]; then
             # Resolve full current version from the running binary
             local php_current_full
-            php_current_full=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
+            php_current_full=$("$(apt_php_bin)" -r 'echo PHP_VERSION;' 2>/dev/null)
             local msg="PHP ${php_current_full} → ${php_latest_full}"
             if [[ -z "$outdated" ]]; then
                 outdated="$msg"
@@ -2264,16 +2437,13 @@ cmd_update() {
         print_info "Upgrading packages via apt..."
         print_info "This can take a minute or two while packages download and install."
 
-        # If PHP is on an older series, install the php meta package to pull
-        # in the latest series, then switch the default php binary.
+        # If PHP is on an older series, install the versioned packages for the
+        # latest series, then switch CLI + FPM + Apache to it.
         if [[ -n "$php_latest" && "$php_current" != "$php_latest" ]]; then
-            sudo apt install -y php php-curl php-gd php-intl php-mbstring php-mysql \
-                php-sqlite3 php-xml php-zip php-bcmath php-bz2 libapache2-mod-php
-            # Switch CLI default
-            sudo update-alternatives --set php "/usr/bin/php${php_latest}" 2>/dev/null || true
-            # Switch Apache module from old series to new
-            sudo a2dismod "php${php_current}" 2>/dev/null || true
-            sudo a2enmod "php${php_latest}" 2>/dev/null || true
+            print_info "Upgrading PHP ${php_current} → ${php_latest}..."
+            install_php_version_apt "$php_latest"
+            configure_php_apt
+            switch_fpm_apt "$php_latest"
         fi
         sudo apt upgrade -y apache2 mariadb-server $(php_active_pkgs)
         detect_all
@@ -2501,6 +2671,8 @@ cmd_delete() {
         # (conffiles), user data is in www/ + data_backup. /var/lib holds only
         # runtime state (sessions, tmp, sockets) safe to purge for a fresh start.
         sudo rm -rf /var/lib/apache2 /var/lib/php /var/lib/phpmyadmin 2>/dev/null || true
+        # Remove the phpup-managed Apache FPM conf (regenerated on reinstall)
+        sudo rm -f "$(apache_fpm_conf)" "$(apache_fpm_conf).phpup.bak" 2>/dev/null || true
         # /var/lib/mysql is the live datadir — its contents were backed up above;
         # removing it gives a genuinely fresh reinstall. Configs stay in /etc/mysql.
         sudo rm -rf /var/lib/mysql 2>/dev/null || true
@@ -2616,34 +2788,28 @@ latest_php_version() {
 php_active_pkgs() {
     # Versioned package set for the ACTIVE PHP version (e.g. php8.5-*), else meta fallback
     local pver
-    pver=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+    pver=$("$(apt_php_bin)" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
     if [[ -n "$pver" ]]; then
-        echo "php${pver} php${pver}-cli php${pver}-curl php${pver}-gd php${pver}-intl php${pver}-mbstring php${pver}-mysql php${pver}-sqlite3 php${pver}-xml php${pver}-zip php${pver}-bcmath php${pver}-bz2 libapache2-mod-php${pver}"
+        echo "php${pver} php${pver}-cli php${pver}-fpm php${pver}-curl php${pver}-gd php${pver}-intl php${pver}-mbstring php${pver}-mysql php${pver}-sqlite3 php${pver}-xml php${pver}-zip php${pver}-bcmath php${pver}-bz2"
     else
-        echo "php php-curl php-gd php-intl php-mbstring php-mysql php-sqlite3 libapache2-mod-php"
+        echo "php php-curl php-gd php-intl php-mbstring php-mysql php-sqlite3 php-fpm"
     fi
 }
 
 install_php_version_apt() {
-    # Install versioned PHP packages and activate them (module + CLI alternative)
+    # Install versioned PHP packages and make them the CLI default. FPM/Apache
+    # activation is the caller's job (configure_apache_apt for fresh install,
+    # switch_fpm_apt for version switches) so ini edits happen before FPM starts.
     local target="$1"
     if ! sudo DEBIAN_FRONTEND=noninteractive apt install -y \
-        "php${target}" "php${target}-cli" "php${target}-curl" "php${target}-gd" \
+        "php${target}" "php${target}-cli" "php${target}-fpm" "php${target}-curl" "php${target}-gd" \
         "php${target}-intl" "php${target}-mbstring" "php${target}-mysql" \
         "php${target}-sqlite3" "php${target}-xml" "php${target}-zip" \
-        "php${target}-bcmath" "php${target}-bz2" "libapache2-mod-php${target}"; then
+        "php${target}-bcmath" "php${target}-bz2"; then
         return 1
     fi
 
-    # Switch Apache module to the new version
-    local enabled
-    enabled=$(a2query -m 2>/dev/null | awk '{print $1}' | grep '^php' | head -1)
-    if [[ -n "$enabled" && "$enabled" != "php${target}" ]]; then
-        sudo a2dismod "$enabled" 2>/dev/null || true
-    fi
-    sudo a2enmod "php${target}" 2>/dev/null || true
-
-    # Switch CLI alternative
+    # Switch CLI alternative to the new version
     sudo update-alternatives --set php "/usr/bin/php${target}" 2>/dev/null || true
 
     return 0
@@ -2761,16 +2927,16 @@ switch_php_apt() {
     fi
 
     # Sync php meta packages to the repo's versions so U doesn't list them
-    # (metas are pointers only — active versioned modules are untouched)
+    # (metas are pointers only — active versioned FPM is untouched)
     print_info "Syncing PHP meta packages..."
     sudo apt-get install --only-upgrade -y \
         php php-curl php-gd php-intl php-mbstring php-mysql php-sqlite3 \
-        php-xml php-zip php-bcmath php-bz2 libapache2-mod-php &>/dev/null || true
+        php-xml php-zip php-bcmath php-bz2 php-fpm &>/dev/null || true
     print_ok "PHP meta packages up to date"
 
     # Current active version
     local current
-    current=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+    current=$("$(apt_php_bin)" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
 
     # Available versions (8.2 to latest)
     local versions
@@ -2817,7 +2983,11 @@ switch_php_apt() {
         return
     fi
 
-    if [[ "$target" == "$current" ]]; then
+    # Short-circuit only when FPM is already serving this version. On a
+    # legacy mod_php box (no FPM active) selecting the same version must still
+    # run the migration: install FPM packages, wire Apache to the socket,
+    # disable mod_php.
+    if [[ "$target" == "$current" ]] && [[ "$(fpm_active_version || true)" == "$target" ]]; then
         print_ok "PHP ${target} is already active."
         printf "\n"
         read -r -p "Press Enter to return to the dashboard..."
@@ -2833,18 +3003,25 @@ switch_php_apt() {
         return
     fi
 
-    # Re-apply PHP config for the new version
+    # Re-apply PHP config for the new version (fpm + cli ini)
     configure_php_apt
 
-    # Restart Apache
-    print_info "Restarting Apache..."
-    sudo systemctl restart apache2 2>/dev/null
-    sleep 1
+    # Activate FPM + Apache for the new version (idempotent; rolls back on failure)
+    if ! switch_fpm_apt "$target"; then
+        print_err "PHP-FPM switch to ${target} failed."
+        printf "\n"
+        read -r -p "Press Enter to return to the dashboard..."
+        return
+    fi
 
     detect_all
     save_config "$BASE_DIR" "$APACHE_VERSION" "$MARIADB_VERSION" "$PHP_VERSION" "$PHPMYADMIN_VERSION"
 
     print_ok "PHP switched to ${target} (previous version kept installed — switch back anytime with fu)"
+    printf "\n${BOLD}Verification:${RESET}\n"
+    printf "  PHP CLI:    %s\n" "$("$(apt_php_bin)" -r 'echo PHP_VERSION;' 2>/dev/null)"
+    printf "  PHP-FPM:    %s (%s)\n" "$target" "$(systemctl is-active "php${target}-fpm" 2>/dev/null)"
+    printf "  Apache PHP: %s\n" "$(verify_apache_php || echo "unreachable")"
     printf "\n"
     read -r -p "Press Enter to return to the dashboard..."
 }
@@ -3226,6 +3403,10 @@ main() {
 
     # Main loop
     while true; do
+        # Re-detect each render so the dashboard reflects the live system
+        # (external changes — e.g. a fu switch in another terminal — can't
+        # leave the Web Stack row stale)
+        detect_all
         show_dashboard
 
         printf "${BOLD}==> Enter command:${RESET} "

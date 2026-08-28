@@ -35,6 +35,28 @@ Patch release from the dual-stack test (MacPorts alongside Homebrew on one Mac):
 
 ---
 
+## [1.1.0-nix] — 2026-08-28
+
+### macOS & Linux (phpup.sh v1.1.0)
+
+Feature release: the Linux web stack moves from the monolithic `mod_php` Apache module to **Apache + PHP-FPM** (`mod_proxy_fcgi` → `phpX.Y-fpm`), with automatic migration of existing mod_php installs. *Previous platform update: [1.0.2-nix](#102-nix--2026-08-21).*
+
+**Added**
+- Linux PHP now runs as **PHP-FPM**: versioned `phpX.Y-fpm` packages, managed Apache conf (`/etc/apache2/conf-available/phpup-php-fpm.conf`) routing `.php` through `mod_proxy_fcgi` to the active version's socket, `proxy`/`proxy_fcgi` enabled, legacy `libapache2-mod-php*` disabled
+- Dashboard Service Status reports the live FPM runtime — `PHP-FPM -----> Running (8.5)` / `Stopped (8.5)` — while the Web Stack row shows the CLI version, and both re-detect on every render so they can never go stale
+- `fu` version switch moves CLI (`update-alternatives`) + FPM service + Apache wiring together, with full-stack rollback (service, conf, CLI) if the target FPM fails to start or verify
+- Same-version `fu` selection on a legacy mod_php box now runs the migration (install FPM packages, rewire Apache, disable mod_php) instead of short-circuiting
+- phpMyAdmin apt config now writes a stable `blowfish_secret` (no more "temporary key" warning) and uses `/var/lib/phpmyadmin/tmp` for the template cache (Debian's php-fpm unit ships `ProtectSystem=full`, making `/usr/share` unwritable by FPM)
+
+**Fixed**
+- apt PHP version detection resolves via `update-alternatives` instead of bare `php` from PATH — a getphp/Homebrew php shim on PATH (from `brew shellenv` in `~/.bashrc`) could report the wrong active version, block `fu` switches, and desync the dashboard rows
+- `systemctl stop php*-fpm` / `is-active php*-fpm` glob does not match FPM units — stop/detect each installed FPM version by explicit unit name so `S` (toggle) actually stops PHP-FPM with Apache and MariaDB
+
+**Performance**
+- Benchmark (identical workload, same load tool, same hardware): FPM vs mod_php throughput is within ~12% at low concurrency; at 100 concurrent requests mod_php's Apache exhausted prefork workers and died mid-run while FPM stayed up — FPM's win is robustness under concurrency plus a lower memory footprint, not raw speed. See [docs/LINUX.md](docs/LINUX.md)
+
+---
+
 ## [2.4.2-win] — 2026-08-28
 
 ### Windows (phpup.ps1 v2.4.2)
@@ -694,6 +716,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**1.1.0-nix**](#110-nix--2026-08-28) | 2026-08-28 | Linux Apache + PHP-FPM, mod_php auto-migration, rollback-safe fu, PMA secret/tmp fixes |
 | [**1.0.2-nix**](#102-nix--2026-08-21) | 2026-08-21 | Dual-stack machine fixes, stack-aware services, PMA blowfish |
 | [**1.0.1-nix**](#101-nix--2026-08-11) | 2026-08-11 | Homebrew `fu` numbered menu, formula-aware `u` |
 | [**1.0.0-nix**](#100-nix--2026-08-11) | 2026-08-11 | First stable, MacPorts backend |
