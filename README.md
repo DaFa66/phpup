@@ -89,7 +89,7 @@ If you already have a working Homebrew stack, phpup keeps it — it never silent
 └─────────────────────────────┘
 ```
 
-The dashboard shows installed versions, running services, useful paths, and available commands — all in one place.
+The dashboard shows installed versions, running services, useful paths, and available commands — all in one place. The **Process Status** section groups the web server with its PHP engine (`Apache` → `mod_php` → `MariaDB`): PHP reports `active` when the Apache module is wired and running, `stopped` when Apache is down, `not wired` when the module line is missing or stale, and `not installed` when no PHP is present.
 
 ### Commands
 

@@ -33,6 +33,20 @@ Patch release from the dual-stack test (MacPorts alongside Homebrew on one Mac):
 ### Notes
 - No tag: patch-level per RELEASES.md (milestone tags only; CHANGELOG is the record)
 
+---
+
+## [2.4.2-win] — 2026-08-28
+
+### Windows (phpup.ps1 v2.4.2)
+
+*Previous platform update: [2.4.1-win](#241-win--2026-08-18).*
+
+**Added**
+- Dashboard Process Status now reports the real PHP integration state instead of `CLI available`: `mod_php ------> active` (green) when the module is wired and Apache is running, `stopped` (red) when Apache is down, `not wired` (yellow) when the LoadModule line is missing or points at a dead DLL, and `not installed` (red) when php.exe is absent
+- New helper `Test-PhpApacheModuleWired` — verifies httpd.conf carries the LoadModule line for the **current** PHP major's symbol (`php_module` for 8.x, `php7_module` for 7.x) and that the referenced DLL exists, catching a stale module line after a broken version switch
+
+**Changed**
+- Dashboard Process Status ordering groups the web server with its PHP engine: `Apache`, `mod_php`, `MariaDB` (PHP row moved directly under Apache, mirroring the Mac/Linux `Active (mod_php)` / `Stopped` status pattern)
 
 ---
 
@@ -657,6 +671,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**2.4.2-win**](#242-win--2026-08-28) | 2026-08-28 | Dashboard mod_php status + wiring check, Process Status reorder |
 | [**2.4.1-win**](#241-win--2026-08-18) | 2026-08-18 | fu phpMyAdmin Alias fix, Directory self-heal |
 | [**2.4.0-win**](#240-win--2026-08-17) | 2026-08-17 | fu series management, variants, pre-release labels |
 | [**2.3.0-win**](#230-win--2026-08-17) | 2026-08-17 | Soft ARM64 (Prism), VC++ arch-aware |

@@ -145,6 +145,8 @@ A configurable floor (`php_min_series` in `%APPDATA%\phpup\config.json`, default
 
 Apache's PHP module follows the installed PHP major: 7.x loads `php7apache2_4.dll` with `LoadModule php7_module`, 8.x loads `php8apache2_4.dll` with `LoadModule php_module` (the symbol PHP 8 actually exports — there is no `php8_module`). httpd.conf is re-pointed automatically after any PHP switch, so going 8 ↔ 7 keeps Apache loadable.
 
+The dashboard's **Process Status** section groups the web server with its PHP engine (`Apache` → `mod_php` → `MariaDB`). The PHP row reports the real integration state instead of a generic CLI message: `mod_php ------> active` (green) when the module line is wired and Apache is running, `stopped` (red) when Apache is down, `not wired` (yellow) when the LoadModule line is missing or points at a dead DLL (a stale module line after a broken version switch), and `not installed` (red) when php.exe is absent.
+
 ## Service Registration
 
 During install, you're prompted to register Apache and MariaDB as Windows services for auto-start on boot. If you skip it, the **S** toggle will offer registration later. Services are named `phpup_Apache` and `phpup_MariaDB`. The dashboard shows current registration state and the **S** command works in both directions — it can also unregister services when they're no longer needed.

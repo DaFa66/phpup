@@ -4,8 +4,8 @@
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-08-18
-#  Version: 2.4.1
+#  Date: 2026-08-28
+#  Version: 2.4.2
 # =======================================================================
 
 param(
@@ -989,6 +989,22 @@ function Get-PhpApacheModuleSymbol([string]$version = (Get-PhpVersion)) {
 # php_module (that is the symbol the official docs use for PHP 8+).
     if ($version -match '^7\.') { return 'php7_module' }
     return 'php_module'
+}
+
+function Test-PhpApacheModuleWired {
+# True when httpd.conf references the PHP LoadModule line for the CURRENT
+# installed PHP major AND the DLL it points at exists. Catches a broken
+# version switch: php.exe may exist while the LoadModule line still names
+# the previous major's DLL (or a path that no longer exists).
+    $confPath = "$APACHE_PATH\conf\httpd.conf"
+    if (-not (Test-Path $confPath)) { return $false }
+    $conf = Get-Content $confPath -Raw -ErrorAction SilentlyContinue
+    if (-not $conf) { return $false }
+    $symbol = Get-PhpApacheModuleSymbol
+    if ($conf -match "LoadModule\s+$symbol\s+`"([^`"]+)`"") {
+        return Test-Path $matches[1]
+    }
+    return $false
 }
 
 function Invoke-ConfigureApache {
@@ -3083,20 +3099,30 @@ function Show-Dashboard {
         Write-Host "stopped" -ForegroundColor Red
     }
 
+    Write-Host "mod_php ------> " -NoNewline
+    if (Test-PhpInstalled) {
+        if (Test-PhpApacheModuleWired) {
+            if (Test-ApacheRunning) {
+                Write-Host "active" -ForegroundColor Green
+            }
+            else {
+                Write-Host "stopped" -ForegroundColor Red
+            }
+        }
+        else {
+            Write-Host "not wired" -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Host "not installed" -ForegroundColor Red
+    }
+
     Write-Host "MariaDB ------> " -NoNewline
     if (Test-MariaDbRunning) {
         Write-Host "running" -ForegroundColor Green
     }
     else {
         Write-Host "stopped" -ForegroundColor Red
-    }
-
-    Write-Host "PHP ----------> " -NoNewline
-    if (Test-PhpInstalled) {
-        Write-Host "CLI available" -ForegroundColor Green
-    }
-    else {
-        Write-Host "not available" -ForegroundColor Red
     }
 
     # Windows Services (always shown when stack is complete)
