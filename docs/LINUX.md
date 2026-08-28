@@ -25,6 +25,8 @@ phpup on Linux uses **apt** — the system package manager. No Homebrew, no thir
 |---------|:--------------:|-----------|
 | apt | `apt-get` / `dpkg` | Debian, Ubuntu (native + WSL2) |
 
+PHP is served through **Apache + PHP-FPM** (`mod_proxy_fcgi` → `phpX.Y-fpm`), not the legacy `mod_php` Apache module. phpup migrates existing `mod_php` stacks automatically on the next version switch.
+
 > **Why apt, not Homebrew on Linux?** Homebrew on Linux ARM64 has poor bottle coverage. Homebrew on Linux is unofficial and fragile for production-grade services. apt is the native package manager with full ARM64 support and reliable package availability.
 
 ## What Gets Installed
@@ -33,7 +35,7 @@ phpup on Linux uses **apt** — the system package manager. No Homebrew, no thir
 | ----------- | ------------------------------------------------- | -------------------------------------- |
 | **Apache**  | `apache2`                                         | `/etc/apache2/sites-available/000-default.conf` |
 | **MariaDB** | `mariadb-server` (latest via [mariadb.org repo](https://mariadb.org/download/)) | `/etc/mysql/mariadb.conf.d/50-server.cnf` |
-| **PHP**     | `php8.x-*` versioned packages (via [ondrej/php repo](https://deb.sury.org/)) | `/etc/php/{version}/apache2/php.ini` |
+| **PHP**     | `php8.x-cli` + `php8.x-fpm` versioned packages (via [ondrej/php repo](https://deb.sury.org/)) | `/etc/php/{version}/fpm/php.ini` |
 | **phpMyAdmin** | Tarball from [phpmyadmin.net](https://www.phpmyadmin.net/) | `/etc/phpmyadmin/conf.d/phpup.php` |
 
 phpup adds two external apt repositories for the latest versions:
@@ -55,12 +57,15 @@ phpup uses standard Linux system paths:
 
 System paths (managed by apt):
 /etc/apache2/                        # Apache configuration
-/etc/php/{version}/apache2/php.ini   # PHP configuration
-/etc/mysql/mariadb.conf.d/           # MariaDB configuration
-/etc/phpmyadmin/conf.d/              # phpMyAdmin overrides
-/usr/share/phpmyadmin/               # phpMyAdmin web files
-/var/lib/mysql/                      # MariaDB data directory
-~/.config/phpup/config.json          # phpup persistent config
+/etc/apache2/conf-available/phpup-php-fpm.conf   # Apache ↔ FPM wiring
+/etc/php/{version}/fpm/php.ini      # PHP configuration (FPM runtime)
+/etc/php/{version}/cli/php.ini      # PHP configuration (CLI)
+/etc/mysql/mariadb.conf.d/          # MariaDB configuration
+/etc/phpmyadmin/conf.d/             # phpMyAdmin overrides
+/var/lib/phpmyadmin/tmp/            # phpMyAdmin template cache
+/usr/share/phpmyadmin/              # phpMyAdmin web files
+/var/lib/mysql/                     # MariaDB data directory
+~/.config/phpup/config.json         # phpup persistent config
 ```
 
 ## What the Installer Configures
@@ -71,7 +76,8 @@ System paths (managed by apt):
 - DocumentRoot set to `~/phpup/www` with `<Directory>` grant
 - Home directory made world-executable so `www-data` can traverse to `~/phpup/www`
 - `mod_rewrite` enabled with `AllowOverride All` — `.htaccess` rewrites work out of the box
-- PHP module loaded via `libapache2-mod-php`
+- **PHP wired via PHP-FPM**: managed conf at `/etc/apache2/conf-available/phpup-php-fpm.conf` routes `.php` requests through `mod_proxy_fcgi` to the active version's FPM socket (`/run/php/phpX.Y-fpm.sock`)
+- `proxy` + `proxy_fcgi` modules enabled, legacy `mod_php` (`libapache2-mod-php*`) disabled
 - phpMyAdmin alias at `/phpmyadmin`
 
 ### PHP
@@ -81,7 +87,7 @@ System paths (managed by apt):
 - Upload limits: 50 MB files, 300s timeout (suitable for phpMyAdmin imports)
 - OPCache enabled with JIT
 - `session.gc_maxlifetime = 14400` (4 hours, matches phpMyAdmin session timeout)
-- PHP runs as an **Apache module** (`mod_php`), not PHP-FPM
+- PHP runs as **PHP-FPM** (`phpX.Y-fpm` systemd service) — the CLI default (`update-alternatives`) and the FPM runtime move together on version switch
 
 ### MariaDB
 
@@ -95,7 +101,7 @@ System paths (managed by apt):
 - conf.d override at `/etc/phpmyadmin/conf.d/phpup.php` — survives delete
 - `AllowNoPassword` enabled for root login
 - Version check disabled, 4-hour session timeout
-- Template cache directory configured
+- Template cache directory configured at `/var/lib/phpmyadmin/tmp` (outside systemd's read-only `/usr` — see Troubleshooting)
 - Configuration storage database (`pma`) with bookmark, history, and designer support
 
 ## PHP Version Switching (`fu`)
@@ -103,10 +109,15 @@ System paths (managed by apt):
 The hidden **`fu`** command switches between PHP versions using the [ondrej/php repository](https://deb.sury.org/). Select a version from the numbered list (8.2 → latest stable). The previous PHP stays installed — switching back is another `fu`.
 
 `fu` handles:
-- Installing the new versioned packages
-- Switching the Apache module (`a2dismod` old → `a2enmod` new)
+- Installing the new versioned packages (`phpX.Y-cli` + `phpX.Y-fpm`)
+- Switching the FPM service (`systemctl` stop old `phpX.Y-fpm` → start new)
+- Re-wiring Apache to the active version's FPM socket (idempotent conf rewrite)
 - Switching the CLI default (`update-alternatives --set php`)
-- Re-applying PHP configuration
+- Re-applying PHP configuration to both `cli` and `fpm` INIs
+
+**Migrating from a legacy mod_php stack?** Selecting the already-active version in `fu` still runs the migration — FPM packages are installed, Apache is rewired to the FPM socket, and `mod_php` is disabled. No separate migration step needed.
+
+**Failure safety:** if the FPM service fails to start or verify after a switch, the whole stack rolls back — FPM service, Apache wiring, and the CLI alternative are all restored to the previous version.
 
 ## Service Management
 
@@ -114,8 +125,23 @@ phpup uses `systemctl` for service management:
 
 | Dashboard Key | Action |
 | ------------- | ------ |
-| **R** | Restart Apache + MariaDB (`systemctl restart`) |
-| **S** | Toggle — stops if running, starts if stopped |
+| **R** | Restart Apache + MariaDB + active PHP-FPM (`systemctl restart`) |
+| **S** | Toggle — stops if running, starts if stopped (all FPM versions stopped explicitly — systemd's `php*-fpm` glob is unreliable) |
+
+## Why PHP-FPM over mod_php?
+
+phpup moved Linux from the legacy `mod_php` Apache module to **Apache + PHP-FPM**. Benchmarks (identical PHP workload, same load tool, on the same hardware) show the shape of the difference:
+
+| Concurrency | PHP-FPM | mod_php |
+| ----------- | ------- | ------- |
+| 10 | 647 RPS | 692 RPS |
+| 50 | 620 RPS | 694 RPS |
+| 100 | 675 RPS | 642 RPS |
+
+- **Raw throughput is a wash** (within ~12%; mod_php edges ahead at low concurrency because the FastCGI proxy hop is a small per-request cost)
+- **FPM wins on robustness**: at 100 concurrent requests, the mod_php Apache exhausted its prefork workers and died mid-benchmark; FPM took the same load and stayed up
+- **Memory footprint**: mod_php loads the full PHP interpreter into every Apache worker; FPM keeps Apache workers lean with a dedicated PHP pool — less memory pressure, especially on modest hardware (WSL2 included)
+- PHP itself runs the same Zend engine either way — the gains are process isolation, memory, and concurrency behaviour, not raw execution speed
 
 ## Safe Delete
 
@@ -170,7 +196,16 @@ sudo systemctl start mariadb
 ```
 
 **PHP version shown in dashboard doesn't match `phpinfo()`:**
-The Apache module may not have switched. Run `fu` again — it handles both the CLI alternative (`update-alternatives`) and the Apache module (`a2enmod`).
+The dashboard re-detects the live stack on every render, so both rows should agree (Web Stack = CLI version, Service Status = FPM version). If they differ, a Homebrew/getphp php may be shadowing `/usr/bin/php` on PATH — phpup resolves the apt-managed binary via `update-alternatives` so this can't happen, but `brew shellenv` in `~/.bashrc` can confuse other tools. Run `fu` again to re-sync.
+
+**PHP-FPM won't stop via `systemctl stop php*-fpm`:**
+systemd's glob does not match FPM unit names reliably — it can silently leave `php8.5-fpm` running. phpup stops each installed FPM version by explicit unit name. For manual stops use the explicit name: `sudo systemctl stop php8.5-fpm`.
+
+**phpMyAdmin warns "The $cfg['TempDir'] ... is not accessible":**
+Debian's `php-fpm` systemd unit ships `ProtectSystem=full`, which makes `/usr` read-only to the FPM process — so `/usr/share/phpmyadmin/tmp` can never be written no matter the permissions. phpup uses `/var/lib/phpmyadmin/tmp` (outside the read-only mount) instead.
+
+**phpMyAdmin warns about a missing cookie encryption key:**
+The `$cfg['blowfish_secret']` was missing. Re-run the install (press **I**) or configure — phpup writes a stable secret to `/etc/phpmyadmin/conf.d/phpup.php` so PMA cookies survive restarts.
 
 **"command not found: curl" on first run:**
 The Quick Start command already handles this (`sudo apt install -y curl`). If you downloaded the script directly, install curl first: `sudo apt install -y curl`

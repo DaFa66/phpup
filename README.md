@@ -89,7 +89,10 @@ If you already have a working Homebrew stack, phpup keeps it — it never silent
 └─────────────────────────────┘
 ```
 
-The dashboard shows installed versions, running services, useful paths, and available commands — all in one place. The **Process Status** section groups the web server with its PHP engine (`Apache` → `mod_php` → `MariaDB`): PHP reports `active` when the Apache module is wired and running, `stopped` when Apache is down, `not wired` when the module line is missing or stale, and `not installed` when no PHP is present.
+The dashboard shows installed versions, running services, useful paths, and available commands — all in one place. The **Process Status** section groups the web server with its PHP engine (`Apache` → `PHP` → `MariaDB`):
+
+- **Windows/macOS** — PHP reports `active` when the module is wired and running, `stopped` when Apache is down, `not wired` when the module line is missing or stale, and `not installed` when no PHP is present
+- **Linux** — PHP runs as **PHP-FPM**, reported as `Running (8.5)` / `Stopped (8.5)` with the active FPM version shown; the Web Stack section shows the CLI version separately
 
 ### Commands
 
@@ -97,7 +100,7 @@ The dashboard shows installed versions, running services, useful paths, and avai
 | ------ | ----------------------------------------------------------------------------------------------- |
 | **I**  | Install the web stack                                                                           |
 | **U**  | Update outdated components                                                                      |
-| **fu** | _(hidden)_ PHP version switch (package manager on Mac/Linux, offline zips on Windows — fills missing series, flags newer patches, handles pre-release labels) |
+| **fu** | _(hidden)_ PHP version switch (package manager on Mac/Linux, offline zips on Windows — fills missing series, flags newer patches, handles pre-release labels; on Linux switches Apache's PHP-FPM runtime + CLI together) |
 | **R**  | Restart Apache + MariaDB                                                                        |
 | **S**  | Toggle services — stops if running, starts if stopped. On Windows, offers service registration. |
 | **D**  | Delete the stack (preserves `www/` and databases)                                               |
@@ -114,7 +117,7 @@ phpup doesn't hardcode version numbers. Every install and update dynamically res
 | **MariaDB**    | [mariadb.org](https://mariadb.org)                                                         | REST API, sorts by support policy (Rolling > LTS), then version |
 | **phpMyAdmin** | [phpmyadmin.net](https://www.phpmyadmin.net)                                               | Latest stable release                                           |
 
-PHP is always the latest stable major version (8.2+, currently 8.5). Use the hidden **`fu`** command to switch versions — on Windows it manages cached zips and can fill missing series (including EOL ones like 7.4 if the `php_min_series` floor is lowered), flags newer patches, shows pre-release labels (`8.6.0 beta1`), and re-points Apache's PHP module automatically when you cross major versions.
+PHP is always the latest stable major version (8.2+, currently 8.5). Use the hidden **`fu`** command to switch versions — on Windows it manages cached zips and can fill missing series (including EOL ones like 7.4 if the `php_min_series` floor is lowered), flags newer patches, shows pre-release labels (`8.6.0 beta1`), and re-points Apache's PHP module automatically when you cross major versions. On Linux it switches the Apache PHP-FPM runtime and the CLI default together, with automatic rollback if the new version fails to start.
 
 ## After Installation
 
