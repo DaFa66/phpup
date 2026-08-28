@@ -484,6 +484,8 @@ switch_fpm_apt() {
                     sudo systemctl stop "php${v}-fpm" 2>/dev/null || true
                 fi
             done
+            # CLI follows the FPM runtime — restore the previous alternative too
+            sudo update-alternatives --set php "/usr/bin/php${prev}" 2>/dev/null || true
         fi
         sudo systemctl reload apache2 2>/dev/null || true
         return 1
