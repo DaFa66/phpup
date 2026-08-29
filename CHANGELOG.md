@@ -13,28 +13,6 @@ overview of every release.
 
 ---
 
-## [1.0.2-nix] — 2026-08-21
-
-### macOS & Linux (phpup.sh v1.0.2)
-
-Patch release from the dual-stack test (MacPorts alongside Homebrew on one Mac): ports-backend fixes and machine-level self-healing so a fresh install "just works" on any Mac. *Previous platform update: [1.0.1-nix](#101-nix--2026-08-11).*
-
-**Fixed**
-- `detect_*` in ports mode no longer falls through to the brew Cellar — a dual-stack machine now reports the correct stack (previously a brew install hid the Install option)
-- macOS version token for the MacPorts installer: 11+ drops the minor (15.7 → `15-Sequoia`); 10.x keeps major.minor — previously the token fell through to "not viable" on every 11+ release with a minor
-- Service-start/stop verification is now stack-aware: `stack_proc()` pins the process to the active backend by executable path, so "Apache started"/"MariaDB started" can no longer be false positives from a coexisting brew stack, and stopping one stack never kills the other's processes
-- phpMyAdmin blowfish secret: per-install random 32 bytes on ALL backends (was a static known-default on brew, absent on ports — PMA showed the "temporary key" warning)
-- MariaDB data-dir init is verified post-install (mysql system DB present) — a partial/raced init wipes and retries once instead of silently failing later with "Table 'mysql.plugin' doesn't exist"
-
-**Added**
-- Detect damaged CLT 16 C++ headers before a ports source build and print the known fix (MacPorts hotlist #clts16 — `'new' file not found`)
-- Detect and repair a world-writable sudo timestamp dir (the "password spam" UX: sudo prompts on every invocation because it distrusts the cache)
-
-### Notes
-- No tag: patch-level per RELEASES.md (milestone tags only; CHANGELOG is the record)
-
----
-
 ## [1.2.0-nix] — 2026-08-29
 
 ### macOS & Linux (phpup.sh v1.2.0)
@@ -79,6 +57,28 @@ Feature release: the Linux web stack moves from the monolithic `mod_php` Apache 
 
 **Performance**
 - Benchmark (identical workload, same load tool, same hardware): FPM vs mod_php throughput is within ~12% at low concurrency; at 100 concurrent requests mod_php's Apache exhausted prefork workers and died mid-run while FPM stayed up — FPM's win is robustness under concurrency plus a lower memory footprint, not raw speed. See [docs/LINUX.md](docs/LINUX.md)
+
+---
+
+## [1.0.2-nix] — 2026-08-21
+
+### macOS & Linux (phpup.sh v1.0.2)
+
+Patch release from the dual-stack test (MacPorts alongside Homebrew on one Mac): ports-backend fixes and machine-level self-healing so a fresh install "just works" on any Mac. *Previous platform update: [1.0.1-nix](#101-nix--2026-08-11).*
+
+**Fixed**
+- `detect_*` in ports mode no longer falls through to the brew Cellar — a dual-stack machine now reports the correct stack (previously a brew install hid the Install option)
+- macOS version token for the MacPorts installer: 11+ drops the minor (15.7 → `15-Sequoia`); 10.x keeps major.minor — previously the token fell through to "not viable" on every 11+ release with a minor
+- Service-start/stop verification is now stack-aware: `stack_proc()` pins the process to the active backend by executable path, so "Apache started"/"MariaDB started" can no longer be false positives from a coexisting brew stack, and stopping one stack never kills the other's processes
+- phpMyAdmin blowfish secret: per-install random 32 bytes on ALL backends (was a static known-default on brew, absent on ports — PMA showed the "temporary key" warning)
+- MariaDB data-dir init is verified post-install (mysql system DB present) — a partial/raced init wipes and retries once instead of silently failing later with "Table 'mysql.plugin' doesn't exist"
+
+**Added**
+- Detect damaged CLT 16 C++ headers before a ports source build and print the known fix (MacPorts hotlist #clts16 — `'new' file not found`)
+- Detect and repair a world-writable sudo timestamp dir (the "password spam" UX: sudo prompts on every invocation because it distrusts the cache)
+
+### Notes
+- No tag: patch-level per RELEASES.md (milestone tags only; CHANGELOG is the record)
 
 ---
 
@@ -742,6 +742,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 | Version | Date | Key Changes |
 |---------|------|-------------|
 | [**1.2.0-nix**](#120-nix--2026-08-29) | 2026-08-29 | Real config in install folder, legacy migration, configurable php_min_series + env override |
+| [**1.1.0-nix**](#110-nix--2026-08-28) | 2026-08-28 | Apache + PHP-FPM, mod_php auto-migration, rollback-safe fu, PMA secret/tmp fixes |
 | [**1.0.2-nix**](#102-nix--2026-08-21) | 2026-08-21 | Dual-stack machine fixes, stack-aware services, PMA blowfish |
 | [**1.0.1-nix**](#101-nix--2026-08-11) | 2026-08-11 | Homebrew `fu` numbered menu, formula-aware `u` |
 | [**1.0.0-nix**](#100-nix--2026-08-11) | 2026-08-11 | First stable, MacPorts backend |
