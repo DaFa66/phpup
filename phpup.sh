@@ -1382,16 +1382,7 @@ configure_php() {
     done
     print_ok "Enabled PHP extensions"
 
-    sed -i.bak "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
-    print_ok "Enabled display_errors"
-
-    local error_log_line="error_log = ${LOGS_DIR}/php_errors.log"
-    if ! grep -q "^error_log" "$php_ini" 2>/dev/null; then
-        echo "$error_log_line" >> "$php_ini"
-    else
-        sed -i.bak "s@^error_log.*@${error_log_line}@" "$php_ini"
-    fi
-    print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
+    apply_php_ini_policy "$php_ini"
 
     if grep -q "^;*opcache.enable=" "$php_ini" 2>/dev/null; then
         sed -i.bak "s/^;*opcache.enable=.*/opcache.enable=1/" "$php_ini"
@@ -1401,38 +1392,44 @@ configure_php() {
         print_ok "Configured OPCache (256MB, JIT-ready)"
     fi
 
-    # File upload limits (50 MB import for phpMyAdmin, etc.)
-    if grep -q "^upload_max_filesize" "$php_ini" 2>/dev/null; then
-        sed -i.bak "s/^upload_max_filesize.*/upload_max_filesize = 50M/" "$php_ini"
-    else
-        echo "upload_max_filesize = 50M" >> "$php_ini"
-    fi
-    if grep -q "^post_max_size" "$php_ini" 2>/dev/null; then
-        sed -i.bak "s/^post_max_size.*/post_max_size = 55M/" "$php_ini"
-    else
-        echo "post_max_size = 55M" >> "$php_ini"
-    fi
-    if grep -q "^max_execution_time" "$php_ini" 2>/dev/null; then
-        sed -i.bak "s/^max_execution_time.*/max_execution_time = 300/" "$php_ini"
-    else
-        echo "max_execution_time = 300" >> "$php_ini"
-    fi
-    if grep -q "^max_input_time" "$php_ini" 2>/dev/null; then
-        sed -i.bak "s/^max_input_time.*/max_input_time = 300/" "$php_ini"
-    else
-        echo "max_input_time = 300" >> "$php_ini"
-    fi
+    rm -f "${php_ini}.bak"
+}
+
+# ---- Shared php.ini policy ----------------------------------
+# Apply the common phpup php.ini settings with set-or-append semantics.
+# $1 = php.ini path, $2 = sed command (may include sudo; default sed -i.bak),
+# $3 = append command (default tee -a), $4 = optional display label for the
+# display_errors line (apt shows the ini context, e.g. "fpm").
+apply_php_ini_policy() {
+    local php_ini="$1"
+    local sed_cmd="${2:-sed -i.bak}"
+    local append_cmd="${3:-tee -a}"
+    local label="$4"
+
+    local key val
+    set_ini_directive() {
+        key="$1"; val="$2"
+        if grep -q "^${key}" "$php_ini" 2>/dev/null; then
+            # | delimiter: values carry slashes (error_log path)
+            $sed_cmd "s|^${key}.*|${key} = ${val}|" "$php_ini" 2>/dev/null || true
+        else
+            echo "${key} = ${val}" | $append_cmd "$php_ini" > /dev/null
+        fi
+    }
+
+    set_ini_directive display_errors On
+    print_ok "Enabled display_errors${label:+ ($label)}"
+
+    set_ini_directive error_log "${LOGS_DIR}/php_errors.log"
+    print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
+
+    for kv in "upload_max_filesize 50M" "post_max_size 55M" "max_execution_time 300" "max_input_time 300"; do
+        set_ini_directive "${kv%% *}" "${kv#* }"
+    done
     print_ok "Upload limits set: 50 MB files, 300s timeout"
 
-    # Session GC lifetime (match PMA LoginCookieValidity)
-    if grep -q "^session.gc_maxlifetime" "$php_ini" 2>/dev/null; then
-        sed -i.bak "s/^session.gc_maxlifetime.*/session.gc_maxlifetime = 14400/" "$php_ini"
-    else
-        echo "session.gc_maxlifetime = 14400" >> "$php_ini"
-    fi
+    set_ini_directive session.gc_maxlifetime 14400
     print_ok "Session GC lifetime: 4 hours"
-
-    rm -f "${php_ini}.bak"
 }
 
 # ---- PHP Configuration (apt) ---------------------------------
@@ -1450,16 +1447,7 @@ configure_php_apt() {
             sudo cp "$php_ini" "${php_ini}.phpup.bak"
         fi
 
-        sudo sed -i "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
-        print_ok "Enabled display_errors ($(basename "$(dirname "$php_ini")"))"
-
-        # Error log
-        if ! grep -q "^error_log" "$php_ini" 2>/dev/null; then
-            echo "error_log = ${LOGS_DIR}/php_errors.log" | sudo tee -a "$php_ini" > /dev/null
-        else
-            sudo sed -i "s@^error_log.*@error_log = ${LOGS_DIR}/php_errors.log@" "$php_ini"
-        fi
-        print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
+        apply_php_ini_policy "$php_ini" "sudo sed -i" "sudo tee -a" "$(basename "$(dirname "$php_ini")")"
 
         # OPCache (web runtime only — CLI keeps opcache off so phar tools work)
         if [[ "$php_ini" == *"/fpm/php.ini" ]] && grep -q "^;*opcache.enable=" "$php_ini" 2>/dev/null; then
@@ -1469,25 +1457,6 @@ configure_php_apt() {
             sudo sed -i "s/^;*opcache.max_accelerated_files=.*/opcache.max_accelerated_files=20000/" "$php_ini"
             print_ok "Configured OPCache (256MB, JIT-ready)"
         fi
-
-        # File upload limits (50 MB import for phpMyAdmin, etc.)
-        for kv in "upload_max_filesize 50M" "post_max_size 55M" "max_execution_time 300" "max_input_time 300"; do
-            local key="${kv%% *}" val="${kv#* }"
-            if grep -q "^${key}" "$php_ini" 2>/dev/null; then
-                sudo sed -i "s/^${key}.*/${key} = ${val}/" "$php_ini"
-            else
-                echo "${key} = ${val}" | sudo tee -a "$php_ini" > /dev/null
-            fi
-        done
-        print_ok "Upload limits set: 50 MB files, 300s timeout"
-
-        # Session GC lifetime (match PMA LoginCookieValidity)
-        if grep -q "^session.gc_maxlifetime" "$php_ini" 2>/dev/null; then
-            sudo sed -i "s/^session.gc_maxlifetime.*/session.gc_maxlifetime = 14400/" "$php_ini"
-        else
-            echo "session.gc_maxlifetime = 14400" | sudo tee -a "$php_ini" > /dev/null
-        fi
-        print_ok "Session GC lifetime: 4 hours"
     done
 
     if [[ $found == 0 ]]; then
@@ -1534,16 +1503,7 @@ configure_php_ports() {
     done
     print_ok "Pointed mysqli/pdo_mysql at ${sock}"
 
-    sudo sed -i.bak "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
-    print_ok "Enabled display_errors"
-
-    local error_log_line="error_log = ${LOGS_DIR}/php_errors.log"
-    if ! grep -q "^error_log" "$php_ini" 2>/dev/null; then
-        echo "$error_log_line" | sudo tee -a "$php_ini" > /dev/null
-    else
-        sudo sed -i.bak "s@^error_log.*@${error_log_line}@" "$php_ini"
-    fi
-    print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
+    apply_php_ini_policy "$php_ini" "sudo sed -i.bak" "sudo tee -a"
 
     # OPCache — compiled into php85 core (no php85-opcache port exists). Only
     # touch the settings if the runtime actually has the module loaded.
@@ -1556,37 +1516,6 @@ configure_php_ports() {
             print_ok "Configured OPCache (256MB, JIT-ready)"
         fi
     fi
-
-    # File upload limits (50 MB import for phpMyAdmin, etc.)
-    if grep -q "^upload_max_filesize" "$php_ini" 2>/dev/null; then
-        sudo sed -i.bak "s/^upload_max_filesize.*/upload_max_filesize = 50M/" "$php_ini"
-    else
-        echo "upload_max_filesize = 50M" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    if grep -q "^post_max_size" "$php_ini" 2>/dev/null; then
-        sudo sed -i.bak "s/^post_max_size.*/post_max_size = 55M/" "$php_ini"
-    else
-        echo "post_max_size = 55M" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    if grep -q "^max_execution_time" "$php_ini" 2>/dev/null; then
-        sudo sed -i.bak "s/^max_execution_time.*/max_execution_time = 300/" "$php_ini"
-    else
-        echo "max_execution_time = 300" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    if grep -q "^max_input_time" "$php_ini" 2>/dev/null; then
-        sudo sed -i.bak "s/^max_input_time.*/max_input_time = 300/" "$php_ini"
-    else
-        echo "max_input_time = 300" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    print_ok "Upload limits set: 50 MB files, 300s timeout"
-
-    # Session GC lifetime (match PMA LoginCookieValidity)
-    if grep -q "^session.gc_maxlifetime" "$php_ini" 2>/dev/null; then
-        sudo sed -i.bak "s/^session.gc_maxlifetime.*/session.gc_maxlifetime = 14400/" "$php_ini"
-    else
-        echo "session.gc_maxlifetime = 14400" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    print_ok "Session GC lifetime: 4 hours"
 
     sudo rm -f "${php_ini}.bak"
     print_ok "PHP configured (MacPorts)"
