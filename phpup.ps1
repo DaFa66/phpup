@@ -1061,25 +1061,18 @@ function Invoke-ConfigureApache {
     }
 
     # Also fix literal ServerRoot (some configs don't use ${SRVROOT})
-    if ($conf -match '(?m)^ServerRoot\s+".*"') {
-        $conf = $conf -replace '(?m)^ServerRoot\s+".*"', "ServerRoot `"$apacheUnix`""
-    }
+    $conf = $conf -replace '(?m)^ServerRoot\s+".*"', "ServerRoot `"$apacheUnix`""
     Write-Ok "ServerRoot configured"
 
     # 2. Listen on port 80
-    if ($conf -match '(?m)^Listen\s+\d+') {
-        $conf = $conf -replace '(?m)^Listen\s+\d+', 'Listen 80'
-    }
-    else {
-        $conf += "`r`nListen 80`r`n"
-    }
+    $newConf = $conf -replace '(?m)^Listen\s+\d+', 'Listen 80'
+    if ($newConf -ne $conf) { $conf = $newConf }
+    else { $conf += "`r`nListen 80`r`n" }
     Write-Ok "Port 80 configured"
 
     # 2b. Set ServerName to suppress AH00558 warnings
-    if ($conf -match '(?m)^#ServerName') {
-        $conf = $conf -replace '(?m)^#ServerName\s+.*$', 'ServerName localhost:80'
-        Write-Ok "ServerName set to localhost:80"
-    }
+    $conf = $conf -replace '(?m)^#ServerName\s+.*$', 'ServerName localhost:80'
+    Write-Ok "ServerName set to localhost:80"
 
     # 3. DocumentRoot
     $oldDocRoot = ''
@@ -1097,9 +1090,7 @@ function Invoke-ConfigureApache {
     }
 
     # 5. DirectoryIndex - PHP first
-    if ($conf -match 'DirectoryIndex\s+index.html') {
-        $conf = $conf -replace '(DirectoryIndex\s+)index\.html', '${1}index.php index.html'
-    }
+    $conf = $conf -replace '(DirectoryIndex\s+)index\.html', '${1}index.php index.html'
     Write-Ok "DirectoryIndex: index.php before index.html"
 
     # 6. Enable mod_rewrite (handle both "#LoadModule" and "# LoadModule" variants)
@@ -1114,8 +1105,9 @@ function Invoke-ConfigureApache {
     # The default Apache Lounge config has this, but some variants may set Options None
     $wwwBlockStart = [regex]::Escape("<Directory `"$wwwUnix`">")
     $optionsPattern = "$wwwBlockStart[\s\S]*?Options\s+"
-    if ($conf -match "$optionsPattern") {
-        $conf = $conf -replace "($optionsPattern)\S+", '${1}Indexes FollowSymLinks'
+    $newConf = $conf -replace "($optionsPattern)\S+", '${1}Indexes FollowSymLinks'
+    if ($newConf -ne $conf) {
+        $conf = $newConf
         Write-Ok "Options Indexes FollowSymLinks set"
     }
 
@@ -1128,8 +1120,9 @@ function Invoke-ConfigureApache {
     $phpModuleUnix   = "$($PHP_PATH -replace '\\','/')/$phpModuleName"
     $phpIniUnix      = $PHP_PATH -replace '\\','/'
 
-    if ($conf -match 'LoadModule\s+php\d*_module\s+"[^"]*"') {
-        $conf = $conf -replace 'LoadModule\s+php\d*_module\s+"[^"]*"', "LoadModule $phpModuleSymbol `"$phpModuleUnix`""
+    $newConf = $conf -replace 'LoadModule\s+php\d*_module\s+"[^"]*"', "LoadModule $phpModuleSymbol `"$phpModuleUnix`""
+    if ($newConf -ne $conf) {
+        $conf = $newConf
         Write-Ok "PHP module updated to $phpModuleName ($phpModuleSymbol)"
     }
     elseif ($conf -notmatch 'php\d*_module') {
