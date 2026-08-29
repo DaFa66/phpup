@@ -132,6 +132,19 @@ function Test-StackComplete {
     return (Test-ApacheInstalled) -and (Test-PhpInstalled) -and (Test-MariaDbInstalled) -and (Test-PhpMyAdminInstalled)
 }
 
+function Get-VersionTag([string]$candidate, [string]$installed) {
+# Tag a candidate version relative to the installed one: " (newer)" yellow,
+# " (older)" dark gray, " (current)" green. Returns @{ Tag; Color } — or
+# @{ Tag = ''; Color = 'Cyan' } when either side is unparseable/absent.
+    if (-not $installed) { return @{ Tag = ''; Color = 'Cyan' } }
+    try {
+        if ([version]$candidate -gt [version]$installed) { return @{ Tag = ' (newer)'; Color = 'Yellow' } }
+        if ([version]$candidate -lt [version]$installed) { return @{ Tag = ' (older)'; Color = 'DarkGray' } }
+        return @{ Tag = ' (current)'; Color = 'Green' }
+    }
+    catch { return @{ Tag = ''; Color = 'Cyan' } }
+}
+
 # Extract version string from a download URL
 function Get-VersionFromUrl([string]$url, [string]$component) {
     switch ($component) {
@@ -2314,11 +2327,8 @@ function Show-PhpSwitchMenu {
         else {
             # Tag relative to the newest cached patch
             if ($Installed) {
-                try {
-                    if ([version]$r.Version -gt [version]$Installed) { $tag = " (newer)"; $tagColor = "Yellow" }
-                    elseif ([version]$r.Version -lt [version]$Installed) { $tag = " (older)"; $tagColor = "DarkGray" }
-                    else { $tag = " (current)"; $tagColor = "Green" }
-                } catch { }
+                $vt = Get-VersionTag $r.Version $Installed
+                $tag = $vt.Tag; $tagColor = $vt.Color
             }
             # The installed build lives in this series but is not the newest
             # cached patch — keep the "current" visible in the list.
@@ -2415,11 +2425,8 @@ function Show-PhpVariantList {
         $tag = ""
         $tagColor = "Cyan"
         if ($Installed) {
-            try {
-                if ([version]$v.Version -gt [version]$Installed) { $tag = " (newer)"; $tagColor = "Yellow" }
-                elseif ([version]$v.Version -lt [version]$Installed) { $tag = " (older)"; $tagColor = "DarkGray" }
-                else { $tag = " (current)"; $tagColor = "Green" }
-            } catch { }
+            $vt = Get-VersionTag $v.Version $Installed
+            $tag = $vt.Tag; $tagColor = $vt.Color
         }
         Write-Host "  [$($i + 1)] $vLabel" -NoNewline -ForegroundColor Cyan
         if ($tag) { Write-Host $tag -ForegroundColor $tagColor } else { Write-Host "" }
@@ -2752,11 +2759,8 @@ function Invoke-ForcedUpdate {
             $tag = ""
             $tagColor = "Cyan"
             if ($comp.Installed) {
-                try {
-                    if ([version]$v -gt [version]$comp.Installed) { $tag = " (newer)"; $tagColor = "Yellow" }
-                    elseif ([version]$v -lt [version]$comp.Installed) { $tag = " (older)"; $tagColor = "DarkGray" }
-                    else { $tag = " (current)"; $tagColor = "Green" }
-                } catch { }
+                $vt = Get-VersionTag $v $comp.Installed
+                $tag = $vt.Tag; $tagColor = $vt.Color
             }
             Write-Host "  [$($i + 1)] $v" -NoNewline -ForegroundColor Cyan
             if ($tag) {
