@@ -1850,6 +1850,8 @@ configure_phpmyadmin() {
             mysql -u root -e "CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY ''; GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null || true
         fi
         # Add storage config if not already present
+        # Table list mirrors phpup.ps1 Get-PmaStorageConfig — keep both in sync
+        # with phpMyAdmin's upstream sql/create_tables.sql.
         if ! grep -q "Servers\[\\\$i\]\['pmadb'\]" "$pma_conf" 2>/dev/null; then
             cat >> "$pma_conf" << 'PMASTORAGE'
 

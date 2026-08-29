@@ -1488,6 +1488,8 @@ function Invoke-ConfigurePmaStorage {
 
 function Get-PmaStorageConfig {
 # Returns the phpMyAdmin storage configuration block for config.inc.php
+# Table list mirrors phpup.sh configure_phpmyadmin (brew path) — keep both
+# in sync with phpMyAdmin's upstream sql/create_tables.sql.
     return @"
 
 /* phpMyAdmin configuration storage */
