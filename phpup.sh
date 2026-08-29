@@ -286,16 +286,26 @@ brew_active_php() {
     fi
 }
 
+APT_PHP_BIN_CACHE=""
+
 apt_php_bin() {
     # The system PHP binary phpup manages on apt (update-alternatives).
     # Resolves via the alternatives link so Homebrew/getphp shims on PATH
-    # (brew shellenv in ~/.bashrc) can't shadow it.
+    # (brew shellenv in ~/.bashrc) can't shadow it. Memoized: the link only
+    # changes at the two update-alternatives sites, which clear the cache.
+    if [[ -n "$APT_PHP_BIN_CACHE" && -x "$APT_PHP_BIN_CACHE" ]]; then
+        echo "$APT_PHP_BIN_CACHE"
+        return
+    fi
     local bin
     bin=$(readlink -f /etc/alternatives/php 2>/dev/null || true)
     if [[ -z "$bin" || ! -x "$bin" ]]; then
         bin=$(command -v php 2>/dev/null || true)
     fi
-    [[ -n "$bin" && -x "$bin" ]] && echo "$bin"
+    if [[ -n "$bin" && -x "$bin" ]]; then
+        APT_PHP_BIN_CACHE="$bin"
+        echo "$bin"
+    fi
 }
 
 detect_php() {
@@ -533,6 +543,7 @@ switch_fpm_apt() {
             set_fpm_active "$prev" "$installed"
             # CLI follows the FPM runtime — restore the previous alternative too
             sudo update-alternatives --set php "/usr/bin/php${prev}" 2>/dev/null || true
+            APT_PHP_BIN_CACHE=""
         fi
         sudo systemctl reload apache2 2>/dev/null || true
         return 1
@@ -2746,6 +2757,7 @@ install_php_version_apt() {
 
     # Switch CLI alternative to the new version
     sudo update-alternatives --set php "/usr/bin/php${target}" 2>/dev/null || true
+    APT_PHP_BIN_CACHE=""
 
     return 0
 }
