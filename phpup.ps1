@@ -16,6 +16,10 @@ param(
 $BASE = "C:\phpup"
 $DOWNLOAD_CACHE  = "$BASE\downloads"
 
+# ---- Shared constants --------------------------------------------------
+$UA_STRING        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+$VC_MIN_VERSION   = [version]"14.51.36231"   # required by Apache Lounge VS18 + MariaDB 12.x
+
 # ---- Banner -----------------------------------------------------------
 $BANNER_ART = @'
 ┌─────────────────────────────┐
@@ -376,7 +380,7 @@ function Remove-FromPath {
 function Test-VcRedistInstalled {
 # Checks whether Visual C++ Redistributable 14.51+ (VS 2017-2026) x64 is installed.
 # Required by Apache Lounge VS18 and MariaDB 12.x.
-    $minVersion = [version]"14.51.36231"
+    $minVersion = $VC_MIN_VERSION
 
     $uninstallPaths = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
@@ -429,7 +433,6 @@ function Get-VcRedistVersion {
 
 function Install-VcRedist {
 # Installs or upgrades the Visual C++ Redistributable (VS 2017-2026) x64.
-# Required by Apache Lounge VS18 and MariaDB 12.x — minimum version 14.51.36231.
 # Uses winget (handles upgrades correctly where the direct installer skips them).
     if (Test-VcRedistInstalled) {
         Write-Ok "Visual C++ Redistributable already meets minimum version requirement"
@@ -520,7 +523,7 @@ function Get-LatestApacheUrl {
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-            $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            $ua = $UA_STRING
             $html = Invoke-WebRequest -Uri "https://www.apachelounge.com/download/" -UseBasicParsing -Headers @{ "User-Agent" = $ua }
 
             $bestScore = $null
@@ -777,7 +780,7 @@ function Get-LatestPhpMyAdminUrl {
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-            $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            $ua = $UA_STRING
             $html = Invoke-WebRequest -Uri "https://www.phpmyadmin.net/downloads/" -UseBasicParsing -Headers @{ "User-Agent" = $ua }
 
             $bestVersion = $null
@@ -843,7 +846,7 @@ function Invoke-DownloadToCache($url, $label) {
         return $zipPath
     }
 
-    $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    $ua = $UA_STRING
     $maxRetries = 3
     $retryDelay = 5
 
@@ -899,7 +902,7 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
         Write-Info "Extracting to $dest..."
         Expand-Archive -Path $zipPath -DestinationPath $dest -Force
     } else {
-        $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        $ua = $UA_STRING
 
         $maxRetries = 3
         $retryDelay = 5
@@ -1333,7 +1336,7 @@ function Invoke-FixSqliteDll {
     # Scrape sqlite.org for the latest x64 DLL
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        $ua = $UA_STRING
         $html = Invoke-WebRequest "https://www.sqlite.org/download.html" -UseBasicParsing -Headers @{ "User-Agent" = $ua }
 
         # Find the x64 DLL zip path — sqlite.org changed their page layout.
