@@ -16,6 +16,11 @@ param(
 $BASE = "C:\phpup"
 $DOWNLOAD_CACHE  = "$BASE\downloads"
 
+# ---- Shared constants --------------------------------------------------
+$UA_STRING        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+$VC_MIN_VERSION   = [version]"14.51.36231"   # required by Apache Lounge VS18 + MariaDB 12.x
+$OS_CAPTION       = (Get-CimInstance Win32_OperatingSystem).Caption
+
 # ---- Banner -----------------------------------------------------------
 $BANNER_ART = @'
 ┌─────────────────────────────┐
@@ -59,26 +64,30 @@ function Get-ApacheVersion {
     return $null
 }
 
-function Get-PhpVersion {
+function Get-PhpVersionRaw {
+# Single php.exe -v capture shared by Get-PhpVersion / Get-PhpVersionLabel.
     if (Test-PhpInstalled) {
-        $out = & "$PHP_PATH\php.exe" -v 2>&1 | Select-Object -First 1
-        if ($out -match "PHP\s+([\d.]+)") { return $matches[1] }
+        return & "$PHP_PATH\php.exe" -v 2>&1 | Select-Object -First 1
     }
+    return $null
+}
+
+function Get-PhpVersion {
+    $out = Get-PhpVersionRaw
+    if ($out -match "PHP\s+([\d.]+)") { return $matches[1] }
     return $null
 }
 
 function Get-PhpVersionLabel {
 # Installed PHP version including pre-release suffix, e.g. "8.6.0 beta1".
 # Display-only: keeps numeric Get-PhpVersion for version comparisons.
-    if (Test-PhpInstalled) {
-        $out = & "$PHP_PATH\php.exe" -v 2>&1 | Select-Object -First 1
-        if ($out -match "PHP\s+([\d.]+[a-zA-Z0-9]*)") {
-            $raw = $matches[1]
-            if ($raw -match '^([\d.]+)(RC\d+|alpha\d+|beta\d+)$') {
-                return "$($matches[1]) $($matches[2])"
-            }
-            return $raw
+    $out = Get-PhpVersionRaw
+    if ($out -match "PHP\s+([\d.]+[a-zA-Z0-9]*)") {
+        $raw = $matches[1]
+        if ($raw -match '^([\d.]+)(RC\d+|alpha\d+|beta\d+)$') {
+            return "$($matches[1]) $($matches[2])"
         }
+        return $raw
     }
     return $null
 }
@@ -121,6 +130,30 @@ function Test-MariaDbRunning {
 
 function Test-StackComplete {
     return (Test-ApacheInstalled) -and (Test-PhpInstalled) -and (Test-MariaDbInstalled) -and (Test-PhpMyAdminInstalled)
+}
+
+function Get-VersionTag([string]$candidate, [string]$installed) {
+# Tag a candidate version relative to the installed one: " (newer)" yellow,
+# " (older)" dark gray, " (current)" green. Returns @{ Tag; Color } — or
+# @{ Tag = ''; Color = 'Cyan' } when either side is unparseable/absent.
+    if (-not $installed) { return @{ Tag = ''; Color = 'Cyan' } }
+    try {
+        if ([version]$candidate -gt [version]$installed) { return @{ Tag = ' (newer)'; Color = 'Yellow' } }
+        if ([version]$candidate -lt [version]$installed) { return @{ Tag = ' (older)'; Color = 'DarkGray' } }
+        return @{ Tag = ' (current)'; Color = 'Green' }
+    }
+    catch { return @{ Tag = ''; Color = 'Cyan' } }
+}
+
+function Set-IniDirective($ini, [string]$directive, [string]$value) {
+# Set-or-append a php.ini directive in a Get-Content line array: replace the
+# (optionally commented) matching line in place, or append a new one when
+# absent. Returns the updated array (same shape as the input).
+    $pattern = ';?' + [regex]::Escape($directive) + '\s*=\s*\S*'
+    if ($ini -match $pattern) {
+        return ($ini -replace $pattern, "$directive = $value")
+    }
+    return ($ini + "`n$directive = $value")
 }
 
 # Extract version string from a download URL
@@ -174,16 +207,59 @@ function Get-PhpPreReleaseRank($pv) {
 
 # ---- Config Persistence --------------------------------------
 
-$CONFIG_FILE = "$env:APPDATA\phpup\config.json"
+$CONFIG_FILE_LEGACY = "$env:APPDATA\phpup\config.json"
 
-function Get-Config {
-    if (-not (Test-Path $CONFIG_FILE)) { return $null }
+function Get-ConfigFilePath {
+    # Canonical location: inside the stack folder so the config travels
+    # with the install. $BASE is re-pointed by Get-Config when the stack
+    # lives elsewhere (custom/moved install path).
+    return "$BASE\config.json"
+}
+
+function Read-ConfigFile([string]$path) {
+    if (-not (Test-Path $path)) { return $null }
     try {
-        $config = Get-Content $CONFIG_FILE -Raw -Encoding UTF8 | ConvertFrom-Json
+        $config = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($config.install_path) { return $config }
     }
     catch {
         # Corrupted config — treat as missing
+    }
+    return $null
+}
+
+function Get-Config {
+    # Canonical probe: stack folder. If its install_path differs from the
+    # current $BASE, re-point $BASE and re-read (covers a moved/custom stack).
+    $canonical = Get-ConfigFilePath
+    $config = Read-ConfigFile $canonical
+    if ($config -and $config.install_path -and ([string]$config.install_path -ne $BASE)) {
+        $script:BASE = [string]$config.install_path
+        $config = Read-ConfigFile (Get-ConfigFilePath)
+    }
+    if ($config) { return $config }
+
+    # Discovery pointer (pre-1.2.0 location, kept fresh by Save-Config):
+    # tells us where the stack lives when $BASE is wrong/unknown. If it still
+    # holds a full pre-1.2.0 config (no canonical yet), migrate it over.
+    if (Test-Path $CONFIG_FILE_LEGACY) {
+        $legacy = Read-ConfigFile $CONFIG_FILE_LEGACY
+        if ($legacy -and $legacy.install_path) {
+            $script:BASE = [string]$legacy.install_path
+            $canonical = Get-ConfigFilePath
+            if (-not (Test-Path $canonical)) {
+                $configDir = Split-Path $canonical -Parent
+                if (-not (Test-Path $configDir)) {
+                    New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+                }
+                Copy-Item $CONFIG_FILE_LEGACY $canonical -Force
+                Write-Info "Migrated phpup config to $canonical"
+            }
+            $result = Read-ConfigFile $canonical
+            if ($result) { return $result }
+            # Canonical exists but is corrupt — fall back to the pointer's copy
+            return $legacy
+        }
     }
     return $null
 }
@@ -197,20 +273,31 @@ function Save-Config {
 
         [string[]]$PathEntries,
 
-        [bool]$ServicesRegistered = $false
+        [bool]$ServicesRegistered = $false,
+
+        # Pass the current fu download floor to avoid re-reading the config
+        # just to preserve it. When omitted, an existing value is preserved
+        # (fallback for old callers) and the 8.2 default persists otherwise.
+        [string]$MinSeries = $null
     )
 
-    $configDir = Split-Path $CONFIG_FILE -Parent
+    $configFile = Get-ConfigFilePath
+    $configDir = Split-Path $configFile -Parent
     if (-not (Test-Path $configDir)) {
         New-Item -ItemType Directory -Force -Path $configDir | Out-Null
     }
 
     # Preserve the fu download floor (php_min_series): keep an existing
     # user-set value, else persist the 8.2 default so it is visible/editable.
-    $existingConfig = Get-Config
-    $minSeries = '8.2'
-    if ($existingConfig -and $existingConfig.php_min_series) {
-        $minSeries = [string]$existingConfig.php_min_series
+    $minSeries = $MinSeries
+    if (-not $minSeries) {
+        $existingConfig = Get-Config
+        if ($existingConfig -and $existingConfig.php_min_series) {
+            $minSeries = [string]$existingConfig.php_min_series
+        }
+        else {
+            $minSeries = '8.2'
+        }
     }
 
     # Start with base structure (always fresh)
@@ -243,12 +330,23 @@ function Save-Config {
     }
     if ($PathEntries) { $config.path_entries = $PathEntries }
 
-    $config | ConvertTo-Json -Depth 4 | Out-File $CONFIG_FILE -Encoding UTF8
+    $config | ConvertTo-Json -Depth 4 | Out-File $configFile -Encoding UTF8
+
+    # Keep the discovery pointer fresh so a moved/custom stack is still
+    # findable when $BASE is wrong on a future run.
+    $legacyDir = Split-Path $CONFIG_FILE_LEGACY -Parent
+    if (-not (Test-Path $legacyDir)) {
+        New-Item -ItemType Directory -Force -Path $legacyDir | Out-Null
+    }
+    @{ install_path = $InstallPath } | ConvertTo-Json | Out-File $CONFIG_FILE_LEGACY -Encoding UTF8
 }
 
 function Clear-Config {
-    if (Test-Path $CONFIG_FILE) {
-        Remove-Item $CONFIG_FILE -Force
+    if (Test-Path (Get-ConfigFilePath)) {
+        Remove-Item (Get-ConfigFilePath) -Force
+    }
+    if (Test-Path $CONFIG_FILE_LEGACY) {
+        Remove-Item $CONFIG_FILE_LEGACY -Force
     }
 }
 
@@ -321,7 +419,7 @@ function Remove-FromPath {
 function Test-VcRedistInstalled {
 # Checks whether Visual C++ Redistributable 14.51+ (VS 2017-2026) x64 is installed.
 # Required by Apache Lounge VS18 and MariaDB 12.x.
-    $minVersion = [version]"14.51.36231"
+    $minVersion = $VC_MIN_VERSION
 
     $uninstallPaths = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
@@ -374,7 +472,6 @@ function Get-VcRedistVersion {
 
 function Install-VcRedist {
 # Installs or upgrades the Visual C++ Redistributable (VS 2017-2026) x64.
-# Required by Apache Lounge VS18 and MariaDB 12.x — minimum version 14.51.36231.
 # Uses winget (handles upgrades correctly where the direct installer skips them).
     if (Test-VcRedistInstalled) {
         Write-Ok "Visual C++ Redistributable already meets minimum version requirement"
@@ -410,34 +507,14 @@ function Install-VcRedist {
         Write-Ok "VC++ Redistributable installer already cached — using $installer"
     }
     else {
-        $maxRetries = 3
-        $retryDelay = 5
-        $downloaded = $false
-
-        for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-            try {
-                if ($attempt -gt 1) {
-                    Write-Info "  Retry $attempt of $maxRetries..."
-                }
-                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                Invoke-WebRequest -Uri $FALLBACK_URLS.Redist -OutFile $installer
-                $downloaded = $true
-                break
-            }
-            catch {
-                if ($attempt -lt $maxRetries) {
-                    Write-Warn "Download attempt $attempt failed. Retrying in $retryDelay seconds..."
-                    Start-Sleep -Seconds $retryDelay
-                }
-                else {
-                    Write-Err "Failed to download VC++ Redistributable after $maxRetries attempts: $_"
-                    Write-Info "Install manually: $($FALLBACK_URLS.Redist)"
-                    return
-                }
-            }
+        try {
+            Invoke-WebRetry -Uri $FALLBACK_URLS.Redist -OutFile $installer -MaxRetries 3 -RetryDelay 5
         }
-
-        if (-not $downloaded) { return }
+        catch {
+            Write-Err "Failed to download VC++ Redistributable after 3 attempts: $_"
+            Write-Info "Install manually: $($FALLBACK_URLS.Redist)"
+            return
+        }
     }
 
     Write-Info "Running installer (silent -- this may take a moment)..."
@@ -451,6 +528,77 @@ function Install-VcRedist {
     }
 }
 
+# ---- Network helpers ------------------------------------------------
+# Retry wrappers around Invoke-WebRequest / Invoke-RestMethod. Set TLS12,
+# retry with a delay, and throw after the final attempt so callers keep
+# their own terminal behaviour (fallback URL, cached-only, hard failure).
+function Invoke-WebRetry {
+    param(
+        [string]$Uri,
+        [hashtable]$Headers = @{},
+        [string]$OutFile = '',
+        [int]$MaxRetries = 3,
+        [int]$RetryDelay = 5
+    )
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        try {
+            if ($attempt -gt 1) { Write-Info "  Retry $attempt of $MaxRetries..." }
+            if ($OutFile) {
+                # Try with progress first; fall back when IE parsing is unavailable
+                try {
+                    Invoke-WebRequest -Uri $Uri -OutFile $OutFile -Headers $Headers -ErrorAction Stop
+                }
+                catch [System.Management.Automation.MethodInvocationException] {
+                    Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -Headers $Headers -ErrorAction Stop
+                }
+                return $true
+            }
+            return Invoke-WebRequest -Uri $Uri -UseBasicParsing -Headers $Headers -ErrorAction Stop
+        }
+        catch {
+            if ($attempt -lt $MaxRetries) {
+                Write-Warn "  Attempt $attempt failed: $($_.Exception.Message)"
+                Write-Info "  Retrying in $RetryDelay seconds..."
+                if ($OutFile) {
+                    # Drop the partial download so the next attempt starts clean
+                    [System.GC]::Collect()
+                    [System.GC]::WaitForPendingFinalizers()
+                    Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
+                }
+                Start-Sleep -Seconds $RetryDelay
+            }
+            else {
+                throw
+            }
+        }
+    }
+}
+
+function Invoke-RestRetry {
+    param(
+        [string]$Uri,
+        [int]$MaxRetries = 3,
+        [int]$RetryDelay = 5
+    )
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        try {
+            return Invoke-RestMethod -Uri $Uri -ErrorAction Stop
+        }
+        catch {
+            if ($attempt -lt $MaxRetries) {
+                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
+                Write-Info "  Retrying in $RetryDelay seconds..."
+                Start-Sleep -Seconds $RetryDelay
+            }
+            else {
+                throw
+            }
+        }
+    }
+}
+
 # ============================================================
 #  URL RESOLUTION — Latest Stable Versions
 # ============================================================
@@ -458,162 +606,120 @@ function Install-VcRedist {
 function Get-LatestApacheUrl {
     Write-Info "Resolving Apache (Apache Lounge - latest VS18 x64 build)..."
 
-    $maxRetries = 3
-    $retryDelay = 5
+    try {
+        $html = Invoke-WebRetry -Uri "https://www.apachelounge.com/download/" -Headers @{ "User-Agent" = $UA_STRING } -MaxRetries 3 -RetryDelay 5
 
-    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $bestScore = $null
+        $bestUrl   = $null
 
-            $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-            $html = Invoke-WebRequest -Uri "https://www.apachelounge.com/download/" -UseBasicParsing -Headers @{ "User-Agent" = $ua }
+        # Match Apache Lounge download links: /download/VS##/binaries/httpd-X.Y.Z-BUILD-Win64-VS##.zip
+        $pattern = 'href="(/download/VS(\d+)/binaries/httpd-([\d.]+)-(\d+)-Win64-VS\d+\.zip)"'
+        $rxMatches = [regex]::Matches($html.Content, $pattern)
 
-            $bestScore = $null
-            $bestUrl   = $null
+        foreach ($m in $rxMatches) {
+            $vsVer    = [int]$m.Groups[2].Value
+            $httpdVer = $m.Groups[3].Value
+            $build    = [int]$m.Groups[4].Value
 
-            # Match Apache Lounge download links: /download/VS##/binaries/httpd-X.Y.Z-BUILD-Win64-VS##.zip
-            $pattern = 'href="(/download/VS(\d+)/binaries/httpd-([\d.]+)-(\d+)-Win64-VS\d+\.zip)"'
-            $rxMatches = [regex]::Matches($html.Content, $pattern)
+            # Prefer VS18 (VS2022), fall back to VS17
+            $score = ($vsVer * 1000000) + ([version]$httpdVer).Major * 10000 + ([version]$httpdVer).Minor * 100 + $build
 
-            foreach ($m in $rxMatches) {
-                $vsVer    = [int]$m.Groups[2].Value
-                $httpdVer = $m.Groups[3].Value
-                $build    = [int]$m.Groups[4].Value
-
-                # Prefer VS18 (VS2022), fall back to VS17
-                $score = ($vsVer * 1000000) + ([version]$httpdVer).Major * 10000 + ([version]$httpdVer).Minor * 100 + $build
-
-                if ($null -eq $bestScore -or $score -gt $bestScore) {
-                    $bestScore = $score
-                    $bestUrl   = "https://www.apachelounge.com" + $m.Groups[1].Value
-                }
-            }
-
-            if ($bestUrl) {
-                Write-Ok "Apache -> $bestUrl"
-                return $bestUrl
-            }
-
-            throw "No Apache Lounge VS18 x64 download found"
-        }
-        catch {
-            if ($attempt -lt $maxRetries) {
-                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
-                Write-Info "  Retrying in $retryDelay seconds..."
-                Start-Sleep -Seconds $retryDelay
-            }
-            else {
-                Write-Warn "Live resolution failed after $maxRetries attempts."
-                if ($FALLBACK_URLS.Apache) {
-                    Write-Info "  Falling back to pinned Apache URL: $($FALLBACK_URLS.Apache)"
-                    return $FALLBACK_URLS.Apache
-                }
-                Write-Err "Failed to resolve Apache URL and no fallback URL is configured."
-                Write-Info "  Check https://www.apachelounge.com/ or try again later."
-                throw
+            if ($null -eq $bestScore -or $score -gt $bestScore) {
+                $bestScore = $score
+                $bestUrl   = "https://www.apachelounge.com" + $m.Groups[1].Value
             }
         }
+
+        if ($bestUrl) {
+            Write-Ok "Apache -> $bestUrl"
+            return $bestUrl
+        }
+
+        throw "No Apache Lounge VS18 x64 download found"
+    }
+    catch {
+        Write-Warn "Live resolution failed after 3 attempts."
+        if ($FALLBACK_URLS.Apache) {
+            Write-Info "  Falling back to pinned Apache URL: $($FALLBACK_URLS.Apache)"
+            return $FALLBACK_URLS.Apache
+        }
+        Write-Err "Failed to resolve Apache URL and no fallback URL is configured."
+        Write-Info "  Check https://www.apachelounge.com/ or try again later."
+        throw
     }
 }
 
 function Get-LatestPhpUrl {
     Write-Info "Resolving PHP (latest 8.x stable, thread-safe x64 - preferring VS17)..."
 
-    $maxRetries = 3
-    $retryDelay = 5
+    try {
+        $json = Invoke-RestRetry -Uri "https://windows.php.net/downloads/releases/releases.json" -MaxRetries 3 -RetryDelay 5
 
-    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            $json = Invoke-RestMethod -Uri "https://windows.php.net/downloads/releases/releases.json"
+        $latestVs17Version = $null
+        $latestVs17File    = $null
+        $latestVs16Version = $null
+        $latestVs16File    = $null
 
-            $latestVs17Version = $null
-            $latestVs17File    = $null
-            $latestVs16Version = $null
-            $latestVs16File    = $null
+        foreach ($key in $json.PSObject.Properties.Name) {
+            $entry = $json.$key
 
-            foreach ($key in $json.PSObject.Properties.Name) {
-                $entry = $json.$key
+            if (-not $entry.version) { continue }
+            if ($entry.version -notmatch '^8\.\d+\.\d+$') { continue }
 
-                if (-not $entry.version) { continue }
-                if ($entry.version -notmatch '^8\.\d+\.\d+$') { continue }
-
-                # Check VS17 thread-safe x64 (newer PHP 8.5+)
-                if ($entry.'ts-vs17-x64') {
-                    $ver = [version]$entry.version
-                    if ($null -eq $latestVs17Version -or $ver -gt $latestVs17Version) {
-                        $latestVs17Version = $ver
-                        $latestVs17File    = $entry.'ts-vs17-x64'.zip.path
-                    }
-                }
-
-                # Check VS16 thread-safe x64 (fallback)
-                if ($entry.'ts-vs16-x64') {
-                    $ver = [version]$entry.version
-                    if ($null -eq $latestVs16Version -or $ver -gt $latestVs16Version) {
-                        $latestVs16Version = $ver
-                        $latestVs16File    = $entry.'ts-vs16-x64'.zip.path
-                    }
+            # Check VS17 thread-safe x64 (newer PHP 8.5+)
+            if ($entry.'ts-vs17-x64') {
+                $ver = [version]$entry.version
+                if ($null -eq $latestVs17Version -or $ver -gt $latestVs17Version) {
+                    $latestVs17Version = $ver
+                    $latestVs17File    = $entry.'ts-vs17-x64'.zip.path
                 }
             }
 
-            # Prefer VS17, fall back to VS16
-            if ($latestVs17File) {
-                $url = "https://windows.php.net/downloads/releases/$latestVs17File"
-                Write-Ok "PHP $latestVs17Version (VS17) -> $url"
-                return $url
-            }
-            elseif ($latestVs16File) {
-                $url = "https://windows.php.net/downloads/releases/$latestVs16File"
-                Write-Ok "PHP $latestVs16Version (VS16) -> $url"
-                return $url
-            }
-
-            throw "No compatible PHP 8.x TS x64 build found (VS17 or VS16)"
-        }
-        catch {
-            if ($attempt -lt $maxRetries) {
-                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
-                Write-Info "  Retrying in $retryDelay seconds..."
-                Start-Sleep -Seconds $retryDelay
-            }
-            else {
-                Write-Warn "Live resolution failed after $maxRetries attempts."
-                if ($FALLBACK_URLS.PHP) {
-                    Write-Info "  Falling back to pinned PHP URL: $($FALLBACK_URLS.PHP)"
-                    return $FALLBACK_URLS.PHP
+            # Check VS16 thread-safe x64 (fallback)
+            if ($entry.'ts-vs16-x64') {
+                $ver = [version]$entry.version
+                if ($null -eq $latestVs16Version -or $ver -gt $latestVs16Version) {
+                    $latestVs16Version = $ver
+                    $latestVs16File    = $entry.'ts-vs16-x64'.zip.path
                 }
-                Write-Err "Failed to resolve PHP URL and no fallback URL is configured."
-                Write-Info "  Check https://windows.php.net/ or try again later."
-                throw
             }
         }
+
+        # Prefer VS17, fall back to VS16
+        if ($latestVs17File) {
+            $url = "https://windows.php.net/downloads/releases/$latestVs17File"
+            Write-Ok "PHP $latestVs17Version (VS17) -> $url"
+            return $url
+        }
+        elseif ($latestVs16File) {
+            $url = "https://windows.php.net/downloads/releases/$latestVs16File"
+            Write-Ok "PHP $latestVs16Version (VS16) -> $url"
+            return $url
+        }
+
+        throw "No compatible PHP 8.x TS x64 build found (VS17 or VS16)"
+    }
+    catch {
+        Write-Warn "Live resolution failed after 3 attempts."
+        if ($FALLBACK_URLS.PHP) {
+            Write-Info "  Falling back to pinned PHP URL: $($FALLBACK_URLS.PHP)"
+            return $FALLBACK_URLS.PHP
+        }
+        Write-Err "Failed to resolve PHP URL and no fallback URL is configured."
+        Write-Info "  Check https://windows.php.net/ or try again later."
+        throw
     }
 }
 
 function Get-PhpReleasesJson {
 # Fetches windows.php.net releases.json once. Returns $null if unreachable.
-    $maxRetries = 3
-    $retryDelay = 5
-
-    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            return Invoke-RestMethod -Uri "https://windows.php.net/downloads/releases/releases.json"
-        }
-        catch {
-            if ($attempt -lt $maxRetries) {
-                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
-                Write-Info "  Retrying in $retryDelay seconds..."
-                Start-Sleep -Seconds $retryDelay
-            }
-            else {
-                Write-Warn "Could not reach windows.php.net — running with cached versions only."
-                return $null
-            }
-        }
+    try {
+        return Invoke-RestRetry -Uri "https://windows.php.net/downloads/releases/releases.json" -MaxRetries 3 -RetryDelay 5
     }
-    return $null
+    catch {
+        Write-Warn "Could not reach windows.php.net — running with cached versions only."
+        return $null
+    }
 }
 
 function Resolve-PhpSeriesUrl($json, [string]$series) {
@@ -642,16 +748,10 @@ function Resolve-PhpSeriesUrl($json, [string]$series) {
 function Get-LatestMariadbUrl {
     Write-Info "Resolving MariaDB (latest stable, Windows x64)..."
 
-    $maxRetries = 5
-    $retryDelay = 8
+    try {
+        $json = Invoke-RestRetry -Uri "https://downloads.mariadb.org/rest-api/mariadb/" -MaxRetries 5 -RetryDelay 8
 
-    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-            $json = Invoke-RestMethod -Uri "https://downloads.mariadb.org/rest-api/mariadb/"
-
-            $candidates = $json.major_releases | Where-Object { $_.release_status -eq "Stable" }
+        $candidates = $json.major_releases | Where-Object { $_.release_status -eq "Stable" }
 
         if (-not $candidates) {
             throw "No Stable MariaDB releases found"
@@ -672,7 +772,7 @@ function Get-LatestMariadbUrl {
         Write-Info "Selected MariaDB $version ($($best.release_support_type))"
 
         # Fetch version details
-        $detail = Invoke-RestMethod -Uri "https://downloads.mariadb.org/rest-api/mariadb/$version/"
+        $detail = Invoke-RestRetry -Uri "https://downloads.mariadb.org/rest-api/mariadb/$version/" -MaxRetries 5 -RetryDelay 8
 
         $releaseKeys = $detail.releases.PSObject.Properties.Name |
             Sort-Object { [version]$_ } -Descending
@@ -691,84 +791,61 @@ function Get-LatestMariadbUrl {
         }
 
         throw "Could not resolve MariaDB Windows x64 download URL"
+    }
+    catch {
+        Write-Warn "Live resolution failed after 5 attempts."
+        if ($FALLBACK_URLS.MariaDB) {
+            Write-Info "  Falling back to pinned MariaDB URL: $($FALLBACK_URLS.MariaDB)"
+            return $FALLBACK_URLS.MariaDB
         }
-        catch {
-            if ($attempt -lt $maxRetries) {
-                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
-                Write-Info "  Retrying in $retryDelay seconds..."
-                Start-Sleep -Seconds $retryDelay
-            }
-            else {
-                Write-Warn "Live resolution failed after $maxRetries attempts."
-                if ($FALLBACK_URLS.MariaDB) {
-                    Write-Info "  Falling back to pinned MariaDB URL: $($FALLBACK_URLS.MariaDB)"
-                    return $FALLBACK_URLS.MariaDB
-                }
-                Write-Err "Failed to resolve MariaDB URL and no fallback URL is configured."
-                Write-Info "  Check https://mariadb.org/download/ or try again later."
-                throw
-            }
-        }
+        Write-Err "Failed to resolve MariaDB URL and no fallback URL is configured."
+        Write-Info "  Check https://mariadb.org/download/ or try again later."
+        throw
     }
 }
 
 function Get-LatestPhpMyAdminUrl {
     Write-Info "Resolving phpMyAdmin (latest stable, all-languages)..."
 
-    $maxRetries = 3
-    $retryDelay = 5
+    try {
+        $html = Invoke-WebRetry -Uri "https://www.phpmyadmin.net/downloads/" -Headers @{ "User-Agent" = $UA_STRING } -MaxRetries 3 -RetryDelay 5
 
-    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $bestVersion = $null
+        $bestUrl     = $null
 
-            $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-            $html = Invoke-WebRequest -Uri "https://www.phpmyadmin.net/downloads/" -UseBasicParsing -Headers @{ "User-Agent" = $ua }
+        # Match stable releases only (not snapshots)
+        $pattern = 'href="(https://files\.phpmyadmin\.net/phpMyAdmin/([\d.]+)/phpMyAdmin-[\d.]+-all-languages\.zip)"'
+        $rxMatches = [regex]::Matches($html.Content, $pattern)
 
-            $bestVersion = $null
-            $bestUrl     = $null
+        foreach ($m in $rxMatches) {
+            $url = $m.Groups[1].Value
+            $ver = $m.Groups[2].Value
 
-            # Match stable releases only (not snapshots)
-            $pattern = 'href="(https://files\.phpmyadmin\.net/phpMyAdmin/([\d.]+)/phpMyAdmin-[\d.]+-all-languages\.zip)"'
-            $rxMatches = [regex]::Matches($html.Content, $pattern)
+            # Skip snapshots
+            if ($url -match "snapshot") { continue }
 
-            foreach ($m in $rxMatches) {
-                $url = $m.Groups[1].Value
-                $ver = $m.Groups[2].Value
-
-                # Skip snapshots
-                if ($url -match "snapshot") { continue }
-
-                if ($null -eq $bestVersion -or [version]$ver -gt [version]$bestVersion) {
-                    $bestVersion = $ver
-                    $bestUrl     = $url
-                }
-            }
-
-            if ($bestUrl) {
-                Write-Ok "phpMyAdmin $bestVersion -> $bestUrl"
-                return $bestUrl
-            }
-
-            throw "No phpMyAdmin stable download found"
-        }
-        catch {
-            if ($attempt -lt $maxRetries) {
-                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
-                Write-Info "  Retrying in $retryDelay seconds..."
-                Start-Sleep -Seconds $retryDelay
-            }
-            else {
-                Write-Warn "Live resolution failed after $maxRetries attempts."
-                if ($FALLBACK_URLS.phpMyAdmin) {
-                    Write-Info "  Falling back to pinned phpMyAdmin URL: $($FALLBACK_URLS.phpMyAdmin)"
-                    return $FALLBACK_URLS.phpMyAdmin
-                }
-                Write-Err "Failed to resolve phpMyAdmin URL and no fallback URL is configured."
-                Write-Info "  Check https://www.phpmyadmin.net/ or try again later."
-                throw
+            if ($null -eq $bestVersion -or [version]$ver -gt [version]$bestVersion) {
+                $bestVersion = $ver
+                $bestUrl     = $url
             }
         }
+
+        if ($bestUrl) {
+            Write-Ok "phpMyAdmin $bestVersion -> $bestUrl"
+            return $bestUrl
+        }
+
+        throw "No phpMyAdmin stable download found"
+    }
+    catch {
+        Write-Warn "Live resolution failed after 3 attempts."
+        if ($FALLBACK_URLS.phpMyAdmin) {
+            Write-Info "  Falling back to pinned phpMyAdmin URL: $($FALLBACK_URLS.phpMyAdmin)"
+            return $FALLBACK_URLS.phpMyAdmin
+        }
+        Write-Err "Failed to resolve phpMyAdmin URL and no fallback URL is configured."
+        Write-Info "  Check https://www.phpmyadmin.net/ or try again later."
+        throw
     }
 }
 
@@ -788,40 +865,15 @@ function Invoke-DownloadToCache($url, $label) {
         return $zipPath
     }
 
-    $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    $maxRetries = 3
-    $retryDelay = 5
-
-    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            if ($attempt -gt 1) {
-                Write-Info "  Retry $attempt of $maxRetries..."
-            }
-            try {
-                Invoke-WebRequest -Uri $url -OutFile $zipPath -Headers @{ "User-Agent" = $ua }
-            }
-            catch [System.Management.Automation.MethodInvocationException] {
-                Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -Headers @{ "User-Agent" = $ua }
-            }
-            Write-Ok "Downloaded $label -> $filename"
-            return $zipPath
-        }
-        catch {
-            if ($attempt -lt $maxRetries) {
-                Write-Warn "  Download attempt $attempt failed: $($_.Exception.Message)"
-                Write-Info "  Retrying in $retryDelay seconds..."
-                [System.GC]::Collect()
-                [System.GC]::WaitForPendingFinalizers()
-                Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds $retryDelay
-            }
-            else {
-                Write-Err "Download failed for $label after $maxRetries attempts: $($_.Exception.Message)"
-                return $null
-            }
-        }
+    try {
+        Invoke-WebRetry -Uri $url -OutFile $zipPath -Headers @{ "User-Agent" = $UA_STRING } -MaxRetries 3 -RetryDelay 5
+        Write-Ok "Downloaded $label -> $filename"
+        return $zipPath
     }
-    return $null
+    catch {
+        Write-Err "Download failed for $label after 3 attempts: $($_.Exception.Message)"
+        return $null
+    }
 }
 
 function Invoke-DownloadAndExtract($url, $dest, $label) {
@@ -844,42 +896,12 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
         Write-Info "Extracting to $dest..."
         Expand-Archive -Path $zipPath -DestinationPath $dest -Force
     } else {
-        $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-
-        $maxRetries = 3
-        $retryDelay = 5
-
-        for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-            try {
-                if ($attempt -gt 1) {
-                    Write-Info "  Retry $attempt of $maxRetries..."
-                }
-
-                # Try with progress bar first, fall back if IE not available
-                try {
-                    Invoke-WebRequest -Uri $url -OutFile $zipPath -Headers @{ "User-Agent" = $ua }
-                }
-                catch [System.Management.Automation.MethodInvocationException] {
-                    Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -Headers @{ "User-Agent" = $ua }
-                }
-
-                # Download succeeded — break out of retry loop
-                break
-            }
-            catch {
-                Write-Progress -Activity "Downloading $label" -Completed
-                if ($attempt -lt $maxRetries) {
-                    Write-Warn "  Download attempt $attempt failed: $($_.Exception.Message)"
-                    Write-Info "  Retrying in $retryDelay seconds..."
-                    [System.GC]::Collect()
-                    [System.GC]::WaitForPendingFinalizers()
-                    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-                    Start-Sleep -Seconds $retryDelay
-                }
-                else {
-                    throw "Download failed for $label after $maxRetries attempts: $($_.Exception.Message)"
-                }
-            }
+        try {
+            Invoke-WebRetry -Uri $url -OutFile $zipPath -Headers @{ "User-Agent" = $UA_STRING } -MaxRetries 3 -RetryDelay 5
+        }
+        catch {
+            Write-Progress -Activity "Downloading $label" -Completed
+            throw "Download failed for $label after 3 attempts: $($_.Exception.Message)"
         }
 
         if (-not (Test-Path $zipPath)) {
@@ -1039,25 +1061,18 @@ function Invoke-ConfigureApache {
     }
 
     # Also fix literal ServerRoot (some configs don't use ${SRVROOT})
-    if ($conf -match '(?m)^ServerRoot\s+".*"') {
-        $conf = $conf -replace '(?m)^ServerRoot\s+".*"', "ServerRoot `"$apacheUnix`""
-    }
+    $conf = $conf -replace '(?m)^ServerRoot\s+".*"', "ServerRoot `"$apacheUnix`""
     Write-Ok "ServerRoot configured"
 
     # 2. Listen on port 80
-    if ($conf -match '(?m)^Listen\s+\d+') {
-        $conf = $conf -replace '(?m)^Listen\s+\d+', 'Listen 80'
-    }
-    else {
-        $conf += "`r`nListen 80`r`n"
-    }
+    $newConf = $conf -replace '(?m)^Listen\s+\d+', 'Listen 80'
+    if ($newConf -ne $conf) { $conf = $newConf }
+    else { $conf += "`r`nListen 80`r`n" }
     Write-Ok "Port 80 configured"
 
     # 2b. Set ServerName to suppress AH00558 warnings
-    if ($conf -match '(?m)^#ServerName') {
-        $conf = $conf -replace '(?m)^#ServerName\s+.*$', 'ServerName localhost:80'
-        Write-Ok "ServerName set to localhost:80"
-    }
+    $conf = $conf -replace '(?m)^#ServerName\s+.*$', 'ServerName localhost:80'
+    Write-Ok "ServerName set to localhost:80"
 
     # 3. DocumentRoot
     $oldDocRoot = ''
@@ -1075,9 +1090,7 @@ function Invoke-ConfigureApache {
     }
 
     # 5. DirectoryIndex - PHP first
-    if ($conf -match 'DirectoryIndex\s+index.html') {
-        $conf = $conf -replace '(DirectoryIndex\s+)index\.html', '${1}index.php index.html'
-    }
+    $conf = $conf -replace '(DirectoryIndex\s+)index\.html', '${1}index.php index.html'
     Write-Ok "DirectoryIndex: index.php before index.html"
 
     # 6. Enable mod_rewrite (handle both "#LoadModule" and "# LoadModule" variants)
@@ -1092,8 +1105,9 @@ function Invoke-ConfigureApache {
     # The default Apache Lounge config has this, but some variants may set Options None
     $wwwBlockStart = [regex]::Escape("<Directory `"$wwwUnix`">")
     $optionsPattern = "$wwwBlockStart[\s\S]*?Options\s+"
-    if ($conf -match "$optionsPattern") {
-        $conf = $conf -replace "($optionsPattern)\S+", '${1}Indexes FollowSymLinks'
+    $newConf = $conf -replace "($optionsPattern)\S+", '${1}Indexes FollowSymLinks'
+    if ($newConf -ne $conf) {
+        $conf = $newConf
         Write-Ok "Options Indexes FollowSymLinks set"
     }
 
@@ -1106,8 +1120,9 @@ function Invoke-ConfigureApache {
     $phpModuleUnix   = "$($PHP_PATH -replace '\\','/')/$phpModuleName"
     $phpIniUnix      = $PHP_PATH -replace '\\','/'
 
-    if ($conf -match 'LoadModule\s+php\d*_module\s+"[^"]*"') {
-        $conf = $conf -replace 'LoadModule\s+php\d*_module\s+"[^"]*"', "LoadModule $phpModuleSymbol `"$phpModuleUnix`""
+    $newConf = $conf -replace 'LoadModule\s+php\d*_module\s+"[^"]*"', "LoadModule $phpModuleSymbol `"$phpModuleUnix`""
+    if ($newConf -ne $conf) {
+        $conf = $newConf
         Write-Ok "PHP module updated to $phpModuleName ($phpModuleSymbol)"
     }
     elseif ($conf -notmatch 'php\d*_module') {
@@ -1215,54 +1230,19 @@ function Invoke-ConfigurePhp {
     $ini = $ini -replace ';?opcache\.revalidate_freq\s*=\s*\d+', 'opcache.revalidate_freq=2'
 
     # Enable JIT compilation (these directives aren't in default php.ini — append if missing)
-    if ($ini -match 'opcache\.jit\s*=') {
-        $ini = $ini -replace ';?opcache\.jit\s*=\s*\S+', 'opcache.jit=tracing'
-    }
-    else {
-        $ini += "`nopcache.jit=tracing"
-    }
-    if ($ini -match 'opcache\.jit_buffer_size\s*=') {
-        $ini = $ini -replace ';?opcache\.jit_buffer_size\s*=\s*\S+', 'opcache.jit_buffer_size=100M'
-    }
-    else {
-        $ini += "`nopcache.jit_buffer_size=100M"
-    }
+    $ini = Set-IniDirective $ini 'opcache.jit' 'tracing'
+    $ini = Set-IniDirective $ini 'opcache.jit_buffer_size' '100M'
     Write-Ok "OPCache enabled (256 MB, JIT tracing, production-ready)"
 
     # File upload limits (50 MB import for phpMyAdmin, etc.)
-    if ($ini -match 'upload_max_filesize\\s*=') {
-        $ini = $ini -replace 'upload_max_filesize\\s*=\\s*\\S+', 'upload_max_filesize = 50M'
-    }
-    else {
-        $ini += "`nupload_max_filesize = 50M"
-    }
-    if ($ini -match 'post_max_size\\s*=') {
-        $ini = $ini -replace 'post_max_size\\s*=\\s*\\S+', 'post_max_size = 55M'
-    }
-    else {
-        $ini += "`npost_max_size = 55M"
-    }
-    if ($ini -match 'max_execution_time\\s*=') {
-        $ini = $ini -replace 'max_execution_time\\s*=\\s*\\S+', 'max_execution_time = 300'
-    }
-    else {
-        $ini += "`nmax_execution_time = 300"
-    }
-    if ($ini -match 'max_input_time\\s*=') {
-        $ini = $ini -replace 'max_input_time\\s*=\\s*\\S+', 'max_input_time = 300'
-    }
-    else {
-        $ini += "`nmax_input_time = 300"
-    }
+    $ini = Set-IniDirective $ini 'upload_max_filesize' '50M'
+    $ini = Set-IniDirective $ini 'post_max_size' '55M'
+    $ini = Set-IniDirective $ini 'max_execution_time' '300'
+    $ini = Set-IniDirective $ini 'max_input_time' '300'
     Write-Ok "Upload limits set: 50 MB files, 300s timeout"
 
     # Session GC lifetime (match PMA LoginCookieValidity)
-    if ($ini -match 'session\.gc_maxlifetime\s*=') {
-        $ini = $ini -replace 'session\.gc_maxlifetime\s*=\s*\d+', 'session.gc_maxlifetime = 14400'
-    }
-    else {
-        $ini += "`nsession.gc_maxlifetime = 14400"
-    }
+    $ini = Set-IniDirective $ini 'session.gc_maxlifetime' '14400'
     Write-Ok "Session GC lifetime: 4 hours"
 
     Set-Content -Path $iniPath -Value $ini
@@ -1278,7 +1258,7 @@ function Invoke-FixSqliteDll {
     # Scrape sqlite.org for the latest x64 DLL
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        $ua = $UA_STRING
         $html = Invoke-WebRequest "https://www.sqlite.org/download.html" -UseBasicParsing -Headers @{ "User-Agent" = $ua }
 
         # Find the x64 DLL zip path — sqlite.org changed their page layout.
@@ -1500,6 +1480,8 @@ function Invoke-ConfigurePmaStorage {
 
 function Get-PmaStorageConfig {
 # Returns the phpMyAdmin storage configuration block for config.inc.php
+# Table list mirrors phpup.sh configure_phpmyadmin (brew path) — keep both
+# in sync with phpMyAdmin's upstream sql/create_tables.sql.
     return @"
 
 /* phpMyAdmin configuration storage */
@@ -1545,7 +1527,8 @@ function Start-WebStackServices {
         # Registered as a Windows service — use service control
         Start-Service $SERVICE_APACHE -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
-        if ((Get-Service $SERVICE_APACHE).Status -eq "Running") {
+        $apacheAsService.Refresh()
+        if ($apacheAsService.Status -eq "Running") {
             Write-Ok "Apache started (Windows service)"
         }
         else {
@@ -1586,7 +1569,8 @@ function Start-WebStackServices {
     elseif ($mariadbAsService) {
         Start-Service $SERVICE_MARIADB -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 3
-        if ((Get-Service $SERVICE_MARIADB).Status -eq "Running") {
+        $mariadbAsService.Refresh()
+        if ($mariadbAsService.Status -eq "Running") {
             Write-Ok "MariaDB started (Windows service, root password is blank)"
         }
         else {
@@ -2058,6 +2042,7 @@ function Save-PostUpdateConfig {
         phpmyadmin = Get-PhpMyAdminVersion
     }
     $pathEntries = $existingConfig.path_entries
+    $minSeries = if ($existingConfig -and $existingConfig.php_min_series) { [string]$existingConfig.php_min_series } else { $null }
 
     if (-not (Test-ServicesInstalled)) {
         Write-Host ""
@@ -2067,7 +2052,7 @@ function Save-PostUpdateConfig {
         }
     }
 
-    Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries -ServicesRegistered:(Test-ServicesInstalled)
+    Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries -ServicesRegistered:(Test-ServicesInstalled) -MinSeries $minSeries
 }
 
 function Invoke-UpdateWebStack {
@@ -2322,11 +2307,8 @@ function Show-PhpSwitchMenu {
         else {
             # Tag relative to the newest cached patch
             if ($Installed) {
-                try {
-                    if ([version]$r.Version -gt [version]$Installed) { $tag = " (newer)"; $tagColor = "Yellow" }
-                    elseif ([version]$r.Version -lt [version]$Installed) { $tag = " (older)"; $tagColor = "DarkGray" }
-                    else { $tag = " (current)"; $tagColor = "Green" }
-                } catch { }
+                $vt = Get-VersionTag $r.Version $Installed
+                $tag = $vt.Tag; $tagColor = $vt.Color
             }
             # The installed build lives in this series but is not the newest
             # cached patch — keep the "current" visible in the list.
@@ -2423,11 +2405,8 @@ function Show-PhpVariantList {
         $tag = ""
         $tagColor = "Cyan"
         if ($Installed) {
-            try {
-                if ([version]$v.Version -gt [version]$Installed) { $tag = " (newer)"; $tagColor = "Yellow" }
-                elseif ([version]$v.Version -lt [version]$Installed) { $tag = " (older)"; $tagColor = "DarkGray" }
-                else { $tag = " (current)"; $tagColor = "Green" }
-            } catch { }
+            $vt = Get-VersionTag $v.Version $Installed
+            $tag = $vt.Tag; $tagColor = $vt.Color
         }
         Write-Host "  [$($i + 1)] $vLabel" -NoNewline -ForegroundColor Cyan
         if ($tag) { Write-Host $tag -ForegroundColor $tagColor } else { Write-Host "" }
@@ -2760,11 +2739,8 @@ function Invoke-ForcedUpdate {
             $tag = ""
             $tagColor = "Cyan"
             if ($comp.Installed) {
-                try {
-                    if ([version]$v -gt [version]$comp.Installed) { $tag = " (newer)"; $tagColor = "Yellow" }
-                    elseif ([version]$v -lt [version]$comp.Installed) { $tag = " (older)"; $tagColor = "DarkGray" }
-                    else { $tag = " (current)"; $tagColor = "Green" }
-                } catch { }
+                $vt = Get-VersionTag $v $comp.Installed
+                $tag = $vt.Tag; $tagColor = $vt.Color
             }
             Write-Host "  [$($i + 1)] $v" -NoNewline -ForegroundColor Cyan
             if ($tag) {
@@ -2990,6 +2966,8 @@ function Invoke-DeleteWebStack {
 function Show-Dashboard {
     Clear-Host
 
+    $stackComplete = Test-StackComplete
+
     Write-Host ""
     # Render banner with multi-colour: white text, coloured arrows, cyan "phpup"
     $bannerLines = $BANNER_ART -split "`n"
@@ -3017,7 +2995,7 @@ function Show-Dashboard {
     # ---- Architecture / OS line ----
     $arch = $env:PROCESSOR_ARCHITECTURE
     if ($arch -eq "AMD64") { $arch = "x86_64" }
-    $osCaption = (Get-CimInstance Win32_OperatingSystem).Caption
+    $osCaption = $OS_CAPTION
     if ($osCaption -match "Microsoft Windows (.*)") { $osCaption = $matches[1] }
     Write-Host "Architecture: " -NoNewline
     Write-Host "$arch" -ForegroundColor Cyan -NoNewline
@@ -3146,7 +3124,7 @@ function Show-Dashboard {
     }
 
     # ---- Info ----
-    if (Test-StackComplete) {
+    if ($stackComplete) {
         Write-Host ""
         Write-Host "Where to put website files?  " -NoNewline
         Write-Host $WWW_PATH -ForegroundColor Cyan
@@ -3165,7 +3143,7 @@ function Show-Dashboard {
     Write-Host "Stack Commands:" -ForegroundColor White
     Write-Host "~~~~~~~~~~~~~~~"
 
-    if (-not (Test-StackComplete)) {
+    if (-not $stackComplete) {
         Write-Host "I  Install the web stack" -ForegroundColor Cyan
     }
     else {
@@ -3288,7 +3266,7 @@ if ($config) {
     # Validate the saved path is usable
     if ($BASE -match '\s') {
         Write-Err "Saved path contains spaces — this is unsupported."
-        Write-Info "Delete the config and re-run: Remove-Item '$CONFIG_FILE'"
+        Write-Info "Delete the config and re-run: Remove-Item '$(Get-ConfigFilePath)'"
         Write-Host ""
         Pause
         exit 1

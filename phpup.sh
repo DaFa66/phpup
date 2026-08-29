@@ -5,8 +5,8 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-08-28
-#  Version: 1.1.0
+#  Date: 2026-08-29
+#  Version: 1.2.0
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -14,8 +14,10 @@ REMOTE_URL='https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh'
 BASE_DIR="${HOME}/phpup"
 DOC_ROOT="${BASE_DIR}/www"
 LOGS_DIR="${BASE_DIR}/logs"
-CONFIG_DIR="${HOME}/.config/phpup"
-CONFIG_FILE="${CONFIG_DIR}/config.json"
+CONFIG_DIR="${BASE_DIR}"
+CONFIG_FILE="${BASE_DIR}/config.json"
+LEGACY_CONFIG_DIR="${HOME}/.config/phpup"
+PHP_MIN_SERIES="8.2"    # fu download floor; overridable via config.json
 DATA_BACKUP_DIR="${BASE_DIR}/data_backup"
 
 # ---- Colour Constants ---------------------------------------
@@ -117,20 +119,41 @@ json_get() {
     echo "$json" | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/'
 }
 
-json_get_versions() {
-    local json="$1" component="$2"
-
-    # Extract the versions block and find the component version
-    echo "$json" | grep -o "\"${component}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/'
+# ---- Config Persistence -------------------------------------
+migrate_config() {
+    # Pre-1.2.0 installs wrote config to ~/.config/phpup; co-locate it
+    # with the stack so the config travels with the install folder.
+    if [[ -f "$LEGACY_CONFIG_DIR/config.json" && ! -f "$CONFIG_FILE" ]]; then
+        cp "$LEGACY_CONFIG_DIR/config.json" "$CONFIG_FILE"
+        rm -rf "$LEGACY_CONFIG_DIR"
+        print_ok "Migrated phpup config to $CONFIG_FILE"
+    fi
 }
 
-# ---- Config Persistence -------------------------------------
 load_config() {
+    # Read config.json into globals. Missing/corrupt config falls back
+    # to defaults — never blocks startup. Precedence for php_min_series:
+    # PHPPUP_PHP_MIN_SERIES env > config.json > built-in default.
+    local json
     if [[ -f "$CONFIG_FILE" ]]; then
-        cat "$CONFIG_FILE"
+        json=$(cat "$CONFIG_FILE")
     else
-        echo ""
+        return 0
     fi
+
+    # shellcheck disable=SC2155
+    local min_series mariadb_port php_port
+    min_series=$(json_get "$json" "php_min_series")
+    mariadb_port=$(json_get "$json" "mariadb_port")
+    php_port=$(json_get "$json" "php_port")
+
+    if [[ -n "${PHPPUP_PHP_MIN_SERIES:-}" ]]; then
+        PHP_MIN_SERIES="$PHPPUP_PHP_MIN_SERIES"
+    elif [[ -n "$min_series" ]]; then
+        PHP_MIN_SERIES="$min_series"
+    fi
+    [[ -n "$mariadb_port" ]] && MARIADB_PORT="$mariadb_port"
+    [[ -n "$php_port" ]] && PHP_PORT="$php_port"
 }
 
 save_config() {
@@ -158,12 +181,13 @@ save_config() {
   "port_prefix": "${PORT_PREFIX}",
   "architecture": "${ARCH}",
   "os": "${OS_DISTRO} ${OS_VERSION}",
-  "versions": {
-    "apache": "${apache_ver}",
-    "mariadb": "${mariadb_ver}",
-    "php": "${php_ver}",
-    "phpmyadmin": "${phpmyadmin_ver}"
-  }
+  "php_min_series": "${PHP_MIN_SERIES}",
+  "apache_version": "${apache_ver}",
+  "mariadb_version": "${mariadb_ver}",
+  "php_version": "${php_ver}",
+  "phpmyadmin_version": "${phpmyadmin_ver}",
+  "mariadb_port": "${MARIADB_PORT}",
+  "php_port": "${PHP_PORT}"
 }
 EOF
 }
@@ -172,8 +196,8 @@ clear_config() {
     if [[ -f "$CONFIG_FILE" ]]; then
         rm -f "$CONFIG_FILE"
     fi
-    if [[ -d "$CONFIG_DIR" ]]; then
-        rmdir "$CONFIG_DIR" 2>/dev/null || true
+    if [[ -d "$LEGACY_CONFIG_DIR" ]]; then
+        rm -rf "$LEGACY_CONFIG_DIR"
     fi
 }
 
@@ -216,10 +240,11 @@ detect_mariadb() {
             MARIADB_VERSION=""
         fi
     elif [[ $USE_PORTS == 1 ]]; then
-        # F2: self-healing fallback — the mariadb-11.4 LTS series chosen by a
-        # previous install must survive across sessions (config.json is
-        # write-only). If the default series datadir is absent but any other
-        # mariadb-1[12].* datadir exists, adopt that series BEFORE the check.
+        # MARIADB_PORT comes from config.json (persisted at install/switch);
+        # this sniff is a last-resort migration shim for configs written
+        # before ports were persisted (pre-1.1.0). If the configured series
+        # datadir is absent but any other mariadb-1[12].* datadir exists,
+        # adopt that series so the stack still resolves.
         if [[ ! -d "${PORT_PREFIX}/var/db/${MARIADB_PORT}" ]]; then
             local found_series
             found_series=$(find "${PORT_PREFIX}/var/db" -maxdepth 1 -type d -name 'mariadb-1[12].*' 2>/dev/null | sed 's@.*/@@' | sort -V | tail -1)
@@ -261,16 +286,26 @@ brew_active_php() {
     fi
 }
 
+APT_PHP_BIN_CACHE=""
+
 apt_php_bin() {
     # The system PHP binary phpup manages on apt (update-alternatives).
     # Resolves via the alternatives link so Homebrew/getphp shims on PATH
-    # (brew shellenv in ~/.bashrc) can't shadow it.
+    # (brew shellenv in ~/.bashrc) can't shadow it. Memoized: the link only
+    # changes at the two update-alternatives sites, which clear the cache.
+    if [[ -n "$APT_PHP_BIN_CACHE" && -x "$APT_PHP_BIN_CACHE" ]]; then
+        echo "$APT_PHP_BIN_CACHE"
+        return
+    fi
     local bin
     bin=$(readlink -f /etc/alternatives/php 2>/dev/null || true)
     if [[ -z "$bin" || ! -x "$bin" ]]; then
         bin=$(command -v php 2>/dev/null || true)
     fi
-    [[ -n "$bin" && -x "$bin" ]] && echo "$bin"
+    if [[ -n "$bin" && -x "$bin" ]]; then
+        APT_PHP_BIN_CACHE="$bin"
+        echo "$bin"
+    fi
 }
 
 detect_php() {
@@ -455,19 +490,21 @@ disable_mod_php() {
     fi
 }
 
-switch_fpm_apt() {
-    # Switch the Apache PHP-FPM runtime to $1, with rollback: on failure the
-    # previous FPM version + Apache conf are restored.
-    local target="$1"
-    local prev conf conf_backup
-    prev=$(fpm_active_version || true)
-    conf=$(apache_fpm_conf)
-    [[ -f "$conf" ]] && conf_backup=$(cat "$conf")
+# Wire Apache to proxy .php to the active FPM socket: write the phpup-managed
+# conf, ensure FastCGI modules, disable mod_php. The caller reloads Apache
+# (reload semantics differ per context).
+wire_apache_fpm() {
+    local version="$1"
+    write_apache_fpm_conf "$version"
+    enable_apache_fpm_modules
+    disable_mod_php
+}
 
-    # Enable + start target FPM; disable + stop every other installed version
-    local v
-    for v in $(fpm_versions_installed); do
-        if [[ "$v" == "$target" ]]; then
+# Enable + start the given FPM version; disable + stop every other installed one.
+set_fpm_active() {
+    local version="$1" installed="$2" v
+    for v in $installed; do
+        if [[ "$v" == "$version" ]]; then
             sudo systemctl enable "php${v}-fpm" 2>/dev/null || true
             sudo systemctl restart "php${v}-fpm" 2>/dev/null || true
         else
@@ -475,10 +512,21 @@ switch_fpm_apt() {
             sudo systemctl stop "php${v}-fpm" 2>/dev/null || true
         fi
     done
+}
 
-    write_apache_fpm_conf "$target"
-    enable_apache_fpm_modules
-    disable_mod_php
+switch_fpm_apt() {
+    # Switch the Apache PHP-FPM runtime to $1, with rollback: on failure the
+    # previous FPM version + Apache conf are restored.
+    local target="$1"
+    local prev conf conf_backup installed
+    prev=$(fpm_active_version || true)
+    conf=$(apache_fpm_conf)
+    installed=$(fpm_versions_installed)
+    [[ -f "$conf" ]] && conf_backup=$(cat "$conf")
+
+    set_fpm_active "$target" "$installed"
+
+    wire_apache_fpm "$target"
     sudo systemctl reload apache2 2>/dev/null || sudo systemctl restart apache2 2>/dev/null || true
 
     # Verify the target FPM is actually up before declaring success
@@ -492,17 +540,10 @@ switch_fpm_apt() {
         fi
         if [[ -n "$prev" ]]; then
             print_warn "Restoring previous PHP-FPM ${prev}..."
-            for v in $(fpm_versions_installed); do
-                if [[ "$v" == "$prev" ]]; then
-                    sudo systemctl enable "php${v}-fpm" 2>/dev/null || true
-                    sudo systemctl restart "php${v}-fpm" 2>/dev/null || true
-                else
-                    sudo systemctl disable "php${v}-fpm" 2>/dev/null || true
-                    sudo systemctl stop "php${v}-fpm" 2>/dev/null || true
-                fi
-            done
+            set_fpm_active "$prev" "$installed"
             # CLI follows the FPM runtime — restore the previous alternative too
             sudo update-alternatives --set php "/usr/bin/php${prev}" 2>/dev/null || true
+            APT_PHP_BIN_CACHE=""
         fi
         sudo systemctl reload apache2 2>/dev/null || true
         return 1
@@ -539,6 +580,23 @@ stack_proc() {
         ps -o command= -p "$pid" 2>/dev/null | grep -qF "$prefix" && return 0
     done
     return 1
+}
+
+stack_kill() {
+    # Kill processes matching the pgrep patterns ($2..) that belong to the
+    # ACTIVE backend (prefix-pinned via the same rule as stack_proc) — so
+    # stopping one stack never takes down a coexisting stack's processes.
+    # Usage: stack_kill <pgrep-flag> <pattern...>  (pgrep -x accepts only ONE
+    # pattern, so run it once per pattern).
+    local flag="$1"; shift
+    local prefix="$PORT_PREFIX"
+    [[ $USE_PORTS == 1 ]] || prefix="$BREW_PREFIX"
+    local _pat _sp
+    for _pat in "$@"; do
+        for _sp in $(pgrep "$flag" "$_pat" 2>/dev/null); do
+            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$prefix" && kill "$_sp" 2>/dev/null || true
+        done
+    done
 }
 
 detect_all() {
@@ -707,7 +765,7 @@ install_macports() {
         14) token="14-Sonoma";; 15) token="15-Sequoia";; 26) token="26-Tahoe";;
         *) print_err "No MacPorts installer for macOS ${osver} — this machine is not viable for a modern web stack."; return 1 ;;
     esac
-    local ver="${MACPORTS_VERSION:-2.12.5}"
+    local ver="$MACPORTS_VERSION"
     local url="https://github.com/macports/macports-base/releases/download/v${ver}/MacPorts-${ver}-${token}.pkg"
     local pkg="/tmp/MacPorts-${ver}-${token}.pkg"
     if ! curl -fsSL --connect-timeout 30 "$url" -o "$pkg"; then
@@ -942,22 +1000,24 @@ start_services() {
     elif [[ $USE_PORTS == 1 ]]; then
         if [[ $APACHE == 1 ]]; then
             sudo "${PORT_PREFIX}/bin/port" load apache2 >/dev/null 2>&1
+            local apache_started=0
             for ((_i=0; _i<10; _i++)); do
-                stack_proc -x httpd &>/dev/null && { print_ok "Apache started on port 80"; break; }
+                if stack_proc -x httpd &>/dev/null; then print_ok "Apache started on port 80"; apache_started=1; break; fi
                 sleep 1
             done
-            if ! stack_proc -x httpd &>/dev/null; then
+            if [[ $apache_started == 0 ]]; then
                 print_err "Apache may have failed to start — check ${LOGS_DIR}/apache_error.log"
                 sudo "${PORT_PREFIX}/sbin/apachectl" configtest 2>&1 | tail -3
             fi
         fi
         if [[ $MARIADB == 1 ]]; then
             sudo "${PORT_PREFIX}/bin/port" load "${MARIADB_PORT}-server" >/dev/null 2>&1
+            local mariadb_started=0
             for ((_i=0; _i<10; _i++)); do
-                { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; } && { print_ok "MariaDB started"; break; }
+                if { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; }; then print_ok "MariaDB started"; mariadb_started=1; break; fi
                 sleep 1
             done
-            if ! { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; }; then
+            if [[ $mariadb_started == 0 ]]; then
                 print_err "MariaDB failed to start — check ${PORT_PREFIX}/var/log/${MARIADB_PORT}/mariadb_error.log"
                 tail -50 "${PORT_PREFIX}/var/log/${MARIADB_PORT}/mariadb_error.log" 2>/dev/null || \
                     tail -50 "${PORT_PREFIX}/var/db/${MARIADB_PORT}/"*.err 2>/dev/null || true
@@ -978,11 +1038,12 @@ start_services() {
 
         if [[ $MARIADB == 1 ]]; then
             brew services start mariadb 2>/dev/null
+            local mariadb_started=0
             for ((_i=0; _i<5; _i++)); do
-                { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; } && { print_ok "MariaDB started"; break; }
+                if { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; }; then print_ok "MariaDB started"; mariadb_started=1; break; fi
                 sleep 1
             done
-            if ! { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; }; then
+            if [[ $mariadb_started == 0 ]]; then
                 print_err "MariaDB failed to start — check ${LOGS_DIR}/mariadb_error.log"
                 tail -50 "${LOGS_DIR}/mariadb_error.log" 2>/dev/null || true
             fi
@@ -1020,15 +1081,10 @@ stop_services() {
         [[ $APACHE == 1 ]] && sudo "${PORT_PREFIX}/bin/port" unload apache2 >/dev/null 2>&1 || true
         [[ $MARIADB == 1 ]] && sudo "${PORT_PREFIX}/bin/port" unload "${MARIADB_PORT}-server" >/dev/null 2>&1 || true
         # Belt-and-braces: launchd will not restart after unload. Kill only the
-        # ACTIVE backend's processes (stack_proc-pinned) so stopping the ports
+        # ACTIVE backend's processes (prefix-pinned) so stopping the ports
         # stack never takes down a coexisting brew stack's httpd/mysqld.
-        local _sp
-        for _sp in $(pgrep -x httpd 2>/dev/null); do
-            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$PORT_PREFIX" && kill "$_sp" 2>/dev/null || true
-        done
-        for _sp in $(pgrep -x mysqld 2>/dev/null; pgrep -x mariadbd 2>/dev/null); do
-            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$PORT_PREFIX" && kill "$_sp" 2>/dev/null || true
-        done
+        stack_kill -x httpd
+        stack_kill -x mysqld mariadbd
     else
         # Kill the brew stack's httpd only (path-pinned; a coexisting ports
         # stack may be running its own httpd on another machine state)
@@ -1040,14 +1096,9 @@ stop_services() {
             fi
         fi
         [[ $MARIADB == 1 ]] && brew services stop mariadb
-        local _sp
-        for _sp in $(pgrep -x mysqld 2>/dev/null; pgrep -x mariadbd 2>/dev/null); do
-            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$BREW_PREFIX" && kill "$_sp" 2>/dev/null || true
-        done
+        stack_kill -x mysqld mariadbd
         [[ $PHP == 1 ]] && brew services stop "$(brew_active_php)"
-        for _sp in $(pgrep -f "(^|/)php-fpm" 2>/dev/null); do
-            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$BREW_PREFIX" && kill "$_sp" 2>/dev/null || true
-        done
+        stack_kill -f "(^|/)php-fpm"
     fi
     sleep 3
     print_ok "Services stopped"
@@ -1097,29 +1148,23 @@ configure_apache() {
 
     print_info "Configuring Apache..."
 
-    # Port 80
     sed -i.bak "s/Listen 8080/Listen 80/" "$conf"
     print_ok "Enabled port 80"
 
-    # ServerName
     sed -i.bak "s/#ServerName www.example.com:8080/ServerName localhost:80/g" "$conf"
     print_ok "Set ServerName to localhost:80"
 
-    # DocumentRoot
     sed -i.bak "s@${BREW_PREFIX}/var/www@$DOC_ROOT@g" "$conf"
     print_ok "Set DocumentRoot to ${DOC_ROOT}"
 
-    # Log files
     sed -i.bak "s@${BREW_PREFIX}/var/log/httpd/error_log@${LOGS_DIR}/apache_error.log@g" "$conf"
     sed -i.bak "s@${BREW_PREFIX}/var/log/httpd/access_log@${LOGS_DIR}/apache_access.log@g" "$conf"
     print_ok "Routed logs to ${LOGS_DIR}"
 
-    # mod_rewrite
     sed -i.bak "s@#LoadModule rewrite_module lib/httpd/modules/mod_rewrite.so@LoadModule rewrite_module lib/httpd/modules/mod_rewrite.so@g" "$conf"
     sed -i.bak "s/AllowOverride None/AllowOverride All/g" "$conf"
     print_ok "Enabled mod_rewrite"
 
-    # DirectoryIndex
     sed -i.bak "s/DirectoryIndex index.html/DirectoryIndex index.php index.html/" "$conf"
     print_ok "Added index.php to DirectoryIndex"
 
@@ -1180,7 +1225,6 @@ configure_apache_apt() {
 
     print_info "Configuring Apache (apt)..."
 
-    # Enable mod_rewrite
     sudo a2enmod rewrite 2>/dev/null
     print_ok "Enabled mod_rewrite"
 
@@ -1190,7 +1234,6 @@ configure_apache_apt() {
             sudo cp "$site_conf" "${site_conf}.phpup.bak"
         fi
 
-        # DocumentRoot
         sudo sed -i "s@DocumentRoot /var/www/html@DocumentRoot ${DOC_ROOT}@" "$site_conf"
         print_ok "Set DocumentRoot to ${DOC_ROOT}"
 
@@ -1204,11 +1247,9 @@ configure_apache_apt() {
         sudo sed -i "s/AllowOverride None/AllowOverride All/g" "$site_conf"
         print_ok "Set AllowOverride All"
 
-        # DirectoryIndex
         sudo sed -i "s/DirectoryIndex index.html/DirectoryIndex index.php index.html/" "$site_conf"
         print_ok "Added index.php to DirectoryIndex"
 
-        # Log files — redirect to phpup logs
         sudo sed -i "s@\${APACHE_LOG_DIR}/error.log@${LOGS_DIR}/apache_error.log@" "$site_conf"
         sudo sed -i "s@\${APACHE_LOG_DIR}/access.log@${LOGS_DIR}/apache_access.log@" "$site_conf"
         print_ok "Routed logs to ${LOGS_DIR}"
@@ -1235,9 +1276,7 @@ configure_apache_apt() {
     fpm_ver=$(fpm_active_version || true)
     [[ -z "$fpm_ver" ]] && fpm_ver=$("$(apt_php_bin)" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
     if [[ -n "$fpm_ver" ]]; then
-        write_apache_fpm_conf "$fpm_ver"
-        enable_apache_fpm_modules
-        disable_mod_php
+        wire_apache_fpm "$fpm_ver"
     fi
 
     # Reload Apache to apply changes
@@ -1271,16 +1310,11 @@ configure_apache_ports() {
     sudo sed -i.bak "s/AllowOverride None/AllowOverride All/g" "$conf"
     print_ok "Enabled mod_rewrite"
 
-    # DirectoryIndex
     sudo sed -i.bak "s/DirectoryIndex index.html/DirectoryIndex index.php index.html/" "$conf"
     print_ok "Added index.php to DirectoryIndex"
 
-    # PHP module — REPLACE, never append-only: strip any existing LoadModule
-    # php*_module line first (fu→D→I cycles leave dead lines pointing at
-    # uninstalled .so files) then append exactly one line for the current
-    # PHP_PORT. Idempotent: every run converges to exactly one php module line.
-    # NOTE: MacPorts' mod_phpXX.so exports "php_module" (no version suffix) —
-    # the Apache module name is php_module regardless of the port name.
+    # PHP module — strip-then-append (idempotent; fu→D→I cycles must not leave
+    # dead lines). MacPorts' mod_phpXX.so exports "php_module" (no suffix).
     sudo sed -i.bak "/^LoadModule php[0-9]*_module /d" "$conf"
     local php_module="${PORT_PREFIX}/lib/apache2/modules/mod_${PHP_PORT}.so"
     if [[ -f "$php_module" ]]; then
@@ -1351,7 +1385,6 @@ configure_php() {
         return
     fi
 
-    # Backup
     if [[ ! -f "${php_ini}.phpup.bak" ]]; then
         cp "$php_ini" "${php_ini}.phpup.bak"
     fi
@@ -1369,21 +1402,8 @@ configure_php() {
     done
     print_ok "Enabled PHP extensions"
 
-    # Display errors
-    sed -i.bak "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
-    sed -i.bak "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
-    print_ok "Enabled display_errors"
+    apply_php_ini_policy "$php_ini"
 
-    # Error log
-    local error_log_line="error_log = ${LOGS_DIR}/php_errors.log"
-    if ! grep -q "^error_log" "$php_ini" 2>/dev/null; then
-        echo "$error_log_line" >> "$php_ini"
-    else
-        sed -i.bak "s@^error_log.*@${error_log_line}@" "$php_ini"
-    fi
-    print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
-
-    # OPCache
     if grep -q "^;*opcache.enable=" "$php_ini" 2>/dev/null; then
         sed -i.bak "s/^;*opcache.enable=.*/opcache.enable=1/" "$php_ini"
         sed -i.bak "s/^;*opcache.memory_consumption=.*/opcache.memory_consumption=256/" "$php_ini"
@@ -1392,38 +1412,44 @@ configure_php() {
         print_ok "Configured OPCache (256MB, JIT-ready)"
     fi
 
-    # File upload limits (50 MB import for phpMyAdmin, etc.)
-    if grep -q "^upload_max_filesize" "$php_ini" 2>/dev/null; then
-        sed -i.bak "s/^upload_max_filesize.*/upload_max_filesize = 50M/" "$php_ini"
-    else
-        echo "upload_max_filesize = 50M" >> "$php_ini"
-    fi
-    if grep -q "^post_max_size" "$php_ini" 2>/dev/null; then
-        sed -i.bak "s/^post_max_size.*/post_max_size = 55M/" "$php_ini"
-    else
-        echo "post_max_size = 55M" >> "$php_ini"
-    fi
-    if grep -q "^max_execution_time" "$php_ini" 2>/dev/null; then
-        sed -i.bak "s/^max_execution_time.*/max_execution_time = 300/" "$php_ini"
-    else
-        echo "max_execution_time = 300" >> "$php_ini"
-    fi
-    if grep -q "^max_input_time" "$php_ini" 2>/dev/null; then
-        sed -i.bak "s/^max_input_time.*/max_input_time = 300/" "$php_ini"
-    else
-        echo "max_input_time = 300" >> "$php_ini"
-    fi
+    rm -f "${php_ini}.bak"
+}
+
+# ---- Shared php.ini policy ----------------------------------
+# Apply the common phpup php.ini settings with set-or-append semantics.
+# $1 = php.ini path, $2 = sed command (may include sudo; default sed -i.bak),
+# $3 = append command (default tee -a), $4 = optional display label for the
+# display_errors line (apt shows the ini context, e.g. "fpm").
+apply_php_ini_policy() {
+    local php_ini="$1"
+    local sed_cmd="${2:-sed -i.bak}"
+    local append_cmd="${3:-tee -a}"
+    local label="$4"
+
+    local key val
+    set_ini_directive() {
+        key="$1"; val="$2"
+        if grep -q "^${key}" "$php_ini" 2>/dev/null; then
+            # | delimiter: values carry slashes (error_log path)
+            $sed_cmd "s|^${key}.*|${key} = ${val}|" "$php_ini" 2>/dev/null || true
+        else
+            echo "${key} = ${val}" | $append_cmd "$php_ini" > /dev/null
+        fi
+    }
+
+    set_ini_directive display_errors On
+    print_ok "Enabled display_errors${label:+ ($label)}"
+
+    set_ini_directive error_log "${LOGS_DIR}/php_errors.log"
+    print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
+
+    for kv in "upload_max_filesize 50M" "post_max_size 55M" "max_execution_time 300" "max_input_time 300"; do
+        set_ini_directive "${kv%% *}" "${kv#* }"
+    done
     print_ok "Upload limits set: 50 MB files, 300s timeout"
 
-    # Session GC lifetime (match PMA LoginCookieValidity)
-    if grep -q "^session.gc_maxlifetime" "$php_ini" 2>/dev/null; then
-        sed -i.bak "s/^session.gc_maxlifetime.*/session.gc_maxlifetime = 14400/" "$php_ini"
-    else
-        echo "session.gc_maxlifetime = 14400" >> "$php_ini"
-    fi
+    set_ini_directive session.gc_maxlifetime 14400
     print_ok "Session GC lifetime: 4 hours"
-
-    rm -f "${php_ini}.bak"
 }
 
 # ---- PHP Configuration (apt) ---------------------------------
@@ -1441,17 +1467,7 @@ configure_php_apt() {
             sudo cp "$php_ini" "${php_ini}.phpup.bak"
         fi
 
-        # Display errors
-        sudo sed -i "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
-        print_ok "Enabled display_errors ($(basename "$(dirname "$php_ini")"))"
-
-        # Error log
-        if ! grep -q "^error_log" "$php_ini" 2>/dev/null; then
-            echo "error_log = ${LOGS_DIR}/php_errors.log" | sudo tee -a "$php_ini" > /dev/null
-        else
-            sudo sed -i "s@^error_log.*@error_log = ${LOGS_DIR}/php_errors.log@" "$php_ini"
-        fi
-        print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
+        apply_php_ini_policy "$php_ini" "sudo sed -i" "sudo tee -a" "$(basename "$(dirname "$php_ini")")"
 
         # OPCache (web runtime only — CLI keeps opcache off so phar tools work)
         if [[ "$php_ini" == *"/fpm/php.ini" ]] && grep -q "^;*opcache.enable=" "$php_ini" 2>/dev/null; then
@@ -1461,25 +1477,6 @@ configure_php_apt() {
             sudo sed -i "s/^;*opcache.max_accelerated_files=.*/opcache.max_accelerated_files=20000/" "$php_ini"
             print_ok "Configured OPCache (256MB, JIT-ready)"
         fi
-
-        # File upload limits (50 MB import for phpMyAdmin, etc.)
-        for kv in "upload_max_filesize 50M" "post_max_size 55M" "max_execution_time 300" "max_input_time 300"; do
-            local key="${kv%% *}" val="${kv#* }"
-            if grep -q "^${key}" "$php_ini" 2>/dev/null; then
-                sudo sed -i "s/^${key}.*/${key} = ${val}/" "$php_ini"
-            else
-                echo "${key} = ${val}" | sudo tee -a "$php_ini" > /dev/null
-            fi
-        done
-        print_ok "Upload limits set: 50 MB files, 300s timeout"
-
-        # Session GC lifetime (match PMA LoginCookieValidity)
-        if grep -q "^session.gc_maxlifetime" "$php_ini" 2>/dev/null; then
-            sudo sed -i "s/^session.gc_maxlifetime.*/session.gc_maxlifetime = 14400/" "$php_ini"
-        else
-            echo "session.gc_maxlifetime = 14400" | sudo tee -a "$php_ini" > /dev/null
-        fi
-        print_ok "Session GC lifetime: 4 hours"
     done
 
     if [[ $found == 0 ]]; then
@@ -1526,18 +1523,7 @@ configure_php_ports() {
     done
     print_ok "Pointed mysqli/pdo_mysql at ${sock}"
 
-    # Display errors
-    sudo sed -i.bak "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
-    print_ok "Enabled display_errors"
-
-    # Error log
-    local error_log_line="error_log = ${LOGS_DIR}/php_errors.log"
-    if ! grep -q "^error_log" "$php_ini" 2>/dev/null; then
-        echo "$error_log_line" | sudo tee -a "$php_ini" > /dev/null
-    else
-        sudo sed -i.bak "s@^error_log.*@${error_log_line}@" "$php_ini"
-    fi
-    print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
+    apply_php_ini_policy "$php_ini" "sudo sed -i.bak" "sudo tee -a"
 
     # OPCache — compiled into php85 core (no php85-opcache port exists). Only
     # touch the settings if the runtime actually has the module loaded.
@@ -1550,37 +1536,6 @@ configure_php_ports() {
             print_ok "Configured OPCache (256MB, JIT-ready)"
         fi
     fi
-
-    # File upload limits (50 MB import for phpMyAdmin, etc.)
-    if grep -q "^upload_max_filesize" "$php_ini" 2>/dev/null; then
-        sudo sed -i.bak "s/^upload_max_filesize.*/upload_max_filesize = 50M/" "$php_ini"
-    else
-        echo "upload_max_filesize = 50M" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    if grep -q "^post_max_size" "$php_ini" 2>/dev/null; then
-        sudo sed -i.bak "s/^post_max_size.*/post_max_size = 55M/" "$php_ini"
-    else
-        echo "post_max_size = 55M" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    if grep -q "^max_execution_time" "$php_ini" 2>/dev/null; then
-        sudo sed -i.bak "s/^max_execution_time.*/max_execution_time = 300/" "$php_ini"
-    else
-        echo "max_execution_time = 300" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    if grep -q "^max_input_time" "$php_ini" 2>/dev/null; then
-        sudo sed -i.bak "s/^max_input_time.*/max_input_time = 300/" "$php_ini"
-    else
-        echo "max_input_time = 300" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    print_ok "Upload limits set: 50 MB files, 300s timeout"
-
-    # Session GC lifetime (match PMA LoginCookieValidity)
-    if grep -q "^session.gc_maxlifetime" "$php_ini" 2>/dev/null; then
-        sudo sed -i.bak "s/^session.gc_maxlifetime.*/session.gc_maxlifetime = 14400/" "$php_ini"
-    else
-        echo "session.gc_maxlifetime = 14400" | sudo tee -a "$php_ini" > /dev/null
-    fi
-    print_ok "Session GC lifetime: 4 hours"
 
     sudo rm -f "${php_ini}.bak"
     print_ok "PHP configured (MacPorts)"
@@ -1791,6 +1746,29 @@ configure_mariadb_ports() {
 }
 
 # ---- phpMyAdmin Configuration -------------------------------
+# Create the phpMyAdmin tmp dir and verify Apache can write it. $1 = dir,
+# $2 = Apache group (_www on macOS, www-data on Linux).
+ensure_pma_tmp() {
+    local pma_tmp="$1" pma_group="$2"
+    local pma_tmp_ok=0
+    sudo sh -c "mkdir -p '$pma_tmp' && chgrp $pma_group '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null && pma_tmp_ok=1
+    if [[ $pma_tmp_ok == 0 ]]; then
+        # stat syntax differs: -f (BSD/macOS) vs -c (GNU/Linux)
+        local stat_out
+        if [[ $OS_NAME == "macOS" ]]; then
+            stat_out=$(stat -f '%Sg' "$pma_tmp" 2>/dev/null)
+        else
+            stat_out=$(stat -c '%G' "$pma_tmp" 2>/dev/null)
+        fi
+        [[ "$stat_out" == "$pma_group" ]] && pma_tmp_ok=1
+    fi
+    if [[ $pma_tmp_ok == 1 ]]; then
+        print_ok "Created phpMyAdmin tmp directory"
+    else
+        print_warn "phpMyAdmin tmp dir not writable by Apache — run: sudo chgrp $pma_group '$pma_tmp' && sudo chmod 775 '$pma_tmp'"
+    fi
+}
+
 configure_phpmyadmin() {
     if [[ $USE_APT == 1 ]]; then
         configure_phpmyadmin_apt
@@ -1813,7 +1791,6 @@ configure_phpmyadmin() {
         return
     fi
 
-    # Backup
     if [[ ! -f "${pma_conf}.phpup.bak" ]]; then
         cp "$pma_conf" "${pma_conf}.phpup.bak"
     fi
@@ -1869,17 +1846,7 @@ configure_phpmyadmin() {
     print_ok "Set TempDir for template cache"
 
     # Create phpMyAdmin tmp directory (required for template cache)
-    local pma_tmp="${BREW_PREFIX}/share/phpmyadmin/tmp"
-    local pma_tmp_ok=0
-    sudo sh -c "mkdir -p '$pma_tmp' && chgrp _www '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null && pma_tmp_ok=1
-    if [[ $pma_tmp_ok == 0 ]] && [[ "$(stat -f '%Sg' "$pma_tmp" 2>/dev/null)" == "_www" ]]; then
-        pma_tmp_ok=1
-    fi
-    if [[ $pma_tmp_ok == 1 ]]; then
-        print_ok "Created phpMyAdmin tmp directory"
-    else
-        print_warn "phpMyAdmin tmp dir not writable by Apache — run: sudo chgrp _www '$pma_tmp' && sudo chmod 775 '$pma_tmp'"
-    fi
+    ensure_pma_tmp "${BREW_PREFIX}/share/phpmyadmin/tmp" "_www"
 
     # Configure phpMyAdmin storage database (for bookmarks, relations, etc.)
     local pma_sql="${BREW_PREFIX}/share/phpmyadmin/sql/create_tables.sql"
@@ -1894,6 +1861,8 @@ configure_phpmyadmin() {
             mysql -u root -e "CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY ''; GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null || true
         fi
         # Add storage config if not already present
+        # Table list mirrors phpup.ps1 Get-PmaStorageConfig — keep both in sync
+        # with phpMyAdmin's upstream sql/create_tables.sql.
         if ! grep -q "Servers\[\\\$i\]\['pmadb'\]" "$pma_conf" 2>/dev/null; then
             cat >> "$pma_conf" << 'PMASTORAGE'
 
@@ -1984,17 +1953,7 @@ CONFDINCLUDE
     # NOT under /usr/share: Debian's php-fpm unit ships ProtectSystem=full,
     # which makes /usr read-only to the FPM process, so a tmp dir there is
     # unwritable no matter the permissions (is_writable false in web context).
-    local pma_tmp="/var/lib/phpmyadmin/tmp"
-    local pma_tmp_ok=0
-    sudo sh -c "mkdir -p '$pma_tmp' && chgrp www-data '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null && pma_tmp_ok=1
-    if [[ $pma_tmp_ok == 0 ]] && [[ "$(stat -c '%G' "$pma_tmp" 2>/dev/null)" == "www-data" ]]; then
-        pma_tmp_ok=1
-    fi
-    if [[ $pma_tmp_ok == 1 ]]; then
-        print_ok "Created phpMyAdmin tmp directory"
-    else
-        print_warn "phpMyAdmin tmp dir not writable by Apache — run: sudo chgrp www-data '$pma_tmp' && sudo chmod 775 '$pma_tmp'"
-    fi
+    ensure_pma_tmp "/var/lib/phpmyadmin/tmp" "www-data"
 
     # Configure phpMyAdmin storage database (named 'pma', matching the Mac path).
     # Debian's dbconfig-common skips DB creation under noninteractive, so the
@@ -2115,17 +2074,7 @@ CONFDINCLUDE
     fi
 
     # Create phpMyAdmin tmp directory (required for template cache)
-    local pma_tmp="${PMA_DIR}/tmp"
-    local pma_tmp_ok=0
-    sudo sh -c "mkdir -p '$pma_tmp' && chgrp _www '$pma_tmp' && chmod 775 '$pma_tmp'" 2>/dev/null && pma_tmp_ok=1
-    if [[ $pma_tmp_ok == 0 ]] && [[ "$(stat -f '%Sg' "$pma_tmp" 2>/dev/null)" == "_www" ]]; then
-        pma_tmp_ok=1
-    fi
-    if [[ $pma_tmp_ok == 1 ]]; then
-        print_ok "Created phpMyAdmin tmp directory"
-    else
-        print_warn "phpMyAdmin tmp dir not writable by Apache — run: sudo chgrp _www '$pma_tmp' && sudo chmod 775 '$pma_tmp'"
-    fi
+    ensure_pma_tmp "${PMA_DIR}/tmp" "_www"
 
     # Configure phpMyAdmin storage database (named 'pma')
     local pma_sql="${PMA_DIR}/sql/create_tables.sql"
@@ -2248,7 +2197,6 @@ cmd_install() {
             fi
         fi
 
-        detect_all
     elif [[ $USE_PORTS == 1 ]]; then
         install_macports || { print_err "MacPorts bootstrap failed"; read -r -p "Press Enter..."; return; }
         export PATH="${PORT_PREFIX}/bin:${PORT_PREFIX}/sbin:${PATH}"
@@ -2284,7 +2232,7 @@ cmd_install() {
                 print_warn "phpMyAdmin tarball download failed"
             fi
         fi
-        detect_all
+
     else
         # Install Homebrew
         install_homebrew
@@ -2391,7 +2339,7 @@ cmd_update() {
         # and capture its full version string for the prompt.
         php_latest=""
         local php_latest_full="" v candidate_ver
-        for v in $(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -Vr | awk -F. '$1 == 8 && $2 >= 2'); do
+        for v in $(apt_php_series "$PHP_MIN_SERIES" | sort -Vr); do
             candidate_ver=$(apt-cache show "php${v}-cli" 2>/dev/null | grep '^Version:' | head -1 | tr '[:upper:]' '[:lower:]')
             if [[ "$candidate_ver" != *alpha* && "$candidate_ver" != *beta* && "$candidate_ver" != *rc* && "$candidate_ver" != *preview* ]]; then
                 php_latest="$v"
@@ -2446,7 +2394,6 @@ cmd_update() {
             switch_fpm_apt "$php_latest"
         fi
         sudo apt upgrade -y apache2 mariadb-server $(php_active_pkgs)
-        detect_all
 
         # Check for newer phpMyAdmin tarball
         local pma_latest
@@ -2497,7 +2444,6 @@ cmd_update() {
             read -r -p "Press Enter to return to the dashboard..."
             return
         fi
-        detect_all
         # phpMyAdmin tarball upgrade (same as apt branch)
         local pma_latest
         pma_latest=$(latest_pma_version)
@@ -2771,10 +2717,23 @@ cmd_delete() {
 }
 
 # ---- Forced Update / Version Switching ----------------------
+# All apt PHP series available (e.g. 8.0 8.1 8.2 ...), ascending.
+# $1 = optional floor ("8.2") — filters to that series and newer.
+apt_php_series() {
+    local series
+    series=$(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -V)
+    if [[ -n "$1" ]]; then
+        local fmaj="${1%%.*}" fmin="${1##*.}"
+        echo "$series" | awk -F. -v fmaj="$fmaj" -v fmin="$fmin" '$1 > fmaj || ($1 == fmaj && $2 >= fmin)'
+    else
+        echo "$series"
+    fi
+}
+
 latest_php_version() {
     # Latest stable PHP version available via apt (e.g. 8.5), skipping pre-releases
     local version candidate latest=""
-    for version in $(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -V); do
+    for version in $(apt_php_series); do
         candidate=$(apt-cache policy "php${version}" 2>/dev/null | awk '/Candidate:/{print $2; exit}')
         [[ -n "$candidate" ]] || continue
         case "$candidate" in
@@ -2811,32 +2770,52 @@ install_php_version_apt() {
 
     # Switch CLI alternative to the new version
     sudo update-alternatives --set php "/usr/bin/php${target}" 2>/dev/null || true
+    APT_PHP_BIN_CACHE=""
 
+    return 0
+}
+
+# ---- apt Repo Helpers ----------------------------------------
+os_codename() {
+    # Distro codename for apt source lines (e.g. bookworm, noble)
+    grep -E '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d= -f2
+}
+
+# Idempotent apt repo bootstrap. $1 = existing-repo marker (grep pattern),
+# $2 = key URL, $3 = key destination, $4 = source list file,
+# $5 = source line, $6 = display label. Returns 0 when present/added.
+add_apt_repo() {
+    local marker="$1" key_url="$2" key_dest="$3" list_file="$4" source_line="$5" label="$6"
+    if grep -rq "$marker" /etc/apt/sources.list.d/ 2>/dev/null; then
+        return 0
+    fi
+    print_info "Adding ${label} repository..."
+    sudo curl -fsSL "$key_url" -o "$key_dest" 2>/dev/null || {
+        print_err "Failed to fetch ${label} repository key."
+        return 1
+    }
+    echo "$source_line" | sudo tee "$list_file" > /dev/null
+    apt_update_quiet
+    print_ok "Added ${label} repository"
     return 0
 }
 
 ensure_php_repo() {
     # ondrej/php repo (deb.sury.org) provides PHP 8.2+ on Debian & Ubuntu
-    if grep -rq "packages.sury.org" /etc/apt/sources.list.d/ 2>/dev/null; then
-        return 0
-    fi
-
     local codename
-    codename=$(grep -E '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d= -f2)
+    codename=$(os_codename)
     if [[ -z "$codename" ]]; then
         print_err "Cannot determine OS codename — cannot add PHP repository."
         return 1
     fi
 
-    print_info "Adding ondrej/php repository (deb.sury.org)..."
-    sudo curl -fsSL https://packages.sury.org/php/apt.gpg -o /etc/apt/trusted.gpg.d/php.gpg 2>/dev/null || {
-        print_err "Failed to fetch PHP repository key."
-        return 1
-    }
-    echo "deb https://packages.sury.org/php/ ${codename} main" | sudo tee /etc/apt/sources.list.d/phpup-php.list > /dev/null
-    apt_update_quiet
-    print_ok "Added ondrej/php repository"
-    return 0
+    add_apt_repo "packages.sury.org" \
+        "https://packages.sury.org/php/apt.gpg" \
+        "/etc/apt/trusted.gpg.d/php.gpg" \
+        "/etc/apt/sources.list.d/phpup-php.list" \
+        "deb https://packages.sury.org/php/ ${codename} main" \
+        "ondrej/php"
+    return $?
 }
 
 # ---- phpMyAdmin Tarball Helpers ------------------------------
@@ -2886,10 +2865,6 @@ latest_mariadb_series() {
 }
 
 ensure_mariadb_repo() {
-    if grep -rq "mariadb.org" /etc/apt/sources.list.d/ 2>/dev/null; then
-        return 0
-    fi
-
     local series
     series=$(latest_mariadb_series)
     if [[ -z "$series" ]]; then
@@ -2904,19 +2879,19 @@ ensure_mariadb_repo() {
     else
         distro_path="debian"
     fi
-    codename=$(grep -E '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d= -f2)
-
-    print_info "Adding MariaDB.org repository (${series})..."
-    sudo curl -fsSL https://mariadb.org/mariadb_release_signing_key.asc \
-        -o /etc/apt/trusted.gpg.d/mariadb.asc 2>/dev/null || {
-        print_err "Failed to fetch MariaDB repository key."
+    codename=$(os_codename)
+    if [[ -z "$codename" ]]; then
+        print_err "Cannot determine OS codename — cannot add MariaDB repository."
         return 1
-    }
-    echo "deb [signed-by=/etc/apt/trusted.gpg.d/mariadb.asc] https://deb.mariadb.org/${series}/${distro_path} ${codename} main" | \
-        sudo tee /etc/apt/sources.list.d/phpup-mariadb.list > /dev/null
-    apt_update_quiet
-    print_ok "Added MariaDB.org repository (${series})"
-    return 0
+    fi
+
+    add_apt_repo "mariadb.org" \
+        "https://mariadb.org/mariadb_release_signing_key.asc" \
+        "/etc/apt/trusted.gpg.d/mariadb.asc" \
+        "/etc/apt/sources.list.d/phpup-mariadb.list" \
+        "deb [signed-by=/etc/apt/trusted.gpg.d/mariadb.asc] https://deb.mariadb.org/${series}/${distro_path} ${codename} main" \
+        "MariaDB.org"
+    return $?
 }
 
 switch_php_apt() {
@@ -2940,10 +2915,10 @@ switch_php_apt() {
 
     # Available versions (8.2 to latest)
     local versions
-    versions=$(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -V | awk -F. '$1 == 8 && $2 >= 2')
+    versions=$(apt_php_series "$PHP_MIN_SERIES")
 
     if [[ -z "$versions" ]]; then
-        print_err "No PHP 8.2+ versions found via apt."
+        print_err "No PHP ${PHP_MIN_SERIES}+ versions found via apt."
         printf "\n"
         read -r -p "Press Enter to return to the dashboard..."
         return
@@ -3026,6 +3001,74 @@ switch_php_apt() {
     read -r -p "Press Enter to return to the dashboard..."
 }
 
+# Shared fu menu: render the numbered PHP list, read + validate the choice.
+# $1 = backend ("ports" | "brew"), $2 = current php name, $3 = empty-list
+# warning text, $4+ = candidate names. Echoes the chosen target ("" = skip).
+# Dotted input maps per backend: ports "8.4" -> php84, brew -> php@8.4.
+php_switch_prompt() {
+    local backend="$1" current_php="$2" empty_warn="$3"; shift 3
+    local -a php_names=("$@")
+    local i=0 choice target=""
+    printf "\n${CYAN}Available PHP versions:${RESET}\n"
+    for name in "${php_names[@]}"; do
+        i=$((i+1))
+        if [[ "$name" == "$current_php" ]]; then
+            printf "  ${GREEN}%d) %s${RESET} (current)\n" "$i" "$name"
+        else
+            printf "  %d) %s\n" "$i" "$name"
+        fi
+    done
+    if [[ $i -eq 0 ]]; then
+        print_warn "$empty_warn"
+        printf "\n"
+        read -r -p "Press Enter to return to the dashboard..."
+        return 1
+    fi
+    printf "\n${BOLD}Enter the number of the version to switch to (e.g. 3), a version like 8.4, or press Enter to skip:${RESET} "
+    read -r choice
+    if [[ -n "$choice" ]]; then
+        # N5: validate FIRST — only a menu number or a plain version/formula
+        # string may reach the sudo'd commands below (no free-form injection).
+        if [[ "$choice" =~ ^[0-9]+$ ]]; then
+            if [[ "$choice" -ge 1 && "$choice" -le "$i" ]]; then
+                target="${php_names[$choice]}"
+            else
+                print_err "Invalid choice '${choice}' — pick a number from the list (nothing was changed)"
+                printf "\n"
+                read -r -p "Press Enter to return to the dashboard..."
+                return 1
+            fi
+        elif [[ "$choice" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            # dotted version (8.4) → backend name: ports php84 (no dot), brew php@8.4
+            if [[ "$backend" == "ports" ]]; then
+                target="php$(printf '%s' "$choice" | tr -d '.')"
+            else
+                target="php@${choice}"
+            fi
+            if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
+                print_err "PHP ${choice} is not available (nothing was changed)"
+                printf "\n"
+                read -r -p "Press Enter to return to the dashboard..."
+                return 1
+            fi
+        elif [[ "$choice" =~ ^(php8[0-9]+|php@[0-9]+\.[0-9]+)$ ]]; then
+            target="$choice"
+            if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
+                print_err "PHP ${choice} is not available (nothing was changed)"
+                printf "\n"
+                read -r -p "Press Enter to return to the dashboard..."
+                return 1
+            fi
+        else
+            print_err "Invalid input '${choice}' — expected a number or a version like 8.4 (nothing was changed)"
+            printf "\n"
+            read -r -p "Press Enter to return to the dashboard..."
+            return 1
+        fi
+    fi
+    echo "$target"
+}
+
 cmd_forced_update() {
     if [[ $STACK == 0 ]]; then
         print_err "Nothing to switch — stack is not installed."
@@ -3048,67 +3091,22 @@ cmd_forced_update() {
         # use alpha/beta/rc version suffixes so no version-level filter is needed.
         local -a php_names
         local php_list current_php i choice target
-        printf "${CYAN}Available PHP versions:${RESET}\n"
         # capture "name version" pairs, e.g. "php85 8.5.9"
         php_list=$("${PORT_PREFIX}/bin/port" list 'php8[0-9]' 2>/dev/null | \
             awk '$1 ~ /^php8[0-9]+$/ {v=$2; sub(/^@/, "", v); print $1, v}' | \
             awk -F'php8' '$2 >= 2 {print $0}' | \
             sort -V)
         current_php=$(sudo "${PORT_PREFIX}/bin/port" select --list php 2>/dev/null | awk '/\(active\)/ {print $1}')
+        php_names=()
         i=0
         while read -r name ver; do
             i=$((i+1))
             php_names[$i]="$name"
-            if [[ "$name" == "$current_php" ]]; then
-                printf "  ${GREEN}%d) %s (%s)${RESET} (current)\n" "$i" "$name" "$ver"
-            else
-                printf "  %d) %s (%s)\n" "$i" "$name" "$ver"
-            fi
         done <<< "$php_list"
-        if [[ $i -eq 0 ]]; then
-            print_warn "No PHP versions found in the MacPorts tree — run Update (U) to refresh the ports tree first"
-            printf "\n"
-            read -r -p "Press Enter to return to the dashboard..."
-            return
-        fi
-        printf "\n${BOLD}Enter the number of the version to switch to (e.g. 3), a version like 8.4, or press Enter to skip:${RESET} "
-        read -r choice
-        if [[ -n "$choice" ]]; then
-            # N5: validate FIRST — only a menu number or a plain version string
-            # may reach the sudo'd commands below (no free-form injection).
-            target=""
-            if [[ "$choice" =~ ^[0-9]+$ ]]; then
-                if [[ "$choice" -ge 1 && "$choice" -le "$i" ]]; then
-                    target="${php_names[$choice]}"
-                else
-                    print_err "Invalid choice '${choice}' — pick a number from the list (nothing was changed)"
-                    printf "\n"
-                    read -r -p "Press Enter to return to the dashboard..."
-                    return
-                fi
-            elif [[ "$choice" =~ ^[0-9]+\.[0-9]+$ ]]; then
-                # dotted version (8.4) → port name (php84) — port names have no dot
-                target="php$(printf '%s' "$choice" | tr -d '.')"
-                if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
-                    print_err "PHP ${choice} is not available on this MacPorts tree (nothing was changed)"
-                    printf "\n"
-                    read -r -p "Press Enter to return to the dashboard..."
-                    return
-                fi
-            elif [[ "$choice" =~ ^php8[0-9]+$ ]]; then
-                target="$choice"
-                if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
-                    print_err "PHP ${choice} is not available on this MacPorts tree (nothing was changed)"
-                    printf "\n"
-                    read -r -p "Press Enter to return to the dashboard..."
-                    return
-                fi
-            else
-                print_err "Invalid input '${choice}' — expected a number or a version like 8.4 (nothing was changed)"
-                printf "\n"
-                read -r -p "Press Enter to return to the dashboard..."
-                return
-            fi
+
+        target=$(php_switch_prompt "ports" "$current_php" "No PHP versions found in the MacPorts tree — run Update (U) to refresh the ports tree first" "${php_names[@]}")
+        [[ $? -ne 0 ]] && return
+        if [[ -n "$target" ]]; then
             # If the user picked the version already active, no work needed —
             # say so instead of reinstalling it.
             if [[ "$target" == "$current_php" ]]; then
@@ -3133,13 +3131,6 @@ cmd_forced_update() {
                 return
             fi
             sudo "${PORT_PREFIX}/bin/port" select --set php "$target" 2>/dev/null || true
-            # Rewrite the LoadModule line in httpd.conf to the new version's .so
-            # (only reached when the install above succeeded)
-            # NOTE: module name is always php_module (MacPorts mod_phpXX.so
-            # exports "php_module" without a version suffix).
-            sudo sed -i.bak "s@LoadModule php[0-9]*_module .*@LoadModule php_module ${PORT_PREFIX}/lib/apache2/modules/mod_${target}.so@" \
-                "${PORT_PREFIX}/etc/apache2/httpd.conf"
-            sudo rm -f "${PORT_PREFIX}/etc/apache2/httpd.conf.bak"
             PHP_PORT="$target"
             detect_all
             configure_apache_ports
@@ -3157,65 +3148,20 @@ cmd_forced_update() {
     # Homebrew path — PHP version switching (numbered menu, same UX as ports)
     local -a php_names
     local php_list current_php i choice target formula
-    printf "${CYAN}Available PHP versions:${RESET}\n"
     # brew search returns space-separated formulae on one line — split and filter
     php_list=$(brew search '/php@/' 2>/dev/null | tr ' ' '\n' | grep -E '^php@[0-9]+\.[0-9]+$' | sort -V)
     # current = the versioned formula matching the ACTIVE php binary
     current_php="php@$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)"
+    php_names=()
     i=0
     while read -r formula; do
         i=$((i+1))
         php_names[$i]="$formula"
-        if [[ "$formula" == "$current_php" ]]; then
-            printf "  ${GREEN}%d) %s${RESET} (current)\n" "$i" "$formula"
-        else
-            printf "  %d) %s\n" "$i" "$formula"
-        fi
     done <<< "$php_list"
-    if [[ $i -eq 0 ]]; then
-        print_warn "No versioned PHP formulae found in Homebrew — run Update (U) to refresh first"
-        printf "\n"
-        read -r -p "Press Enter to return to the dashboard..."
-        return
-    fi
-    printf "\n${BOLD}Enter the number of the version to switch to (e.g. 3), a version like 8.4, or press Enter to skip:${RESET} "
-    read -r choice
-    if [[ -n "$choice" ]]; then
-        # Validate FIRST — only a menu number or a plain version/formula string
-        # may reach the brew commands below (no free-form injection).
-        target=""
-        if [[ "$choice" =~ ^[0-9]+$ ]]; then
-            if [[ "$choice" -ge 1 && "$choice" -le "$i" ]]; then
-                target="${php_names[$choice]}"
-            else
-                print_err "Invalid choice '${choice}' — pick a number from the list (nothing was changed)"
-                printf "\n"
-                read -r -p "Press Enter to return to the dashboard..."
-                return
-            fi
-        elif [[ "$choice" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            # dotted version (8.4) → formula (php@8.4)
-            target="php@${choice}"
-            if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
-                print_err "PHP ${choice} is not available in Homebrew (nothing was changed)"
-                printf "\n"
-                read -r -p "Press Enter to return to the dashboard..."
-                return
-            fi
-        elif [[ "$choice" =~ ^php@[0-9]+\.[0-9]+$ ]]; then
-            target="$choice"
-            if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
-                print_err "PHP ${choice} is not available in Homebrew (nothing was changed)"
-                printf "\n"
-                read -r -p "Press Enter to return to the dashboard..."
-                return
-            fi
-        else
-            print_err "Invalid input '${choice}' — expected a number or a version like 8.4 (nothing was changed)"
-            printf "\n"
-            read -r -p "Press Enter to return to the dashboard..."
-            return
-        fi
+
+    target=$(php_switch_prompt "brew" "$current_php" "No versioned PHP formulae found in Homebrew — run Update (U) to refresh first" "${php_names[@]}")
+    [[ $? -ne 0 ]] && return
+    if [[ -n "$target" ]]; then
         # If the user picked the version already active, no work needed
         if [[ "$target" == "$current_php" ]]; then
             print_ok "${target} is already the active PHP version — nothing to do"
@@ -3397,6 +3343,10 @@ main() {
     if [[ $USE_PORTS == 1 ]]; then
         export PATH="${PORT_PREFIX}/bin:${PORT_PREFIX}/sbin:${PATH}"
     fi
+
+    # Migrate pre-1.2.0 config, then load persisted state
+    migrate_config
+    load_config
 
     # Detect installed components
     detect_all

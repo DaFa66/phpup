@@ -35,6 +35,31 @@ Patch release from the dual-stack test (MacPorts alongside Homebrew on one Mac):
 
 ---
 
+## [1.2.0-nix] — 2026-08-29
+
+### macOS & Linux (phpup.sh v1.2.0)
+
+Feature release: phpup gains a **real, persistent config** — `config.json` now lives inside the install folder (`~/phpup/config.json`) on all platforms, with automatic migration of the legacy `~/.config/phpup` location on first run. *Previous platform update: [1.1.0-nix](#110-nix--2026-08-28).*
+
+**Added**
+- Config co-located with the stack: install folder on Linux/Mac (`~/phpup/config.json`) and Windows (`$BASE\config.json`)
+- Legacy migration: pre-1.2.0 configs are moved automatically on first run (old directory removed)
+- Windows: the old `%APPDATA%` config becomes a discovery pointer, refreshed on every save, so moved/custom-path stacks stay findable
+- `php_min_series` config key — the minimum PHP series `fu` offers (default `8.2`)
+- `PHPPUP_PHP_MIN_SERIES` environment override (precedence: env > config > default)
+- `mariadb_port` / `php_port` persisted to config (detection prefers config; datadir sniff demoted to migration shim)
+
+**Changed**
+- Config schema flattened: `versions.apache` → `apache_version`, etc.
+- `fu` floor filters and switch listing now read the configured floor instead of a hardcoded `8.2`
+
+**Fixed**
+- Floor comparison parsed major/minor correctly (previously compared `8` vs `8.2`, which excluded every version at the default floor — found live on Ubuntu 24.04)
+
+**Verified**
+- Live on Debian 13 and Ubuntu 24.04: migration, floor filtering (7.4/8.2/8.4), env override, corrupt-config fallback
+- Windows config suite: 7/7 harness tests (migration, moved stack, pointer refresh, clear, corrupt fallback)
+
 ## [1.1.0-nix] — 2026-08-28
 
 ### macOS & Linux (phpup.sh v1.1.0)
@@ -716,7 +741,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| [**1.1.0-nix**](#110-nix--2026-08-28) | 2026-08-28 | Linux Apache + PHP-FPM, mod_php auto-migration, rollback-safe fu, PMA secret/tmp fixes |
+| [**1.2.0-nix**](#120-nix--2026-08-29) | 2026-08-29 | Real config in install folder, legacy migration, configurable php_min_series + env override |
 | [**1.0.2-nix**](#102-nix--2026-08-21) | 2026-08-21 | Dual-stack machine fixes, stack-aware services, PMA blowfish |
 | [**1.0.1-nix**](#101-nix--2026-08-11) | 2026-08-11 | Homebrew `fu` numbered menu, formula-aware `u` |
 | [**1.0.0-nix**](#100-nix--2026-08-11) | 2026-08-11 | First stable, MacPorts backend |
