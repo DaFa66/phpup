@@ -2339,7 +2339,7 @@ cmd_update() {
         # and capture its full version string for the prompt.
         php_latest=""
         local php_latest_full="" v candidate_ver
-        for v in $(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -Vr | awk -F. -v fmaj="${PHP_MIN_SERIES%%.*}" -v fmin="${PHP_MIN_SERIES##*.}" '$1 > fmaj || ($1 == fmaj && $2 >= fmin)'); do
+        for v in $(apt_php_series "$PHP_MIN_SERIES" | sort -Vr); do
             candidate_ver=$(apt-cache show "php${v}-cli" 2>/dev/null | grep '^Version:' | head -1 | tr '[:upper:]' '[:lower:]')
             if [[ "$candidate_ver" != *alpha* && "$candidate_ver" != *beta* && "$candidate_ver" != *rc* && "$candidate_ver" != *preview* ]]; then
                 php_latest="$v"
@@ -2717,10 +2717,23 @@ cmd_delete() {
 }
 
 # ---- Forced Update / Version Switching ----------------------
+# All apt PHP series available (e.g. 8.0 8.1 8.2 ...), ascending.
+# $1 = optional floor ("8.2") — filters to that series and newer.
+apt_php_series() {
+    local series
+    series=$(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -V)
+    if [[ -n "$1" ]]; then
+        local fmaj="${1%%.*}" fmin="${1##*.}"
+        echo "$series" | awk -F. -v fmaj="$fmaj" -v fmin="$fmin" '$1 > fmaj || ($1 == fmaj && $2 >= fmin)'
+    else
+        echo "$series"
+    fi
+}
+
 latest_php_version() {
     # Latest stable PHP version available via apt (e.g. 8.5), skipping pre-releases
     local version candidate latest=""
-    for version in $(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -V); do
+    for version in $(apt_php_series); do
         candidate=$(apt-cache policy "php${version}" 2>/dev/null | awk '/Candidate:/{print $2; exit}')
         [[ -n "$candidate" ]] || continue
         case "$candidate" in
@@ -2887,7 +2900,7 @@ switch_php_apt() {
 
     # Available versions (8.2 to latest)
     local versions
-    versions=$(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -V | awk -F. -v fmaj="${PHP_MIN_SERIES%%.*}" -v fmin="${PHP_MIN_SERIES##*.}" '$1 > fmaj || ($1 == fmaj && $2 >= fmin)')
+    versions=$(apt_php_series "$PHP_MIN_SERIES")
 
     if [[ -z "$versions" ]]; then
         print_err "No PHP ${PHP_MIN_SERIES}+ versions found via apt."
