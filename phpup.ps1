@@ -145,6 +145,17 @@ function Get-VersionTag([string]$candidate, [string]$installed) {
     catch { return @{ Tag = ''; Color = 'Cyan' } }
 }
 
+function Set-IniDirective($ini, [string]$directive, [string]$value) {
+# Set-or-append a php.ini directive in a Get-Content line array: replace the
+# (optionally commented) matching line in place, or append a new one when
+# absent. Returns the updated array (same shape as the input).
+    $pattern = ';?' + [regex]::Escape($directive) + '\s*=\s*\S*'
+    if ($ini -match $pattern) {
+        return ($ini -replace $pattern, "$directive = $value")
+    }
+    return ($ini + "`n$directive = $value")
+}
+
 # Extract version string from a download URL
 function Get-VersionFromUrl([string]$url, [string]$component) {
     switch ($component) {
@@ -1216,54 +1227,19 @@ function Invoke-ConfigurePhp {
     $ini = $ini -replace ';?opcache\.revalidate_freq\s*=\s*\d+', 'opcache.revalidate_freq=2'
 
     # Enable JIT compilation (these directives aren't in default php.ini — append if missing)
-    if ($ini -match 'opcache\.jit\s*=') {
-        $ini = $ini -replace ';?opcache\.jit\s*=\s*\S+', 'opcache.jit=tracing'
-    }
-    else {
-        $ini += "`nopcache.jit=tracing"
-    }
-    if ($ini -match 'opcache\.jit_buffer_size\s*=') {
-        $ini = $ini -replace ';?opcache\.jit_buffer_size\s*=\s*\S+', 'opcache.jit_buffer_size=100M'
-    }
-    else {
-        $ini += "`nopcache.jit_buffer_size=100M"
-    }
+    $ini = Set-IniDirective $ini 'opcache.jit' 'tracing'
+    $ini = Set-IniDirective $ini 'opcache.jit_buffer_size' '100M'
     Write-Ok "OPCache enabled (256 MB, JIT tracing, production-ready)"
 
     # File upload limits (50 MB import for phpMyAdmin, etc.)
-    if ($ini -match 'upload_max_filesize\\s*=') {
-        $ini = $ini -replace 'upload_max_filesize\\s*=\\s*\\S+', 'upload_max_filesize = 50M'
-    }
-    else {
-        $ini += "`nupload_max_filesize = 50M"
-    }
-    if ($ini -match 'post_max_size\\s*=') {
-        $ini = $ini -replace 'post_max_size\\s*=\\s*\\S+', 'post_max_size = 55M'
-    }
-    else {
-        $ini += "`npost_max_size = 55M"
-    }
-    if ($ini -match 'max_execution_time\\s*=') {
-        $ini = $ini -replace 'max_execution_time\\s*=\\s*\\S+', 'max_execution_time = 300'
-    }
-    else {
-        $ini += "`nmax_execution_time = 300"
-    }
-    if ($ini -match 'max_input_time\\s*=') {
-        $ini = $ini -replace 'max_input_time\\s*=\\s*\\S+', 'max_input_time = 300'
-    }
-    else {
-        $ini += "`nmax_input_time = 300"
-    }
+    $ini = Set-IniDirective $ini 'upload_max_filesize' '50M'
+    $ini = Set-IniDirective $ini 'post_max_size' '55M'
+    $ini = Set-IniDirective $ini 'max_execution_time' '300'
+    $ini = Set-IniDirective $ini 'max_input_time' '300'
     Write-Ok "Upload limits set: 50 MB files, 300s timeout"
 
     # Session GC lifetime (match PMA LoginCookieValidity)
-    if ($ini -match 'session\.gc_maxlifetime\s*=') {
-        $ini = $ini -replace 'session\.gc_maxlifetime\s*=\s*\d+', 'session.gc_maxlifetime = 14400'
-    }
-    else {
-        $ini += "`nsession.gc_maxlifetime = 14400"
-    }
+    $ini = Set-IniDirective $ini 'session.gc_maxlifetime' '14400'
     Write-Ok "Session GC lifetime: 4 hours"
 
     Set-Content -Path $iniPath -Value $ini
