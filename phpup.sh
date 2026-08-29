@@ -2186,7 +2186,6 @@ cmd_install() {
             fi
         fi
 
-        detect_all
     elif [[ $USE_PORTS == 1 ]]; then
         install_macports || { print_err "MacPorts bootstrap failed"; read -r -p "Press Enter..."; return; }
         export PATH="${PORT_PREFIX}/bin:${PORT_PREFIX}/sbin:${PATH}"
@@ -2222,7 +2221,7 @@ cmd_install() {
                 print_warn "phpMyAdmin tarball download failed"
             fi
         fi
-        detect_all
+
     else
         # Install Homebrew
         install_homebrew
@@ -2384,7 +2383,6 @@ cmd_update() {
             switch_fpm_apt "$php_latest"
         fi
         sudo apt upgrade -y apache2 mariadb-server $(php_active_pkgs)
-        detect_all
 
         # Check for newer phpMyAdmin tarball
         local pma_latest
@@ -2435,7 +2433,6 @@ cmd_update() {
             read -r -p "Press Enter to return to the dashboard..."
             return
         fi
-        detect_all
         # phpMyAdmin tarball upgrade (same as apt branch)
         local pma_latest
         pma_latest=$(latest_pma_version)
