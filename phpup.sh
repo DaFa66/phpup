@@ -567,6 +567,23 @@ stack_proc() {
     return 1
 }
 
+stack_kill() {
+    # Kill processes matching the pgrep patterns ($2..) that belong to the
+    # ACTIVE backend (prefix-pinned via the same rule as stack_proc) — so
+    # stopping one stack never takes down a coexisting stack's processes.
+    # Usage: stack_kill <pgrep-flag> <pattern...>  (pgrep -x accepts only ONE
+    # pattern, so run it once per pattern).
+    local flag="$1"; shift
+    local prefix="$PORT_PREFIX"
+    [[ $USE_PORTS == 1 ]] || prefix="$BREW_PREFIX"
+    local _pat _sp
+    for _pat in "$@"; do
+        for _sp in $(pgrep "$flag" "$_pat" 2>/dev/null); do
+            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$prefix" && kill "$_sp" 2>/dev/null || true
+        done
+    done
+}
+
 detect_all() {
     if [[ $USE_APT == 0 ]] && [[ $HOMEBREW == 0 ]] && [[ $MACPORTS == 0 ]]; then
         return
@@ -1049,15 +1066,10 @@ stop_services() {
         [[ $APACHE == 1 ]] && sudo "${PORT_PREFIX}/bin/port" unload apache2 >/dev/null 2>&1 || true
         [[ $MARIADB == 1 ]] && sudo "${PORT_PREFIX}/bin/port" unload "${MARIADB_PORT}-server" >/dev/null 2>&1 || true
         # Belt-and-braces: launchd will not restart after unload. Kill only the
-        # ACTIVE backend's processes (stack_proc-pinned) so stopping the ports
+        # ACTIVE backend's processes (prefix-pinned) so stopping the ports
         # stack never takes down a coexisting brew stack's httpd/mysqld.
-        local _sp
-        for _sp in $(pgrep -x httpd 2>/dev/null); do
-            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$PORT_PREFIX" && kill "$_sp" 2>/dev/null || true
-        done
-        for _sp in $(pgrep -x mysqld 2>/dev/null; pgrep -x mariadbd 2>/dev/null); do
-            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$PORT_PREFIX" && kill "$_sp" 2>/dev/null || true
-        done
+        stack_kill -x httpd
+        stack_kill -x mysqld mariadbd
     else
         # Kill the brew stack's httpd only (path-pinned; a coexisting ports
         # stack may be running its own httpd on another machine state)
@@ -1069,14 +1081,9 @@ stop_services() {
             fi
         fi
         [[ $MARIADB == 1 ]] && brew services stop mariadb
-        local _sp
-        for _sp in $(pgrep -x mysqld 2>/dev/null; pgrep -x mariadbd 2>/dev/null); do
-            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$BREW_PREFIX" && kill "$_sp" 2>/dev/null || true
-        done
+        stack_kill -x mysqld mariadbd
         [[ $PHP == 1 ]] && brew services stop "$(brew_active_php)"
-        for _sp in $(pgrep -f "(^|/)php-fpm" 2>/dev/null); do
-            ps -o command= -p "$_sp" 2>/dev/null | grep -qF "$BREW_PREFIX" && kill "$_sp" 2>/dev/null || true
-        done
+        stack_kill -f "(^|/)php-fpm"
     fi
     sleep 3
     print_ok "Services stopped"
