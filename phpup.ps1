@@ -473,34 +473,14 @@ function Install-VcRedist {
         Write-Ok "VC++ Redistributable installer already cached — using $installer"
     }
     else {
-        $maxRetries = 3
-        $retryDelay = 5
-        $downloaded = $false
-
-        for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-            try {
-                if ($attempt -gt 1) {
-                    Write-Info "  Retry $attempt of $maxRetries..."
-                }
-                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                Invoke-WebRequest -Uri $FALLBACK_URLS.Redist -OutFile $installer
-                $downloaded = $true
-                break
-            }
-            catch {
-                if ($attempt -lt $maxRetries) {
-                    Write-Warn "Download attempt $attempt failed. Retrying in $retryDelay seconds..."
-                    Start-Sleep -Seconds $retryDelay
-                }
-                else {
-                    Write-Err "Failed to download VC++ Redistributable after $maxRetries attempts: $_"
-                    Write-Info "Install manually: $($FALLBACK_URLS.Redist)"
-                    return
-                }
-            }
+        try {
+            Invoke-WebRetry -Uri $FALLBACK_URLS.Redist -OutFile $installer -MaxRetries 3 -RetryDelay 5
         }
-
-        if (-not $downloaded) { return }
+        catch {
+            Write-Err "Failed to download VC++ Redistributable after 3 attempts: $_"
+            Write-Info "Install manually: $($FALLBACK_URLS.Redist)"
+            return
+        }
     }
 
     Write-Info "Running installer (silent -- this may take a moment)..."
@@ -514,6 +494,77 @@ function Install-VcRedist {
     }
 }
 
+# ---- Network helpers ------------------------------------------------
+# Retry wrappers around Invoke-WebRequest / Invoke-RestMethod. Set TLS12,
+# retry with a delay, and throw after the final attempt so callers keep
+# their own terminal behaviour (fallback URL, cached-only, hard failure).
+function Invoke-WebRetry {
+    param(
+        [string]$Uri,
+        [hashtable]$Headers = @{},
+        [string]$OutFile = '',
+        [int]$MaxRetries = 3,
+        [int]$RetryDelay = 5
+    )
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        try {
+            if ($attempt -gt 1) { Write-Info "  Retry $attempt of $MaxRetries..." }
+            if ($OutFile) {
+                # Try with progress first; fall back when IE parsing is unavailable
+                try {
+                    Invoke-WebRequest -Uri $Uri -OutFile $OutFile -Headers $Headers -ErrorAction Stop
+                }
+                catch [System.Management.Automation.MethodInvocationException] {
+                    Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -Headers $Headers -ErrorAction Stop
+                }
+                return $true
+            }
+            return Invoke-WebRequest -Uri $Uri -UseBasicParsing -Headers $Headers -ErrorAction Stop
+        }
+        catch {
+            if ($attempt -lt $MaxRetries) {
+                Write-Warn "  Attempt $attempt failed: $($_.Exception.Message)"
+                Write-Info "  Retrying in $RetryDelay seconds..."
+                if ($OutFile) {
+                    # Drop the partial download so the next attempt starts clean
+                    [System.GC]::Collect()
+                    [System.GC]::WaitForPendingFinalizers()
+                    Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
+                }
+                Start-Sleep -Seconds $RetryDelay
+            }
+            else {
+                throw
+            }
+        }
+    }
+}
+
+function Invoke-RestRetry {
+    param(
+        [string]$Uri,
+        [int]$MaxRetries = 3,
+        [int]$RetryDelay = 5
+    )
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        try {
+            return Invoke-RestMethod -Uri $Uri -ErrorAction Stop
+        }
+        catch {
+            if ($attempt -lt $MaxRetries) {
+                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
+                Write-Info "  Retrying in $RetryDelay seconds..."
+                Start-Sleep -Seconds $RetryDelay
+            }
+            else {
+                throw
+            }
+        }
+    }
+}
+
 # ============================================================
 #  URL RESOLUTION — Latest Stable Versions
 # ============================================================
@@ -521,162 +572,120 @@ function Install-VcRedist {
 function Get-LatestApacheUrl {
     Write-Info "Resolving Apache (Apache Lounge - latest VS18 x64 build)..."
 
-    $maxRetries = 3
-    $retryDelay = 5
+    try {
+        $html = Invoke-WebRetry -Uri "https://www.apachelounge.com/download/" -Headers @{ "User-Agent" = $UA_STRING } -MaxRetries 3 -RetryDelay 5
 
-    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $bestScore = $null
+        $bestUrl   = $null
 
-            $ua = $UA_STRING
-            $html = Invoke-WebRequest -Uri "https://www.apachelounge.com/download/" -UseBasicParsing -Headers @{ "User-Agent" = $ua }
+        # Match Apache Lounge download links: /download/VS##/binaries/httpd-X.Y.Z-BUILD-Win64-VS##.zip
+        $pattern = 'href="(/download/VS(\d+)/binaries/httpd-([\d.]+)-(\d+)-Win64-VS\d+\.zip)"'
+        $rxMatches = [regex]::Matches($html.Content, $pattern)
 
-            $bestScore = $null
-            $bestUrl   = $null
+        foreach ($m in $rxMatches) {
+            $vsVer    = [int]$m.Groups[2].Value
+            $httpdVer = $m.Groups[3].Value
+            $build    = [int]$m.Groups[4].Value
 
-            # Match Apache Lounge download links: /download/VS##/binaries/httpd-X.Y.Z-BUILD-Win64-VS##.zip
-            $pattern = 'href="(/download/VS(\d+)/binaries/httpd-([\d.]+)-(\d+)-Win64-VS\d+\.zip)"'
-            $rxMatches = [regex]::Matches($html.Content, $pattern)
+            # Prefer VS18 (VS2022), fall back to VS17
+            $score = ($vsVer * 1000000) + ([version]$httpdVer).Major * 10000 + ([version]$httpdVer).Minor * 100 + $build
 
-            foreach ($m in $rxMatches) {
-                $vsVer    = [int]$m.Groups[2].Value
-                $httpdVer = $m.Groups[3].Value
-                $build    = [int]$m.Groups[4].Value
-
-                # Prefer VS18 (VS2022), fall back to VS17
-                $score = ($vsVer * 1000000) + ([version]$httpdVer).Major * 10000 + ([version]$httpdVer).Minor * 100 + $build
-
-                if ($null -eq $bestScore -or $score -gt $bestScore) {
-                    $bestScore = $score
-                    $bestUrl   = "https://www.apachelounge.com" + $m.Groups[1].Value
-                }
-            }
-
-            if ($bestUrl) {
-                Write-Ok "Apache -> $bestUrl"
-                return $bestUrl
-            }
-
-            throw "No Apache Lounge VS18 x64 download found"
-        }
-        catch {
-            if ($attempt -lt $maxRetries) {
-                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
-                Write-Info "  Retrying in $retryDelay seconds..."
-                Start-Sleep -Seconds $retryDelay
-            }
-            else {
-                Write-Warn "Live resolution failed after $maxRetries attempts."
-                if ($FALLBACK_URLS.Apache) {
-                    Write-Info "  Falling back to pinned Apache URL: $($FALLBACK_URLS.Apache)"
-                    return $FALLBACK_URLS.Apache
-                }
-                Write-Err "Failed to resolve Apache URL and no fallback URL is configured."
-                Write-Info "  Check https://www.apachelounge.com/ or try again later."
-                throw
+            if ($null -eq $bestScore -or $score -gt $bestScore) {
+                $bestScore = $score
+                $bestUrl   = "https://www.apachelounge.com" + $m.Groups[1].Value
             }
         }
+
+        if ($bestUrl) {
+            Write-Ok "Apache -> $bestUrl"
+            return $bestUrl
+        }
+
+        throw "No Apache Lounge VS18 x64 download found"
+    }
+    catch {
+        Write-Warn "Live resolution failed after 3 attempts."
+        if ($FALLBACK_URLS.Apache) {
+            Write-Info "  Falling back to pinned Apache URL: $($FALLBACK_URLS.Apache)"
+            return $FALLBACK_URLS.Apache
+        }
+        Write-Err "Failed to resolve Apache URL and no fallback URL is configured."
+        Write-Info "  Check https://www.apachelounge.com/ or try again later."
+        throw
     }
 }
 
 function Get-LatestPhpUrl {
     Write-Info "Resolving PHP (latest 8.x stable, thread-safe x64 - preferring VS17)..."
 
-    $maxRetries = 3
-    $retryDelay = 5
+    try {
+        $json = Invoke-RestRetry -Uri "https://windows.php.net/downloads/releases/releases.json" -MaxRetries 3 -RetryDelay 5
 
-    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            $json = Invoke-RestMethod -Uri "https://windows.php.net/downloads/releases/releases.json"
+        $latestVs17Version = $null
+        $latestVs17File    = $null
+        $latestVs16Version = $null
+        $latestVs16File    = $null
 
-            $latestVs17Version = $null
-            $latestVs17File    = $null
-            $latestVs16Version = $null
-            $latestVs16File    = $null
+        foreach ($key in $json.PSObject.Properties.Name) {
+            $entry = $json.$key
 
-            foreach ($key in $json.PSObject.Properties.Name) {
-                $entry = $json.$key
+            if (-not $entry.version) { continue }
+            if ($entry.version -notmatch '^8\.\d+\.\d+$') { continue }
 
-                if (-not $entry.version) { continue }
-                if ($entry.version -notmatch '^8\.\d+\.\d+$') { continue }
-
-                # Check VS17 thread-safe x64 (newer PHP 8.5+)
-                if ($entry.'ts-vs17-x64') {
-                    $ver = [version]$entry.version
-                    if ($null -eq $latestVs17Version -or $ver -gt $latestVs17Version) {
-                        $latestVs17Version = $ver
-                        $latestVs17File    = $entry.'ts-vs17-x64'.zip.path
-                    }
-                }
-
-                # Check VS16 thread-safe x64 (fallback)
-                if ($entry.'ts-vs16-x64') {
-                    $ver = [version]$entry.version
-                    if ($null -eq $latestVs16Version -or $ver -gt $latestVs16Version) {
-                        $latestVs16Version = $ver
-                        $latestVs16File    = $entry.'ts-vs16-x64'.zip.path
-                    }
+            # Check VS17 thread-safe x64 (newer PHP 8.5+)
+            if ($entry.'ts-vs17-x64') {
+                $ver = [version]$entry.version
+                if ($null -eq $latestVs17Version -or $ver -gt $latestVs17Version) {
+                    $latestVs17Version = $ver
+                    $latestVs17File    = $entry.'ts-vs17-x64'.zip.path
                 }
             }
 
-            # Prefer VS17, fall back to VS16
-            if ($latestVs17File) {
-                $url = "https://windows.php.net/downloads/releases/$latestVs17File"
-                Write-Ok "PHP $latestVs17Version (VS17) -> $url"
-                return $url
-            }
-            elseif ($latestVs16File) {
-                $url = "https://windows.php.net/downloads/releases/$latestVs16File"
-                Write-Ok "PHP $latestVs16Version (VS16) -> $url"
-                return $url
-            }
-
-            throw "No compatible PHP 8.x TS x64 build found (VS17 or VS16)"
-        }
-        catch {
-            if ($attempt -lt $maxRetries) {
-                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
-                Write-Info "  Retrying in $retryDelay seconds..."
-                Start-Sleep -Seconds $retryDelay
-            }
-            else {
-                Write-Warn "Live resolution failed after $maxRetries attempts."
-                if ($FALLBACK_URLS.PHP) {
-                    Write-Info "  Falling back to pinned PHP URL: $($FALLBACK_URLS.PHP)"
-                    return $FALLBACK_URLS.PHP
+            # Check VS16 thread-safe x64 (fallback)
+            if ($entry.'ts-vs16-x64') {
+                $ver = [version]$entry.version
+                if ($null -eq $latestVs16Version -or $ver -gt $latestVs16Version) {
+                    $latestVs16Version = $ver
+                    $latestVs16File    = $entry.'ts-vs16-x64'.zip.path
                 }
-                Write-Err "Failed to resolve PHP URL and no fallback URL is configured."
-                Write-Info "  Check https://windows.php.net/ or try again later."
-                throw
             }
         }
+
+        # Prefer VS17, fall back to VS16
+        if ($latestVs17File) {
+            $url = "https://windows.php.net/downloads/releases/$latestVs17File"
+            Write-Ok "PHP $latestVs17Version (VS17) -> $url"
+            return $url
+        }
+        elseif ($latestVs16File) {
+            $url = "https://windows.php.net/downloads/releases/$latestVs16File"
+            Write-Ok "PHP $latestVs16Version (VS16) -> $url"
+            return $url
+        }
+
+        throw "No compatible PHP 8.x TS x64 build found (VS17 or VS16)"
+    }
+    catch {
+        Write-Warn "Live resolution failed after 3 attempts."
+        if ($FALLBACK_URLS.PHP) {
+            Write-Info "  Falling back to pinned PHP URL: $($FALLBACK_URLS.PHP)"
+            return $FALLBACK_URLS.PHP
+        }
+        Write-Err "Failed to resolve PHP URL and no fallback URL is configured."
+        Write-Info "  Check https://windows.php.net/ or try again later."
+        throw
     }
 }
 
 function Get-PhpReleasesJson {
 # Fetches windows.php.net releases.json once. Returns $null if unreachable.
-    $maxRetries = 3
-    $retryDelay = 5
-
-    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            return Invoke-RestMethod -Uri "https://windows.php.net/downloads/releases/releases.json"
-        }
-        catch {
-            if ($attempt -lt $maxRetries) {
-                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
-                Write-Info "  Retrying in $retryDelay seconds..."
-                Start-Sleep -Seconds $retryDelay
-            }
-            else {
-                Write-Warn "Could not reach windows.php.net — running with cached versions only."
-                return $null
-            }
-        }
+    try {
+        return Invoke-RestRetry -Uri "https://windows.php.net/downloads/releases/releases.json" -MaxRetries 3 -RetryDelay 5
     }
-    return $null
+    catch {
+        Write-Warn "Could not reach windows.php.net — running with cached versions only."
+        return $null
+    }
 }
 
 function Resolve-PhpSeriesUrl($json, [string]$series) {
@@ -705,16 +714,10 @@ function Resolve-PhpSeriesUrl($json, [string]$series) {
 function Get-LatestMariadbUrl {
     Write-Info "Resolving MariaDB (latest stable, Windows x64)..."
 
-    $maxRetries = 5
-    $retryDelay = 8
+    try {
+        $json = Invoke-RestRetry -Uri "https://downloads.mariadb.org/rest-api/mariadb/" -MaxRetries 5 -RetryDelay 8
 
-    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-            $json = Invoke-RestMethod -Uri "https://downloads.mariadb.org/rest-api/mariadb/"
-
-            $candidates = $json.major_releases | Where-Object { $_.release_status -eq "Stable" }
+        $candidates = $json.major_releases | Where-Object { $_.release_status -eq "Stable" }
 
         if (-not $candidates) {
             throw "No Stable MariaDB releases found"
@@ -735,7 +738,7 @@ function Get-LatestMariadbUrl {
         Write-Info "Selected MariaDB $version ($($best.release_support_type))"
 
         # Fetch version details
-        $detail = Invoke-RestMethod -Uri "https://downloads.mariadb.org/rest-api/mariadb/$version/"
+        $detail = Invoke-RestRetry -Uri "https://downloads.mariadb.org/rest-api/mariadb/$version/" -MaxRetries 5 -RetryDelay 8
 
         $releaseKeys = $detail.releases.PSObject.Properties.Name |
             Sort-Object { [version]$_ } -Descending
@@ -754,84 +757,61 @@ function Get-LatestMariadbUrl {
         }
 
         throw "Could not resolve MariaDB Windows x64 download URL"
+    }
+    catch {
+        Write-Warn "Live resolution failed after 5 attempts."
+        if ($FALLBACK_URLS.MariaDB) {
+            Write-Info "  Falling back to pinned MariaDB URL: $($FALLBACK_URLS.MariaDB)"
+            return $FALLBACK_URLS.MariaDB
         }
-        catch {
-            if ($attempt -lt $maxRetries) {
-                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
-                Write-Info "  Retrying in $retryDelay seconds..."
-                Start-Sleep -Seconds $retryDelay
-            }
-            else {
-                Write-Warn "Live resolution failed after $maxRetries attempts."
-                if ($FALLBACK_URLS.MariaDB) {
-                    Write-Info "  Falling back to pinned MariaDB URL: $($FALLBACK_URLS.MariaDB)"
-                    return $FALLBACK_URLS.MariaDB
-                }
-                Write-Err "Failed to resolve MariaDB URL and no fallback URL is configured."
-                Write-Info "  Check https://mariadb.org/download/ or try again later."
-                throw
-            }
-        }
+        Write-Err "Failed to resolve MariaDB URL and no fallback URL is configured."
+        Write-Info "  Check https://mariadb.org/download/ or try again later."
+        throw
     }
 }
 
 function Get-LatestPhpMyAdminUrl {
     Write-Info "Resolving phpMyAdmin (latest stable, all-languages)..."
 
-    $maxRetries = 3
-    $retryDelay = 5
+    try {
+        $html = Invoke-WebRetry -Uri "https://www.phpmyadmin.net/downloads/" -Headers @{ "User-Agent" = $UA_STRING } -MaxRetries 3 -RetryDelay 5
 
-    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $bestVersion = $null
+        $bestUrl     = $null
 
-            $ua = $UA_STRING
-            $html = Invoke-WebRequest -Uri "https://www.phpmyadmin.net/downloads/" -UseBasicParsing -Headers @{ "User-Agent" = $ua }
+        # Match stable releases only (not snapshots)
+        $pattern = 'href="(https://files\.phpmyadmin\.net/phpMyAdmin/([\d.]+)/phpMyAdmin-[\d.]+-all-languages\.zip)"'
+        $rxMatches = [regex]::Matches($html.Content, $pattern)
 
-            $bestVersion = $null
-            $bestUrl     = $null
+        foreach ($m in $rxMatches) {
+            $url = $m.Groups[1].Value
+            $ver = $m.Groups[2].Value
 
-            # Match stable releases only (not snapshots)
-            $pattern = 'href="(https://files\.phpmyadmin\.net/phpMyAdmin/([\d.]+)/phpMyAdmin-[\d.]+-all-languages\.zip)"'
-            $rxMatches = [regex]::Matches($html.Content, $pattern)
+            # Skip snapshots
+            if ($url -match "snapshot") { continue }
 
-            foreach ($m in $rxMatches) {
-                $url = $m.Groups[1].Value
-                $ver = $m.Groups[2].Value
-
-                # Skip snapshots
-                if ($url -match "snapshot") { continue }
-
-                if ($null -eq $bestVersion -or [version]$ver -gt [version]$bestVersion) {
-                    $bestVersion = $ver
-                    $bestUrl     = $url
-                }
-            }
-
-            if ($bestUrl) {
-                Write-Ok "phpMyAdmin $bestVersion -> $bestUrl"
-                return $bestUrl
-            }
-
-            throw "No phpMyAdmin stable download found"
-        }
-        catch {
-            if ($attempt -lt $maxRetries) {
-                Write-Warn "Attempt $attempt failed: $($_.Exception.Message)"
-                Write-Info "  Retrying in $retryDelay seconds..."
-                Start-Sleep -Seconds $retryDelay
-            }
-            else {
-                Write-Warn "Live resolution failed after $maxRetries attempts."
-                if ($FALLBACK_URLS.phpMyAdmin) {
-                    Write-Info "  Falling back to pinned phpMyAdmin URL: $($FALLBACK_URLS.phpMyAdmin)"
-                    return $FALLBACK_URLS.phpMyAdmin
-                }
-                Write-Err "Failed to resolve phpMyAdmin URL and no fallback URL is configured."
-                Write-Info "  Check https://www.phpmyadmin.net/ or try again later."
-                throw
+            if ($null -eq $bestVersion -or [version]$ver -gt [version]$bestVersion) {
+                $bestVersion = $ver
+                $bestUrl     = $url
             }
         }
+
+        if ($bestUrl) {
+            Write-Ok "phpMyAdmin $bestVersion -> $bestUrl"
+            return $bestUrl
+        }
+
+        throw "No phpMyAdmin stable download found"
+    }
+    catch {
+        Write-Warn "Live resolution failed after 3 attempts."
+        if ($FALLBACK_URLS.phpMyAdmin) {
+            Write-Info "  Falling back to pinned phpMyAdmin URL: $($FALLBACK_URLS.phpMyAdmin)"
+            return $FALLBACK_URLS.phpMyAdmin
+        }
+        Write-Err "Failed to resolve phpMyAdmin URL and no fallback URL is configured."
+        Write-Info "  Check https://www.phpmyadmin.net/ or try again later."
+        throw
     }
 }
 
@@ -851,40 +831,15 @@ function Invoke-DownloadToCache($url, $label) {
         return $zipPath
     }
 
-    $ua = $UA_STRING
-    $maxRetries = 3
-    $retryDelay = 5
-
-    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            if ($attempt -gt 1) {
-                Write-Info "  Retry $attempt of $maxRetries..."
-            }
-            try {
-                Invoke-WebRequest -Uri $url -OutFile $zipPath -Headers @{ "User-Agent" = $ua }
-            }
-            catch [System.Management.Automation.MethodInvocationException] {
-                Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -Headers @{ "User-Agent" = $ua }
-            }
-            Write-Ok "Downloaded $label -> $filename"
-            return $zipPath
-        }
-        catch {
-            if ($attempt -lt $maxRetries) {
-                Write-Warn "  Download attempt $attempt failed: $($_.Exception.Message)"
-                Write-Info "  Retrying in $retryDelay seconds..."
-                [System.GC]::Collect()
-                [System.GC]::WaitForPendingFinalizers()
-                Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds $retryDelay
-            }
-            else {
-                Write-Err "Download failed for $label after $maxRetries attempts: $($_.Exception.Message)"
-                return $null
-            }
-        }
+    try {
+        Invoke-WebRetry -Uri $url -OutFile $zipPath -Headers @{ "User-Agent" = $UA_STRING } -MaxRetries 3 -RetryDelay 5
+        Write-Ok "Downloaded $label -> $filename"
+        return $zipPath
     }
-    return $null
+    catch {
+        Write-Err "Download failed for $label after 3 attempts: $($_.Exception.Message)"
+        return $null
+    }
 }
 
 function Invoke-DownloadAndExtract($url, $dest, $label) {
@@ -907,42 +862,12 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
         Write-Info "Extracting to $dest..."
         Expand-Archive -Path $zipPath -DestinationPath $dest -Force
     } else {
-        $ua = $UA_STRING
-
-        $maxRetries = 3
-        $retryDelay = 5
-
-        for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-            try {
-                if ($attempt -gt 1) {
-                    Write-Info "  Retry $attempt of $maxRetries..."
-                }
-
-                # Try with progress bar first, fall back if IE not available
-                try {
-                    Invoke-WebRequest -Uri $url -OutFile $zipPath -Headers @{ "User-Agent" = $ua }
-                }
-                catch [System.Management.Automation.MethodInvocationException] {
-                    Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -Headers @{ "User-Agent" = $ua }
-                }
-
-                # Download succeeded — break out of retry loop
-                break
-            }
-            catch {
-                Write-Progress -Activity "Downloading $label" -Completed
-                if ($attempt -lt $maxRetries) {
-                    Write-Warn "  Download attempt $attempt failed: $($_.Exception.Message)"
-                    Write-Info "  Retrying in $retryDelay seconds..."
-                    [System.GC]::Collect()
-                    [System.GC]::WaitForPendingFinalizers()
-                    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-                    Start-Sleep -Seconds $retryDelay
-                }
-                else {
-                    throw "Download failed for $label after $maxRetries attempts: $($_.Exception.Message)"
-                }
-            }
+        try {
+            Invoke-WebRetry -Uri $url -OutFile $zipPath -Headers @{ "User-Agent" = $UA_STRING } -MaxRetries 3 -RetryDelay 5
+        }
+        catch {
+            Write-Progress -Activity "Downloading $label" -Completed
+            throw "Download failed for $label after 3 attempts: $($_.Exception.Message)"
         }
 
         if (-not (Test-Path $zipPath)) {
