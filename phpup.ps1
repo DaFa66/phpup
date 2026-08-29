@@ -19,6 +19,7 @@ $DOWNLOAD_CACHE  = "$BASE\downloads"
 # ---- Shared constants --------------------------------------------------
 $UA_STRING        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 $VC_MIN_VERSION   = [version]"14.51.36231"   # required by Apache Lounge VS18 + MariaDB 12.x
+$OS_CAPTION       = (Get-CimInstance Win32_OperatingSystem).Caption
 
 # ---- Banner -----------------------------------------------------------
 $BANNER_ART = @'
@@ -63,26 +64,30 @@ function Get-ApacheVersion {
     return $null
 }
 
-function Get-PhpVersion {
+function Get-PhpVersionRaw {
+# Single php.exe -v capture shared by Get-PhpVersion / Get-PhpVersionLabel.
     if (Test-PhpInstalled) {
-        $out = & "$PHP_PATH\php.exe" -v 2>&1 | Select-Object -First 1
-        if ($out -match "PHP\s+([\d.]+)") { return $matches[1] }
+        return & "$PHP_PATH\php.exe" -v 2>&1 | Select-Object -First 1
     }
+    return $null
+}
+
+function Get-PhpVersion {
+    $out = Get-PhpVersionRaw
+    if ($out -match "PHP\s+([\d.]+)") { return $matches[1] }
     return $null
 }
 
 function Get-PhpVersionLabel {
 # Installed PHP version including pre-release suffix, e.g. "8.6.0 beta1".
 # Display-only: keeps numeric Get-PhpVersion for version comparisons.
-    if (Test-PhpInstalled) {
-        $out = & "$PHP_PATH\php.exe" -v 2>&1 | Select-Object -First 1
-        if ($out -match "PHP\s+([\d.]+[a-zA-Z0-9]*)") {
-            $raw = $matches[1]
-            if ($raw -match '^([\d.]+)(RC\d+|alpha\d+|beta\d+)$') {
-                return "$($matches[1]) $($matches[2])"
-            }
-            return $raw
+    $out = Get-PhpVersionRaw
+    if ($out -match "PHP\s+([\d.]+[a-zA-Z0-9]*)") {
+        $raw = $matches[1]
+        if ($raw -match '^([\d.]+)(RC\d+|alpha\d+|beta\d+)$') {
+            return "$($matches[1]) $($matches[2])"
         }
+        return $raw
     }
     return $null
 }
@@ -1603,7 +1608,8 @@ function Start-WebStackServices {
         # Registered as a Windows service — use service control
         Start-Service $SERVICE_APACHE -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
-        if ((Get-Service $SERVICE_APACHE).Status -eq "Running") {
+        $apacheAsService.Refresh()
+        if ($apacheAsService.Status -eq "Running") {
             Write-Ok "Apache started (Windows service)"
         }
         else {
@@ -1644,7 +1650,8 @@ function Start-WebStackServices {
     elseif ($mariadbAsService) {
         Start-Service $SERVICE_MARIADB -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 3
-        if ((Get-Service $SERVICE_MARIADB).Status -eq "Running") {
+        $mariadbAsService.Refresh()
+        if ($mariadbAsService.Status -eq "Running") {
             Write-Ok "MariaDB started (Windows service, root password is blank)"
         }
         else {
@@ -3048,6 +3055,8 @@ function Invoke-DeleteWebStack {
 function Show-Dashboard {
     Clear-Host
 
+    $stackComplete = Test-StackComplete
+
     Write-Host ""
     # Render banner with multi-colour: white text, coloured arrows, cyan "phpup"
     $bannerLines = $BANNER_ART -split "`n"
@@ -3075,7 +3084,7 @@ function Show-Dashboard {
     # ---- Architecture / OS line ----
     $arch = $env:PROCESSOR_ARCHITECTURE
     if ($arch -eq "AMD64") { $arch = "x86_64" }
-    $osCaption = (Get-CimInstance Win32_OperatingSystem).Caption
+    $osCaption = $OS_CAPTION
     if ($osCaption -match "Microsoft Windows (.*)") { $osCaption = $matches[1] }
     Write-Host "Architecture: " -NoNewline
     Write-Host "$arch" -ForegroundColor Cyan -NoNewline
@@ -3204,7 +3213,7 @@ function Show-Dashboard {
     }
 
     # ---- Info ----
-    if (Test-StackComplete) {
+    if ($stackComplete) {
         Write-Host ""
         Write-Host "Where to put website files?  " -NoNewline
         Write-Host $WWW_PATH -ForegroundColor Cyan
@@ -3223,7 +3232,7 @@ function Show-Dashboard {
     Write-Host "Stack Commands:" -ForegroundColor White
     Write-Host "~~~~~~~~~~~~~~~"
 
-    if (-not (Test-StackComplete)) {
+    if (-not $stackComplete) {
         Write-Host "I  Install the web stack" -ForegroundColor Cyan
     }
     else {
