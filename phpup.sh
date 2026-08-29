@@ -1126,29 +1126,23 @@ configure_apache() {
 
     print_info "Configuring Apache..."
 
-    # Port 80
     sed -i.bak "s/Listen 8080/Listen 80/" "$conf"
     print_ok "Enabled port 80"
 
-    # ServerName
     sed -i.bak "s/#ServerName www.example.com:8080/ServerName localhost:80/g" "$conf"
     print_ok "Set ServerName to localhost:80"
 
-    # DocumentRoot
     sed -i.bak "s@${BREW_PREFIX}/var/www@$DOC_ROOT@g" "$conf"
     print_ok "Set DocumentRoot to ${DOC_ROOT}"
 
-    # Log files
     sed -i.bak "s@${BREW_PREFIX}/var/log/httpd/error_log@${LOGS_DIR}/apache_error.log@g" "$conf"
     sed -i.bak "s@${BREW_PREFIX}/var/log/httpd/access_log@${LOGS_DIR}/apache_access.log@g" "$conf"
     print_ok "Routed logs to ${LOGS_DIR}"
 
-    # mod_rewrite
     sed -i.bak "s@#LoadModule rewrite_module lib/httpd/modules/mod_rewrite.so@LoadModule rewrite_module lib/httpd/modules/mod_rewrite.so@g" "$conf"
     sed -i.bak "s/AllowOverride None/AllowOverride All/g" "$conf"
     print_ok "Enabled mod_rewrite"
 
-    # DirectoryIndex
     sed -i.bak "s/DirectoryIndex index.html/DirectoryIndex index.php index.html/" "$conf"
     print_ok "Added index.php to DirectoryIndex"
 
@@ -1209,7 +1203,6 @@ configure_apache_apt() {
 
     print_info "Configuring Apache (apt)..."
 
-    # Enable mod_rewrite
     sudo a2enmod rewrite 2>/dev/null
     print_ok "Enabled mod_rewrite"
 
@@ -1219,7 +1212,6 @@ configure_apache_apt() {
             sudo cp "$site_conf" "${site_conf}.phpup.bak"
         fi
 
-        # DocumentRoot
         sudo sed -i "s@DocumentRoot /var/www/html@DocumentRoot ${DOC_ROOT}@" "$site_conf"
         print_ok "Set DocumentRoot to ${DOC_ROOT}"
 
@@ -1233,11 +1225,9 @@ configure_apache_apt() {
         sudo sed -i "s/AllowOverride None/AllowOverride All/g" "$site_conf"
         print_ok "Set AllowOverride All"
 
-        # DirectoryIndex
         sudo sed -i "s/DirectoryIndex index.html/DirectoryIndex index.php index.html/" "$site_conf"
         print_ok "Added index.php to DirectoryIndex"
 
-        # Log files — redirect to phpup logs
         sudo sed -i "s@\${APACHE_LOG_DIR}/error.log@${LOGS_DIR}/apache_error.log@" "$site_conf"
         sudo sed -i "s@\${APACHE_LOG_DIR}/access.log@${LOGS_DIR}/apache_access.log@" "$site_conf"
         print_ok "Routed logs to ${LOGS_DIR}"
@@ -1300,7 +1290,6 @@ configure_apache_ports() {
     sudo sed -i.bak "s/AllowOverride None/AllowOverride All/g" "$conf"
     print_ok "Enabled mod_rewrite"
 
-    # DirectoryIndex
     sudo sed -i.bak "s/DirectoryIndex index.html/DirectoryIndex index.php index.html/" "$conf"
     print_ok "Added index.php to DirectoryIndex"
 
@@ -1376,7 +1365,6 @@ configure_php() {
         return
     fi
 
-    # Backup
     if [[ ! -f "${php_ini}.phpup.bak" ]]; then
         cp "$php_ini" "${php_ini}.phpup.bak"
     fi
@@ -1394,11 +1382,9 @@ configure_php() {
     done
     print_ok "Enabled PHP extensions"
 
-    # Display errors
     sed -i.bak "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
     print_ok "Enabled display_errors"
 
-    # Error log
     local error_log_line="error_log = ${LOGS_DIR}/php_errors.log"
     if ! grep -q "^error_log" "$php_ini" 2>/dev/null; then
         echo "$error_log_line" >> "$php_ini"
@@ -1407,7 +1393,6 @@ configure_php() {
     fi
     print_ok "Set PHP error log to ${LOGS_DIR}/php_errors.log"
 
-    # OPCache
     if grep -q "^;*opcache.enable=" "$php_ini" 2>/dev/null; then
         sed -i.bak "s/^;*opcache.enable=.*/opcache.enable=1/" "$php_ini"
         sed -i.bak "s/^;*opcache.memory_consumption=.*/opcache.memory_consumption=256/" "$php_ini"
@@ -1465,7 +1450,6 @@ configure_php_apt() {
             sudo cp "$php_ini" "${php_ini}.phpup.bak"
         fi
 
-        # Display errors
         sudo sed -i "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
         print_ok "Enabled display_errors ($(basename "$(dirname "$php_ini")"))"
 
@@ -1550,11 +1534,9 @@ configure_php_ports() {
     done
     print_ok "Pointed mysqli/pdo_mysql at ${sock}"
 
-    # Display errors
     sudo sed -i.bak "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
     print_ok "Enabled display_errors"
 
-    # Error log
     local error_log_line="error_log = ${LOGS_DIR}/php_errors.log"
     if ! grep -q "^error_log" "$php_ini" 2>/dev/null; then
         echo "$error_log_line" | sudo tee -a "$php_ini" > /dev/null
@@ -1837,7 +1819,6 @@ configure_phpmyadmin() {
         return
     fi
 
-    # Backup
     if [[ ! -f "${pma_conf}.phpup.bak" ]]; then
         cp "$pma_conf" "${pma_conf}.phpup.bak"
     fi
