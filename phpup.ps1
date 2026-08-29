@@ -273,7 +273,12 @@ function Save-Config {
 
         [string[]]$PathEntries,
 
-        [bool]$ServicesRegistered = $false
+        [bool]$ServicesRegistered = $false,
+
+        # Pass the current fu download floor to avoid re-reading the config
+        # just to preserve it. When omitted, an existing value is preserved
+        # (fallback for old callers) and the 8.2 default persists otherwise.
+        [string]$MinSeries = $null
     )
 
     $configFile = Get-ConfigFilePath
@@ -284,10 +289,15 @@ function Save-Config {
 
     # Preserve the fu download floor (php_min_series): keep an existing
     # user-set value, else persist the 8.2 default so it is visible/editable.
-    $existingConfig = Get-Config
-    $minSeries = '8.2'
-    if ($existingConfig -and $existingConfig.php_min_series) {
-        $minSeries = [string]$existingConfig.php_min_series
+    $minSeries = $MinSeries
+    if (-not $minSeries) {
+        $existingConfig = Get-Config
+        if ($existingConfig -and $existingConfig.php_min_series) {
+            $minSeries = [string]$existingConfig.php_min_series
+        }
+        else {
+            $minSeries = '8.2'
+        }
     }
 
     # Start with base structure (always fresh)
@@ -2039,6 +2049,7 @@ function Save-PostUpdateConfig {
         phpmyadmin = Get-PhpMyAdminVersion
     }
     $pathEntries = $existingConfig.path_entries
+    $minSeries = if ($existingConfig -and $existingConfig.php_min_series) { [string]$existingConfig.php_min_series } else { $null }
 
     if (-not (Test-ServicesInstalled)) {
         Write-Host ""
@@ -2048,7 +2059,7 @@ function Save-PostUpdateConfig {
         }
     }
 
-    Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries -ServicesRegistered:(Test-ServicesInstalled)
+    Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries -ServicesRegistered:(Test-ServicesInstalled) -MinSeries $minSeries
 }
 
 function Invoke-UpdateWebStack {
