@@ -480,6 +480,30 @@ disable_mod_php() {
     fi
 }
 
+# Wire Apache to proxy .php to the active FPM socket: write the phpup-managed
+# conf, ensure FastCGI modules, disable mod_php. The caller reloads Apache
+# (reload semantics differ per context).
+wire_apache_fpm() {
+    local version="$1"
+    write_apache_fpm_conf "$version"
+    enable_apache_fpm_modules
+    disable_mod_php
+}
+
+# Enable + start the given FPM version; disable + stop every other installed one.
+set_fpm_active() {
+    local version="$1" installed="$2" v
+    for v in $installed; do
+        if [[ "$v" == "$version" ]]; then
+            sudo systemctl enable "php${v}-fpm" 2>/dev/null || true
+            sudo systemctl restart "php${v}-fpm" 2>/dev/null || true
+        else
+            sudo systemctl disable "php${v}-fpm" 2>/dev/null || true
+            sudo systemctl stop "php${v}-fpm" 2>/dev/null || true
+        fi
+    done
+}
+
 switch_fpm_apt() {
     # Switch the Apache PHP-FPM runtime to $1, with rollback: on failure the
     # previous FPM version + Apache conf are restored.
@@ -490,21 +514,9 @@ switch_fpm_apt() {
     installed=$(fpm_versions_installed)
     [[ -f "$conf" ]] && conf_backup=$(cat "$conf")
 
-    # Enable + start target FPM; disable + stop every other installed version
-    local v
-    for v in $installed; do
-        if [[ "$v" == "$target" ]]; then
-            sudo systemctl enable "php${v}-fpm" 2>/dev/null || true
-            sudo systemctl restart "php${v}-fpm" 2>/dev/null || true
-        else
-            sudo systemctl disable "php${v}-fpm" 2>/dev/null || true
-            sudo systemctl stop "php${v}-fpm" 2>/dev/null || true
-        fi
-    done
+    set_fpm_active "$target" "$installed"
 
-    write_apache_fpm_conf "$target"
-    enable_apache_fpm_modules
-    disable_mod_php
+    wire_apache_fpm "$target"
     sudo systemctl reload apache2 2>/dev/null || sudo systemctl restart apache2 2>/dev/null || true
 
     # Verify the target FPM is actually up before declaring success
@@ -518,15 +530,7 @@ switch_fpm_apt() {
         fi
         if [[ -n "$prev" ]]; then
             print_warn "Restoring previous PHP-FPM ${prev}..."
-            for v in $installed; do
-                if [[ "$v" == "$prev" ]]; then
-                    sudo systemctl enable "php${v}-fpm" 2>/dev/null || true
-                    sudo systemctl restart "php${v}-fpm" 2>/dev/null || true
-                else
-                    sudo systemctl disable "php${v}-fpm" 2>/dev/null || true
-                    sudo systemctl stop "php${v}-fpm" 2>/dev/null || true
-                fi
-            done
+            set_fpm_active "$prev" "$installed"
             # CLI follows the FPM runtime — restore the previous alternative too
             sudo update-alternatives --set php "/usr/bin/php${prev}" 2>/dev/null || true
         fi
@@ -1261,9 +1265,7 @@ configure_apache_apt() {
     fpm_ver=$(fpm_active_version || true)
     [[ -z "$fpm_ver" ]] && fpm_ver=$("$(apt_php_bin)" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
     if [[ -n "$fpm_ver" ]]; then
-        write_apache_fpm_conf "$fpm_ver"
-        enable_apache_fpm_modules
-        disable_mod_php
+        wire_apache_fpm "$fpm_ver"
     fi
 
     # Reload Apache to apply changes
