@@ -3002,6 +3002,74 @@ switch_php_apt() {
     read -r -p "Press Enter to return to the dashboard..."
 }
 
+# Shared fu menu: render the numbered PHP list, read + validate the choice.
+# $1 = backend ("ports" | "brew"), $2 = current php name, $3 = empty-list
+# warning text, $4+ = candidate names. Echoes the chosen target ("" = skip).
+# Dotted input maps per backend: ports "8.4" -> php84, brew -> php@8.4.
+php_switch_prompt() {
+    local backend="$1" current_php="$2" empty_warn="$3"; shift 3
+    local -a php_names=("$@")
+    local i=0 choice target=""
+    printf "\n${CYAN}Available PHP versions:${RESET}\n"
+    for name in "${php_names[@]}"; do
+        i=$((i+1))
+        if [[ "$name" == "$current_php" ]]; then
+            printf "  ${GREEN}%d) %s${RESET} (current)\n" "$i" "$name"
+        else
+            printf "  %d) %s\n" "$i" "$name"
+        fi
+    done
+    if [[ $i -eq 0 ]]; then
+        print_warn "$empty_warn"
+        printf "\n"
+        read -r -p "Press Enter to return to the dashboard..."
+        return 1
+    fi
+    printf "\n${BOLD}Enter the number of the version to switch to (e.g. 3), a version like 8.4, or press Enter to skip:${RESET} "
+    read -r choice
+    if [[ -n "$choice" ]]; then
+        # N5: validate FIRST — only a menu number or a plain version/formula
+        # string may reach the sudo'd commands below (no free-form injection).
+        if [[ "$choice" =~ ^[0-9]+$ ]]; then
+            if [[ "$choice" -ge 1 && "$choice" -le "$i" ]]; then
+                target="${php_names[$choice]}"
+            else
+                print_err "Invalid choice '${choice}' — pick a number from the list (nothing was changed)"
+                printf "\n"
+                read -r -p "Press Enter to return to the dashboard..."
+                return 1
+            fi
+        elif [[ "$choice" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            # dotted version (8.4) → backend name: ports php84 (no dot), brew php@8.4
+            if [[ "$backend" == "ports" ]]; then
+                target="php$(printf '%s' "$choice" | tr -d '.')"
+            else
+                target="php@${choice}"
+            fi
+            if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
+                print_err "PHP ${choice} is not available (nothing was changed)"
+                printf "\n"
+                read -r -p "Press Enter to return to the dashboard..."
+                return 1
+            fi
+        elif [[ "$choice" =~ ^(php8[0-9]+|php@[0-9]+\.[0-9]+)$ ]]; then
+            target="$choice"
+            if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
+                print_err "PHP ${choice} is not available (nothing was changed)"
+                printf "\n"
+                read -r -p "Press Enter to return to the dashboard..."
+                return 1
+            fi
+        else
+            print_err "Invalid input '${choice}' — expected a number or a version like 8.4 (nothing was changed)"
+            printf "\n"
+            read -r -p "Press Enter to return to the dashboard..."
+            return 1
+        fi
+    fi
+    echo "$target"
+}
+
 cmd_forced_update() {
     if [[ $STACK == 0 ]]; then
         print_err "Nothing to switch — stack is not installed."
@@ -3024,67 +3092,22 @@ cmd_forced_update() {
         # use alpha/beta/rc version suffixes so no version-level filter is needed.
         local -a php_names
         local php_list current_php i choice target
-        printf "${CYAN}Available PHP versions:${RESET}\n"
         # capture "name version" pairs, e.g. "php85 8.5.9"
         php_list=$("${PORT_PREFIX}/bin/port" list 'php8[0-9]' 2>/dev/null | \
             awk '$1 ~ /^php8[0-9]+$/ {v=$2; sub(/^@/, "", v); print $1, v}' | \
             awk -F'php8' '$2 >= 2 {print $0}' | \
             sort -V)
         current_php=$(sudo "${PORT_PREFIX}/bin/port" select --list php 2>/dev/null | awk '/\(active\)/ {print $1}')
+        php_names=()
         i=0
         while read -r name ver; do
             i=$((i+1))
             php_names[$i]="$name"
-            if [[ "$name" == "$current_php" ]]; then
-                printf "  ${GREEN}%d) %s (%s)${RESET} (current)\n" "$i" "$name" "$ver"
-            else
-                printf "  %d) %s (%s)\n" "$i" "$name" "$ver"
-            fi
         done <<< "$php_list"
-        if [[ $i -eq 0 ]]; then
-            print_warn "No PHP versions found in the MacPorts tree — run Update (U) to refresh the ports tree first"
-            printf "\n"
-            read -r -p "Press Enter to return to the dashboard..."
-            return
-        fi
-        printf "\n${BOLD}Enter the number of the version to switch to (e.g. 3), a version like 8.4, or press Enter to skip:${RESET} "
-        read -r choice
-        if [[ -n "$choice" ]]; then
-            # N5: validate FIRST — only a menu number or a plain version string
-            # may reach the sudo'd commands below (no free-form injection).
-            target=""
-            if [[ "$choice" =~ ^[0-9]+$ ]]; then
-                if [[ "$choice" -ge 1 && "$choice" -le "$i" ]]; then
-                    target="${php_names[$choice]}"
-                else
-                    print_err "Invalid choice '${choice}' — pick a number from the list (nothing was changed)"
-                    printf "\n"
-                    read -r -p "Press Enter to return to the dashboard..."
-                    return
-                fi
-            elif [[ "$choice" =~ ^[0-9]+\.[0-9]+$ ]]; then
-                # dotted version (8.4) → port name (php84) — port names have no dot
-                target="php$(printf '%s' "$choice" | tr -d '.')"
-                if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
-                    print_err "PHP ${choice} is not available on this MacPorts tree (nothing was changed)"
-                    printf "\n"
-                    read -r -p "Press Enter to return to the dashboard..."
-                    return
-                fi
-            elif [[ "$choice" =~ ^php8[0-9]+$ ]]; then
-                target="$choice"
-                if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
-                    print_err "PHP ${choice} is not available on this MacPorts tree (nothing was changed)"
-                    printf "\n"
-                    read -r -p "Press Enter to return to the dashboard..."
-                    return
-                fi
-            else
-                print_err "Invalid input '${choice}' — expected a number or a version like 8.4 (nothing was changed)"
-                printf "\n"
-                read -r -p "Press Enter to return to the dashboard..."
-                return
-            fi
+
+        target=$(php_switch_prompt "ports" "$current_php" "No PHP versions found in the MacPorts tree — run Update (U) to refresh the ports tree first" "${php_names[@]}")
+        [[ $? -ne 0 ]] && return
+        if [[ -n "$target" ]]; then
             # If the user picked the version already active, no work needed —
             # say so instead of reinstalling it.
             if [[ "$target" == "$current_php" ]]; then
@@ -3126,65 +3149,20 @@ cmd_forced_update() {
     # Homebrew path — PHP version switching (numbered menu, same UX as ports)
     local -a php_names
     local php_list current_php i choice target formula
-    printf "${CYAN}Available PHP versions:${RESET}\n"
     # brew search returns space-separated formulae on one line — split and filter
     php_list=$(brew search '/php@/' 2>/dev/null | tr ' ' '\n' | grep -E '^php@[0-9]+\.[0-9]+$' | sort -V)
     # current = the versioned formula matching the ACTIVE php binary
     current_php="php@$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)"
+    php_names=()
     i=0
     while read -r formula; do
         i=$((i+1))
         php_names[$i]="$formula"
-        if [[ "$formula" == "$current_php" ]]; then
-            printf "  ${GREEN}%d) %s${RESET} (current)\n" "$i" "$formula"
-        else
-            printf "  %d) %s\n" "$i" "$formula"
-        fi
     done <<< "$php_list"
-    if [[ $i -eq 0 ]]; then
-        print_warn "No versioned PHP formulae found in Homebrew — run Update (U) to refresh first"
-        printf "\n"
-        read -r -p "Press Enter to return to the dashboard..."
-        return
-    fi
-    printf "\n${BOLD}Enter the number of the version to switch to (e.g. 3), a version like 8.4, or press Enter to skip:${RESET} "
-    read -r choice
-    if [[ -n "$choice" ]]; then
-        # Validate FIRST — only a menu number or a plain version/formula string
-        # may reach the brew commands below (no free-form injection).
-        target=""
-        if [[ "$choice" =~ ^[0-9]+$ ]]; then
-            if [[ "$choice" -ge 1 && "$choice" -le "$i" ]]; then
-                target="${php_names[$choice]}"
-            else
-                print_err "Invalid choice '${choice}' — pick a number from the list (nothing was changed)"
-                printf "\n"
-                read -r -p "Press Enter to return to the dashboard..."
-                return
-            fi
-        elif [[ "$choice" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            # dotted version (8.4) → formula (php@8.4)
-            target="php@${choice}"
-            if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
-                print_err "PHP ${choice} is not available in Homebrew (nothing was changed)"
-                printf "\n"
-                read -r -p "Press Enter to return to the dashboard..."
-                return
-            fi
-        elif [[ "$choice" =~ ^php@[0-9]+\.[0-9]+$ ]]; then
-            target="$choice"
-            if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
-                print_err "PHP ${choice} is not available in Homebrew (nothing was changed)"
-                printf "\n"
-                read -r -p "Press Enter to return to the dashboard..."
-                return
-            fi
-        else
-            print_err "Invalid input '${choice}' — expected a number or a version like 8.4 (nothing was changed)"
-            printf "\n"
-            read -r -p "Press Enter to return to the dashboard..."
-            return
-        fi
+
+    target=$(php_switch_prompt "brew" "$current_php" "No versioned PHP formulae found in Homebrew — run Update (U) to refresh first" "${php_names[@]}")
+    [[ $? -ne 0 ]] && return
+    if [[ -n "$target" ]]; then
         # If the user picked the version already active, no work needed
         if [[ "$target" == "$current_php" ]]; then
             print_ok "${target} is already the active PHP version — nothing to do"
