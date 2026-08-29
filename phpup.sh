@@ -2789,6 +2789,7 @@ add_apt_repo() {
     if grep -rq "$marker" /etc/apt/sources.list.d/ 2>/dev/null; then
         return 0
     fi
+    print_info "Adding ${label} repository..."
     sudo curl -fsSL "$key_url" -o "$key_dest" 2>/dev/null || {
         print_err "Failed to fetch ${label} repository key."
         return 1
@@ -2808,7 +2809,6 @@ ensure_php_repo() {
         return 1
     fi
 
-    print_info "Adding ondrej/php repository (deb.sury.org)..."
     add_apt_repo "packages.sury.org" \
         "https://packages.sury.org/php/apt.gpg" \
         "/etc/apt/trusted.gpg.d/php.gpg" \
@@ -2885,7 +2885,6 @@ ensure_mariadb_repo() {
         return 1
     fi
 
-    print_info "Adding MariaDB.org repository (${series})..."
     add_apt_repo "mariadb.org" \
         "https://mariadb.org/mariadb_release_signing_key.asc" \
         "/etc/apt/trusted.gpg.d/mariadb.asc" \
