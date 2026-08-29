@@ -2775,28 +2775,47 @@ install_php_version_apt() {
     return 0
 }
 
-ensure_php_repo() {
-    # ondrej/php repo (deb.sury.org) provides PHP 8.2+ on Debian & Ubuntu
-    if grep -rq "packages.sury.org" /etc/apt/sources.list.d/ 2>/dev/null; then
+# ---- apt Repo Helpers ----------------------------------------
+os_codename() {
+    # Distro codename for apt source lines (e.g. bookworm, noble)
+    grep -E '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d= -f2
+}
+
+# Idempotent apt repo bootstrap. $1 = existing-repo marker (grep pattern),
+# $2 = key URL, $3 = key destination, $4 = source list file,
+# $5 = source line, $6 = display label. Returns 0 when present/added.
+add_apt_repo() {
+    local marker="$1" key_url="$2" key_dest="$3" list_file="$4" source_line="$5" label="$6"
+    if grep -rq "$marker" /etc/apt/sources.list.d/ 2>/dev/null; then
         return 0
     fi
+    sudo curl -fsSL "$key_url" -o "$key_dest" 2>/dev/null || {
+        print_err "Failed to fetch ${label} repository key."
+        return 1
+    }
+    echo "$source_line" | sudo tee "$list_file" > /dev/null
+    apt_update_quiet
+    print_ok "Added ${label} repository"
+    return 0
+}
 
+ensure_php_repo() {
+    # ondrej/php repo (deb.sury.org) provides PHP 8.2+ on Debian & Ubuntu
     local codename
-    codename=$(grep -E '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d= -f2)
+    codename=$(os_codename)
     if [[ -z "$codename" ]]; then
         print_err "Cannot determine OS codename — cannot add PHP repository."
         return 1
     fi
 
     print_info "Adding ondrej/php repository (deb.sury.org)..."
-    sudo curl -fsSL https://packages.sury.org/php/apt.gpg -o /etc/apt/trusted.gpg.d/php.gpg 2>/dev/null || {
-        print_err "Failed to fetch PHP repository key."
-        return 1
-    }
-    echo "deb https://packages.sury.org/php/ ${codename} main" | sudo tee /etc/apt/sources.list.d/phpup-php.list > /dev/null
-    apt_update_quiet
-    print_ok "Added ondrej/php repository"
-    return 0
+    add_apt_repo "packages.sury.org" \
+        "https://packages.sury.org/php/apt.gpg" \
+        "/etc/apt/trusted.gpg.d/php.gpg" \
+        "/etc/apt/sources.list.d/phpup-php.list" \
+        "deb https://packages.sury.org/php/ ${codename} main" \
+        "ondrej/php"
+    return $?
 }
 
 # ---- phpMyAdmin Tarball Helpers ------------------------------
@@ -2846,10 +2865,6 @@ latest_mariadb_series() {
 }
 
 ensure_mariadb_repo() {
-    if grep -rq "mariadb.org" /etc/apt/sources.list.d/ 2>/dev/null; then
-        return 0
-    fi
-
     local series
     series=$(latest_mariadb_series)
     if [[ -z "$series" ]]; then
@@ -2864,19 +2879,20 @@ ensure_mariadb_repo() {
     else
         distro_path="debian"
     fi
-    codename=$(grep -E '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d= -f2)
+    codename=$(os_codename)
+    if [[ -z "$codename" ]]; then
+        print_err "Cannot determine OS codename — cannot add MariaDB repository."
+        return 1
+    fi
 
     print_info "Adding MariaDB.org repository (${series})..."
-    sudo curl -fsSL https://mariadb.org/mariadb_release_signing_key.asc \
-        -o /etc/apt/trusted.gpg.d/mariadb.asc 2>/dev/null || {
-        print_err "Failed to fetch MariaDB repository key."
-        return 1
-    }
-    echo "deb [signed-by=/etc/apt/trusted.gpg.d/mariadb.asc] https://deb.mariadb.org/${series}/${distro_path} ${codename} main" | \
-        sudo tee /etc/apt/sources.list.d/phpup-mariadb.list > /dev/null
-    apt_update_quiet
-    print_ok "Added MariaDB.org repository (${series})"
-    return 0
+    add_apt_repo "mariadb.org" \
+        "https://mariadb.org/mariadb_release_signing_key.asc" \
+        "/etc/apt/trusted.gpg.d/mariadb.asc" \
+        "/etc/apt/sources.list.d/phpup-mariadb.list" \
+        "deb [signed-by=/etc/apt/trusted.gpg.d/mariadb.asc] https://deb.mariadb.org/${series}/${distro_path} ${codename} main" \
+        "MariaDB.org"
+    return $?
 }
 
 switch_php_apt() {
