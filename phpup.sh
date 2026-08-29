@@ -484,14 +484,15 @@ switch_fpm_apt() {
     # Switch the Apache PHP-FPM runtime to $1, with rollback: on failure the
     # previous FPM version + Apache conf are restored.
     local target="$1"
-    local prev conf conf_backup
+    local prev conf conf_backup installed
     prev=$(fpm_active_version || true)
     conf=$(apache_fpm_conf)
+    installed=$(fpm_versions_installed)
     [[ -f "$conf" ]] && conf_backup=$(cat "$conf")
 
     # Enable + start target FPM; disable + stop every other installed version
     local v
-    for v in $(fpm_versions_installed); do
+    for v in $installed; do
         if [[ "$v" == "$target" ]]; then
             sudo systemctl enable "php${v}-fpm" 2>/dev/null || true
             sudo systemctl restart "php${v}-fpm" 2>/dev/null || true
@@ -517,7 +518,7 @@ switch_fpm_apt() {
         fi
         if [[ -n "$prev" ]]; then
             print_warn "Restoring previous PHP-FPM ${prev}..."
-            for v in $(fpm_versions_installed); do
+            for v in $installed; do
                 if [[ "$v" == "$prev" ]]; then
                     sudo systemctl enable "php${v}-fpm" 2>/dev/null || true
                     sudo systemctl restart "php${v}-fpm" 2>/dev/null || true
@@ -732,7 +733,7 @@ install_macports() {
         14) token="14-Sonoma";; 15) token="15-Sequoia";; 26) token="26-Tahoe";;
         *) print_err "No MacPorts installer for macOS ${osver} — this machine is not viable for a modern web stack."; return 1 ;;
     esac
-    local ver="${MACPORTS_VERSION:-2.12.5}"
+    local ver="$MACPORTS_VERSION"
     local url="https://github.com/macports/macports-base/releases/download/v${ver}/MacPorts-${ver}-${token}.pkg"
     local pkg="/tmp/MacPorts-${ver}-${token}.pkg"
     if ! curl -fsSL --connect-timeout 30 "$url" -o "$pkg"; then
@@ -967,22 +968,24 @@ start_services() {
     elif [[ $USE_PORTS == 1 ]]; then
         if [[ $APACHE == 1 ]]; then
             sudo "${PORT_PREFIX}/bin/port" load apache2 >/dev/null 2>&1
+            local apache_started=0
             for ((_i=0; _i<10; _i++)); do
-                stack_proc -x httpd &>/dev/null && { print_ok "Apache started on port 80"; break; }
+                if stack_proc -x httpd &>/dev/null; then print_ok "Apache started on port 80"; apache_started=1; break; fi
                 sleep 1
             done
-            if ! stack_proc -x httpd &>/dev/null; then
+            if [[ $apache_started == 0 ]]; then
                 print_err "Apache may have failed to start — check ${LOGS_DIR}/apache_error.log"
                 sudo "${PORT_PREFIX}/sbin/apachectl" configtest 2>&1 | tail -3
             fi
         fi
         if [[ $MARIADB == 1 ]]; then
             sudo "${PORT_PREFIX}/bin/port" load "${MARIADB_PORT}-server" >/dev/null 2>&1
+            local mariadb_started=0
             for ((_i=0; _i<10; _i++)); do
-                { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; } && { print_ok "MariaDB started"; break; }
+                if { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; }; then print_ok "MariaDB started"; mariadb_started=1; break; fi
                 sleep 1
             done
-            if ! { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; }; then
+            if [[ $mariadb_started == 0 ]]; then
                 print_err "MariaDB failed to start — check ${PORT_PREFIX}/var/log/${MARIADB_PORT}/mariadb_error.log"
                 tail -50 "${PORT_PREFIX}/var/log/${MARIADB_PORT}/mariadb_error.log" 2>/dev/null || \
                     tail -50 "${PORT_PREFIX}/var/db/${MARIADB_PORT}/"*.err 2>/dev/null || true
@@ -1003,11 +1006,12 @@ start_services() {
 
         if [[ $MARIADB == 1 ]]; then
             brew services start mariadb 2>/dev/null
+            local mariadb_started=0
             for ((_i=0; _i<5; _i++)); do
-                { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; } && { print_ok "MariaDB started"; break; }
+                if { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; }; then print_ok "MariaDB started"; mariadb_started=1; break; fi
                 sleep 1
             done
-            if ! { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; }; then
+            if [[ $mariadb_started == 0 ]]; then
                 print_err "MariaDB failed to start — check ${LOGS_DIR}/mariadb_error.log"
                 tail -50 "${LOGS_DIR}/mariadb_error.log" 2>/dev/null || true
             fi
@@ -1300,12 +1304,8 @@ configure_apache_ports() {
     sudo sed -i.bak "s/DirectoryIndex index.html/DirectoryIndex index.php index.html/" "$conf"
     print_ok "Added index.php to DirectoryIndex"
 
-    # PHP module — REPLACE, never append-only: strip any existing LoadModule
-    # php*_module line first (fu→D→I cycles leave dead lines pointing at
-    # uninstalled .so files) then append exactly one line for the current
-    # PHP_PORT. Idempotent: every run converges to exactly one php module line.
-    # NOTE: MacPorts' mod_phpXX.so exports "php_module" (no version suffix) —
-    # the Apache module name is php_module regardless of the port name.
+    # PHP module — strip-then-append (idempotent; fu→D→I cycles must not leave
+    # dead lines). MacPorts' mod_phpXX.so exports "php_module" (no suffix).
     sudo sed -i.bak "/^LoadModule php[0-9]*_module /d" "$conf"
     local php_module="${PORT_PREFIX}/lib/apache2/modules/mod_${PHP_PORT}.so"
     if [[ -f "$php_module" ]]; then
@@ -1395,7 +1395,6 @@ configure_php() {
     print_ok "Enabled PHP extensions"
 
     # Display errors
-    sed -i.bak "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
     sed -i.bak "s/^display_errors = Off/display_errors = On/" "$php_ini" 2>/dev/null || true
     print_ok "Enabled display_errors"
 
@@ -3158,13 +3157,6 @@ cmd_forced_update() {
                 return
             fi
             sudo "${PORT_PREFIX}/bin/port" select --set php "$target" 2>/dev/null || true
-            # Rewrite the LoadModule line in httpd.conf to the new version's .so
-            # (only reached when the install above succeeded)
-            # NOTE: module name is always php_module (MacPorts mod_phpXX.so
-            # exports "php_module" without a version suffix).
-            sudo sed -i.bak "s@LoadModule php[0-9]*_module .*@LoadModule php_module ${PORT_PREFIX}/lib/apache2/modules/mod_${target}.so@" \
-                "${PORT_PREFIX}/etc/apache2/httpd.conf"
-            sudo rm -f "${PORT_PREFIX}/etc/apache2/httpd.conf.bak"
             PHP_PORT="$target"
             detect_all
             configure_apache_ports
