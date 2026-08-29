@@ -174,16 +174,59 @@ function Get-PhpPreReleaseRank($pv) {
 
 # ---- Config Persistence --------------------------------------
 
-$CONFIG_FILE = "$env:APPDATA\phpup\config.json"
+$CONFIG_FILE_LEGACY = "$env:APPDATA\phpup\config.json"
 
-function Get-Config {
-    if (-not (Test-Path $CONFIG_FILE)) { return $null }
+function Get-ConfigFilePath {
+    # Canonical location: inside the stack folder so the config travels
+    # with the install. $BASE is re-pointed by Get-Config when the stack
+    # lives elsewhere (custom/moved install path).
+    return "$BASE\config.json"
+}
+
+function Read-ConfigFile([string]$path) {
+    if (-not (Test-Path $path)) { return $null }
     try {
-        $config = Get-Content $CONFIG_FILE -Raw -Encoding UTF8 | ConvertFrom-Json
+        $config = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($config.install_path) { return $config }
     }
     catch {
         # Corrupted config — treat as missing
+    }
+    return $null
+}
+
+function Get-Config {
+    # Canonical probe: stack folder. If its install_path differs from the
+    # current $BASE, re-point $BASE and re-read (covers a moved/custom stack).
+    $canonical = Get-ConfigFilePath
+    $config = Read-ConfigFile $canonical
+    if ($config -and $config.install_path -and ([string]$config.install_path -ne $BASE)) {
+        $script:BASE = [string]$config.install_path
+        $config = Read-ConfigFile (Get-ConfigFilePath)
+    }
+    if ($config) { return $config }
+
+    # Discovery pointer (pre-1.2.0 location, kept fresh by Save-Config):
+    # tells us where the stack lives when $BASE is wrong/unknown. If it still
+    # holds a full pre-1.2.0 config (no canonical yet), migrate it over.
+    if (Test-Path $CONFIG_FILE_LEGACY) {
+        $legacy = Read-ConfigFile $CONFIG_FILE_LEGACY
+        if ($legacy -and $legacy.install_path) {
+            $script:BASE = [string]$legacy.install_path
+            $canonical = Get-ConfigFilePath
+            if (-not (Test-Path $canonical)) {
+                $configDir = Split-Path $canonical -Parent
+                if (-not (Test-Path $configDir)) {
+                    New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+                }
+                Copy-Item $CONFIG_FILE_LEGACY $canonical -Force
+                Write-Info "Migrated phpup config to $canonical"
+            }
+            $result = Read-ConfigFile $canonical
+            if ($result) { return $result }
+            # Canonical exists but is corrupt — fall back to the pointer's copy
+            return $legacy
+        }
     }
     return $null
 }
@@ -200,7 +243,8 @@ function Save-Config {
         [bool]$ServicesRegistered = $false
     )
 
-    $configDir = Split-Path $CONFIG_FILE -Parent
+    $configFile = Get-ConfigFilePath
+    $configDir = Split-Path $configFile -Parent
     if (-not (Test-Path $configDir)) {
         New-Item -ItemType Directory -Force -Path $configDir | Out-Null
     }
@@ -243,12 +287,23 @@ function Save-Config {
     }
     if ($PathEntries) { $config.path_entries = $PathEntries }
 
-    $config | ConvertTo-Json -Depth 4 | Out-File $CONFIG_FILE -Encoding UTF8
+    $config | ConvertTo-Json -Depth 4 | Out-File $configFile -Encoding UTF8
+
+    # Keep the discovery pointer fresh so a moved/custom stack is still
+    # findable when $BASE is wrong on a future run.
+    $legacyDir = Split-Path $CONFIG_FILE_LEGACY -Parent
+    if (-not (Test-Path $legacyDir)) {
+        New-Item -ItemType Directory -Force -Path $legacyDir | Out-Null
+    }
+    @{ install_path = $InstallPath } | ConvertTo-Json | Out-File $CONFIG_FILE_LEGACY -Encoding UTF8
 }
 
 function Clear-Config {
-    if (Test-Path $CONFIG_FILE) {
-        Remove-Item $CONFIG_FILE -Force
+    if (Test-Path (Get-ConfigFilePath)) {
+        Remove-Item (Get-ConfigFilePath) -Force
+    }
+    if (Test-Path $CONFIG_FILE_LEGACY) {
+        Remove-Item $CONFIG_FILE_LEGACY -Force
     }
 }
 
@@ -3288,7 +3343,7 @@ if ($config) {
     # Validate the saved path is usable
     if ($BASE -match '\s') {
         Write-Err "Saved path contains spaces — this is unsupported."
-        Write-Info "Delete the config and re-run: Remove-Item '$CONFIG_FILE'"
+        Write-Info "Delete the config and re-run: Remove-Item '$(Get-ConfigFilePath)'"
         Write-Host ""
         Pause
         exit 1

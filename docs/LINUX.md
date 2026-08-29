@@ -65,7 +65,7 @@ System paths (managed by apt):
 /var/lib/phpmyadmin/tmp/            # phpMyAdmin template cache
 /usr/share/phpmyadmin/              # phpMyAdmin web files
 /var/lib/mysql/                     # MariaDB data directory
-~/.config/phpup/config.json         # phpup persistent config
+~/phpup/config.json                # phpup persistent config (co-located with stack)
 ```
 
 ## What the Installer Configures
@@ -152,6 +152,37 @@ Pressing **D**:
 - Keeps `~/phpup/www/` and `~/phpup/data_backup/` untouched
 
 On reinstall, configs in `/etc` are re-applied automatically. MariaDB data is restored from `data_backup/`.
+
+## Configuration
+
+phpup keeps a persistent config at **`~/phpup/config.json`** — co-located with the stack so the config travels with the install folder. It's written on install, update, version switch, and delete, and read at startup.
+
+```json
+{
+  "install_path": "/home/dafa/phpup",
+  "installed_at": "2026-08-29T12:00:00",
+  "package_manager": "apt",
+  "brew_prefix": "",
+  "port_prefix": "",
+  "architecture": "x86_64",
+  "os": "Debian 13",
+  "php_min_series": "8.2",
+  "apache_version": "2.4.68",
+  "mariadb_version": "12.3.3",
+  "php_version": "8.5.9",
+  "phpmyadmin_version": "6.0.2",
+  "mariadb_port": "mariadb-12.3",
+  "php_port": "php85"
+}
+```
+
+Notable keys:
+
+- **`php_min_series`** — the minimum PHP series `fu` will offer (default `8.2`). Lower it (e.g. to `7.4`) to enable installing EOL series for legacy codebases. Override per-run with `PHPPUP_PHP_MIN_SERIES=7.4 ./phpup.sh` (env wins over config — handy for CI/testing).
+- **`mariadb_port` / `php_port`** — the MacPorts series/port chosen at install; detection reads these instead of sniffing the filesystem.
+- **`install_path`** — informational on Linux/macOS (the stack location is derived from the script); on Windows this is the real install root.
+
+**Legacy migration:** configs from before v1.2.0 lived at `~/.config/phpup/config.json` — they're moved automatically to the stack folder on first run. The old location is removed; no manual step needed.
 
 ## After Installation
 

@@ -14,8 +14,10 @@ REMOTE_URL='https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh'
 BASE_DIR="${HOME}/phpup"
 DOC_ROOT="${BASE_DIR}/www"
 LOGS_DIR="${BASE_DIR}/logs"
-CONFIG_DIR="${HOME}/.config/phpup"
-CONFIG_FILE="${CONFIG_DIR}/config.json"
+CONFIG_DIR="${BASE_DIR}"
+CONFIG_FILE="${BASE_DIR}/config.json"
+LEGACY_CONFIG_DIR="${HOME}/.config/phpup"
+PHP_MIN_SERIES="8.2"    # fu download floor; overridable via config.json
 DATA_BACKUP_DIR="${BASE_DIR}/data_backup"
 
 # ---- Colour Constants ---------------------------------------
@@ -117,20 +119,41 @@ json_get() {
     echo "$json" | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/'
 }
 
-json_get_versions() {
-    local json="$1" component="$2"
-
-    # Extract the versions block and find the component version
-    echo "$json" | grep -o "\"${component}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/'
+# ---- Config Persistence -------------------------------------
+migrate_config() {
+    # Pre-1.2.0 installs wrote config to ~/.config/phpup; co-locate it
+    # with the stack so the config travels with the install folder.
+    if [[ -f "$LEGACY_CONFIG_DIR/config.json" && ! -f "$CONFIG_FILE" ]]; then
+        cp "$LEGACY_CONFIG_DIR/config.json" "$CONFIG_FILE"
+        rm -rf "$LEGACY_CONFIG_DIR"
+        print_ok "Migrated phpup config to $CONFIG_FILE"
+    fi
 }
 
-# ---- Config Persistence -------------------------------------
 load_config() {
+    # Read config.json into globals. Missing/corrupt config falls back
+    # to defaults — never blocks startup. Precedence for php_min_series:
+    # PHPPUP_PHP_MIN_SERIES env > config.json > built-in default.
+    local json
     if [[ -f "$CONFIG_FILE" ]]; then
-        cat "$CONFIG_FILE"
+        json=$(cat "$CONFIG_FILE")
     else
-        echo ""
+        return 0
     fi
+
+    # shellcheck disable=SC2155
+    local min_series mariadb_port php_port
+    min_series=$(json_get "$json" "php_min_series")
+    mariadb_port=$(json_get "$json" "mariadb_port")
+    php_port=$(json_get "$json" "php_port")
+
+    if [[ -n "${PHPPUP_PHP_MIN_SERIES:-}" ]]; then
+        PHP_MIN_SERIES="$PHPPUP_PHP_MIN_SERIES"
+    elif [[ -n "$min_series" ]]; then
+        PHP_MIN_SERIES="$min_series"
+    fi
+    [[ -n "$mariadb_port" ]] && MARIADB_PORT="$mariadb_port"
+    [[ -n "$php_port" ]] && PHP_PORT="$php_port"
 }
 
 save_config() {
@@ -158,12 +181,13 @@ save_config() {
   "port_prefix": "${PORT_PREFIX}",
   "architecture": "${ARCH}",
   "os": "${OS_DISTRO} ${OS_VERSION}",
-  "versions": {
-    "apache": "${apache_ver}",
-    "mariadb": "${mariadb_ver}",
-    "php": "${php_ver}",
-    "phpmyadmin": "${phpmyadmin_ver}"
-  }
+  "php_min_series": "${PHP_MIN_SERIES}",
+  "apache_version": "${apache_ver}",
+  "mariadb_version": "${mariadb_ver}",
+  "php_version": "${php_ver}",
+  "phpmyadmin_version": "${phpmyadmin_ver}",
+  "mariadb_port": "${MARIADB_PORT}",
+  "php_port": "${PHP_PORT}"
 }
 EOF
 }
@@ -172,8 +196,8 @@ clear_config() {
     if [[ -f "$CONFIG_FILE" ]]; then
         rm -f "$CONFIG_FILE"
     fi
-    if [[ -d "$CONFIG_DIR" ]]; then
-        rmdir "$CONFIG_DIR" 2>/dev/null || true
+    if [[ -d "$LEGACY_CONFIG_DIR" ]]; then
+        rm -rf "$LEGACY_CONFIG_DIR"
     fi
 }
 
@@ -216,10 +240,11 @@ detect_mariadb() {
             MARIADB_VERSION=""
         fi
     elif [[ $USE_PORTS == 1 ]]; then
-        # F2: self-healing fallback — the mariadb-11.4 LTS series chosen by a
-        # previous install must survive across sessions (config.json is
-        # write-only). If the default series datadir is absent but any other
-        # mariadb-1[12].* datadir exists, adopt that series BEFORE the check.
+        # MARIADB_PORT comes from config.json (persisted at install/switch);
+        # this sniff is a last-resort migration shim for configs written
+        # before ports were persisted (pre-1.1.0). If the configured series
+        # datadir is absent but any other mariadb-1[12].* datadir exists,
+        # adopt that series so the stack still resolves.
         if [[ ! -d "${PORT_PREFIX}/var/db/${MARIADB_PORT}" ]]; then
             local found_series
             found_series=$(find "${PORT_PREFIX}/var/db" -maxdepth 1 -type d -name 'mariadb-1[12].*' 2>/dev/null | sed 's@.*/@@' | sort -V | tail -1)
@@ -2391,7 +2416,7 @@ cmd_update() {
         # and capture its full version string for the prompt.
         php_latest=""
         local php_latest_full="" v candidate_ver
-        for v in $(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -Vr | awk -F. '$1 == 8 && $2 >= 2'); do
+        for v in $(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -Vr | awk -F. -v fmaj="${PHP_MIN_SERIES%%.*}" -v fmin="${PHP_MIN_SERIES##*.}" '$1 > fmaj || ($1 == fmaj && $2 >= fmin)'); do
             candidate_ver=$(apt-cache show "php${v}-cli" 2>/dev/null | grep '^Version:' | head -1 | tr '[:upper:]' '[:lower:]')
             if [[ "$candidate_ver" != *alpha* && "$candidate_ver" != *beta* && "$candidate_ver" != *rc* && "$candidate_ver" != *preview* ]]; then
                 php_latest="$v"
@@ -2940,10 +2965,10 @@ switch_php_apt() {
 
     # Available versions (8.2 to latest)
     local versions
-    versions=$(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -V | awk -F. '$1 == 8 && $2 >= 2')
+    versions=$(apt-cache pkgnames 'php8.' 2>/dev/null | grep -E '^php8\.[0-9]+$' | sed 's/^php//' | sort -V | awk -F. -v fmaj="${PHP_MIN_SERIES%%.*}" -v fmin="${PHP_MIN_SERIES##*.}" '$1 > fmaj || ($1 == fmaj && $2 >= fmin)')
 
     if [[ -z "$versions" ]]; then
-        print_err "No PHP 8.2+ versions found via apt."
+        print_err "No PHP ${PHP_MIN_SERIES}+ versions found via apt."
         printf "\n"
         read -r -p "Press Enter to return to the dashboard..."
         return
@@ -3397,6 +3422,10 @@ main() {
     if [[ $USE_PORTS == 1 ]]; then
         export PATH="${PORT_PREFIX}/bin:${PORT_PREFIX}/sbin:${PATH}"
     fi
+
+    # Migrate pre-1.2.0 config, then load persisted state
+    migrate_config
+    load_config
 
     # Detect installed components
     detect_all
