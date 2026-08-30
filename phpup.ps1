@@ -1,6 +1,6 @@
 # =======================================================================
 #  phpup — Windows 11 x64 a bare-metal PHP local development environment
-#  Inspired by getphp.org
+#  Inspired by the simplicity of getphp.org - this script is so much more
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
@@ -552,7 +552,7 @@ function Invoke-WebRetry {
                 catch [System.Management.Automation.MethodInvocationException] {
                     Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -Headers $Headers -ErrorAction Stop
                 }
-                return $true
+                return
             }
             return Invoke-WebRequest -Uri $Uri -UseBasicParsing -Headers $Headers -ErrorAction Stop
         }
