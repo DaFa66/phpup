@@ -13,6 +13,45 @@ overview of every release.
 
 ---
 
+## [2.4.4-win] — 2026-08-30
+
+### Windows (phpup.ps1 v2.4.4)
+
+*Previous platform update: [2.4.3-win](#243-win--2026-08-30).*
+
+Patch release from the delete + reinstall live test: download UX clean-up and config-pointer simplification.
+
+### Fixed
+- **Download progress bars restored on the install/update path** — `Invoke-DownloadAndExtract` suppressed `$ProgressPreference` around the *entire* function, hiding the live progress bar for every component download (most painfully MariaDB, where a blank "Downloading..." line looked like the script had hung). Suppression now covers only the `Expand-Archive` steps; `Invoke-WebRequest` downloads render their progress bars again.
+- **Delete/extract progress flash silenced** — `Remove-Item -Recurse` rendered "Removed X of Y files [MB at MB/s]" over the dashboard during delete, update, and install flows. New `Remove-Tree` helper (save/restore around the call) applied to all flow-level wipes: delete flow (all 5 components), update flow, install MariaDB upgrade branches (online + offline), SQLite temp dir, config/data backup-dir cleanup. Extract helpers and the fu apply block keep their existing scoped suppression.
+
+### Changed
+- **`%APPDATA%` discovery pointer written only for non-default install paths** — the legacy pointer at `%APPDATA%\phpup\config.json` is load-bearing only when the stack lives somewhere other than the default `C:\phpup` (custom/moved installs rediscover their location through it). Default-path installs no longer create the redundant file; `Get-Config` behavior unchanged, so custom-path discovery still works. Added `$DEFAULT_BASE` as the anchor constant.
+
+### Verified
+- PS1 PARSE OK · 11/11 progress behavior tests (no global suppression, download live, both `Expand-Archive` sites wrapped, `Remove-Tree` suppresses) · 5/5 pointer tests (default → no pointer, custom → pointer + refresh) · user delete → clear cache → reinstall live test: clean install display, no noise, download bars on all components, database backup restored, services up
+
+---
+
+## [2.4.3-win] — 2026-08-30
+
+### Windows (phpup.ps1 v2.4.3)
+
+*Previous platform update: [2.4.2-win](#242-win--2026-08-28).*
+
+Patch release from the Windows live test: the fu download/extract path regressed in the v2.4.2 helper refactor, plus hardening for partial-stack recovery and version-swap data safety.
+
+**Fixed**
+- `fu` PHP download no longer produces a `True C:\phpup\downloads\...` path — `Invoke-WebRetry -OutFile` returned `$true` into the caller's output stream, so `Invoke-DownloadToCache` returned an array (`@($true, $path)`) instead of a string and `Expand-Archive` failed with "Cannot convert value to type System.String", wiping the PHP folder and cascading into a missing php.ini / Apache start failure (regression from the v2.4.2 retry-helper refactor)
+- Apache configuration no longer appends duplicate `Listen 80` lines — the replace-vs-append decision compared content instead of presence, so an already-correct `Listen 80` was treated as missing and a new line was appended on every install/update, eventually failing with "Cannot define multiple Listeners" (`AH00526`); the step now removes every existing `Listen` line and appends exactly one (idempotent and self-healing)
+- MariaDB upgrade during install now stops services, backs up the data directory, and restores it after extracting the new version — previously the install path extracted over the live install while the server was running (binaries locked, extraction silently failed and reported `[ OK ]`; had the server been stopped, a data-dir wipe was possible)
+- Install no longer re-downloads/re-extracts phpMyAdmin when the installed version is already at or above the resolved version (matches the Apache/PHP/MariaDB skip logic)
+
+**Added**
+- Partial-stack recovery notice on the dashboard: when one or more components are missing (failed `fu` apply, manual deletion, partial install), the script now says so and tells the user that `I` Install recovers the missing components without touching websites, databases or settings
+
+---
+
 ## [1.2.2-nix] — 2026-08-30
 
 ### macOS & Linux (phpup.sh v1.2.2)
@@ -71,6 +110,21 @@ Feature release: phpup gains a **real, persistent config** — `config.json` now
 - Live on Debian 13 and Ubuntu 24.04: migration, floor filtering (7.4/8.2/8.4), env override, corrupt-config fallback
 - Windows config suite: 7/7 harness tests (migration, moved stack, pointer refresh, clear, corrupt fallback)
 
+## [2.4.2-win] — 2026-08-28
+
+### Windows (phpup.ps1 v2.4.2)
+
+*Previous platform update: [2.4.1-win](#241-win--2026-08-18).*
+
+**Added**
+- Dashboard Process Status now reports the real PHP integration state instead of `CLI available`: `mod_php ------> active` (green) when the module is wired and Apache is running, `stopped` (red) when Apache is down, `not wired` (yellow) when the LoadModule line is missing or points at a dead DLL, and `not installed` (red) when php.exe is absent
+- New helper `Test-PhpApacheModuleWired` — verifies httpd.conf carries the LoadModule line for the **current** PHP major's symbol (`php_module` for 8.x, `php7_module` for 7.x) and that the referenced DLL exists, catching a stale module line after a broken version switch
+
+**Changed**
+- Dashboard Process Status ordering groups the web server with its PHP engine: `Apache`, `mod_php`, `MariaDB` (PHP row moved directly under Apache, mirroring the Mac/Linux `Active (mod_php)` / `Stopped` status pattern)
+
+---
+
 ## [1.1.0-nix] — 2026-08-28
 
 ### macOS & Linux (phpup.sh v1.1.0)
@@ -112,60 +166,6 @@ Patch release from the dual-stack test (MacPorts alongside Homebrew on one Mac):
 
 ### Notes
 - No tag: patch-level per RELEASES.md (milestone tags only; CHANGELOG is the record)
-
----
-
-## [2.4.4-win] — 2026-08-30
-
-### Windows (phpup.ps1 v2.4.4)
-
-*Previous platform update: [2.4.3-win](#243-win--2026-08-30).*
-
-Patch release from the delete + reinstall live test: download UX clean-up and config-pointer simplification.
-
-### Fixed
-- **Download progress bars restored on the install/update path** — `Invoke-DownloadAndExtract` suppressed `$ProgressPreference` around the *entire* function, hiding the live progress bar for every component download (most painfully MariaDB, where a blank "Downloading..." line looked like the script had hung). Suppression now covers only the `Expand-Archive` steps; `Invoke-WebRequest` downloads render their progress bars again.
-- **Delete/extract progress flash silenced** — `Remove-Item -Recurse` rendered "Removed X of Y files [MB at MB/s]" over the dashboard during delete, update, and install flows. New `Remove-Tree` helper (save/restore around the call) applied to all flow-level wipes: delete flow (all 5 components), update flow, install MariaDB upgrade branches (online + offline), SQLite temp dir, config/data backup-dir cleanup. Extract helpers and the fu apply block keep their existing scoped suppression.
-
-### Changed
-- **`%APPDATA%` discovery pointer written only for non-default install paths** — the legacy pointer at `%APPDATA%\phpup\config.json` is load-bearing only when the stack lives somewhere other than the default `C:\phpup` (custom/moved installs rediscover their location through it). Default-path installs no longer create the redundant file; `Get-Config` behavior unchanged, so custom-path discovery still works. Added `$DEFAULT_BASE` as the anchor constant.
-
-### Verified
-- PS1 PARSE OK · 11/11 progress behavior tests (no global suppression, download live, both `Expand-Archive` sites wrapped, `Remove-Tree` suppresses) · 5/5 pointer tests (default → no pointer, custom → pointer + refresh) · user delete → clear cache → reinstall live test: clean install display, no noise, download bars on all components, database backup restored, services up
-
----
-
-## [2.4.3-win] — 2026-08-30
-
-### Windows (phpup.ps1 v2.4.3)
-
-*Previous platform update: [2.4.2-win](#242-win--2026-08-28).*
-
-Patch release from the Windows live test: the fu download/extract path regressed in the v2.4.2 helper refactor, plus hardening for partial-stack recovery and version-swap data safety.
-
-**Fixed**
-- `fu` PHP download no longer produces a `True C:\phpup\downloads\...` path — `Invoke-WebRetry -OutFile` returned `$true` into the caller's output stream, so `Invoke-DownloadToCache` returned an array (`@($true, $path)`) instead of a string and `Expand-Archive` failed with "Cannot convert value to type System.String", wiping the PHP folder and cascading into a missing php.ini / Apache start failure (regression from the v2.4.2 retry-helper refactor)
-- Apache configuration no longer appends duplicate `Listen 80` lines — the replace-vs-append decision compared content instead of presence, so an already-correct `Listen 80` was treated as missing and a new line was appended on every install/update, eventually failing with "Cannot define multiple Listeners" (`AH00526`); the step now removes every existing `Listen` line and appends exactly one (idempotent and self-healing)
-- MariaDB upgrade during install now stops services, backs up the data directory, and restores it after extracting the new version — previously the install path extracted over the live install while the server was running (binaries locked, extraction silently failed and reported `[ OK ]`; had the server been stopped, a data-dir wipe was possible)
-- Install no longer re-downloads/re-extracts phpMyAdmin when the installed version is already at or above the resolved version (matches the Apache/PHP/MariaDB skip logic)
-
-**Added**
-- Partial-stack recovery notice on the dashboard: when one or more components are missing (failed `fu` apply, manual deletion, partial install), the script now says so and tells the user that `I` Install recovers the missing components without touching websites, databases or settings
-
----
-
-## [2.4.2-win] — 2026-08-28
-
-### Windows (phpup.ps1 v2.4.2)
-
-*Previous platform update: [2.4.1-win](#241-win--2026-08-18).*
-
-**Added**
-- Dashboard Process Status now reports the real PHP integration state instead of `CLI available`: `mod_php ------> active` (green) when the module is wired and Apache is running, `stopped` (red) when Apache is down, `not wired` (yellow) when the LoadModule line is missing or points at a dead DLL, and `not installed` (red) when php.exe is absent
-- New helper `Test-PhpApacheModuleWired` — verifies httpd.conf carries the LoadModule line for the **current** PHP major's symbol (`php_module` for 8.x, `php7_module` for 7.x) and that the referenced DLL exists, catching a stale module line after a broken version switch
-
-**Changed**
-- Dashboard Process Status ordering groups the web server with its PHP engine: `Apache`, `mod_php`, `MariaDB` (PHP row moved directly under Apache, mirroring the Mac/Linux `Active (mod_php)` / `Stopped` status pattern)
 
 ---
 
