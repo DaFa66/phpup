@@ -13,7 +13,8 @@ param(
 )
 
 # ---- Config -----------------------------------------------------------
-$BASE = "C:\phpup"
+$DEFAULT_BASE = "C:\phpup"
+$BASE = $DEFAULT_BASE
 $DOWNLOAD_CACHE  = "$BASE\downloads"
 
 # ---- Shared constants --------------------------------------------------
@@ -43,7 +44,17 @@ $FALLBACK_URLS = @{
     phpMyAdmin = "https://files.phpmyadmin.net/phpMyAdmin/5.2.3/phpMyAdmin-5.2.3-all-languages.zip"
 }
 
-# ---- Colours -----------------------------------------------
+# ---- File helpers ---------------------------------------------------
+function Remove-Tree([string]$Path) {
+    # Remove-Item -Recurse renders a progress bar over the dashboard
+    # ("Removed X of Y files"); suppress it around the destructive call.
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
+    $ProgressPreference = $prevProgress
+}
+
+# ---- Colours -------------------------------------------------------
 function Write-Ok($msg)    { Write-Host "[  OK  ]  $msg" -ForegroundColor Green }
 function Write-Err($msg)   { Write-Host "[ Error ]  $msg" -ForegroundColor Red }
 function Write-Info($msg)  { Write-Host $msg -ForegroundColor Cyan }
@@ -344,12 +355,15 @@ function Save-Config {
     $config | ConvertTo-Json -Depth 4 | Out-File $configFile -Encoding UTF8
 
     # Keep the discovery pointer fresh so a moved/custom stack is still
-    # findable when $BASE is wrong on a future run.
-    $legacyDir = Split-Path $CONFIG_FILE_LEGACY -Parent
-    if (-not (Test-Path $legacyDir)) {
-        New-Item -ItemType Directory -Force -Path $legacyDir | Out-Null
+    # findable when $BASE is wrong on a future run. Only needed for
+    # non-default install paths — the default C:\phpup is probed directly.
+    if ($InstallPath -ne $DEFAULT_BASE) {
+        $legacyDir = Split-Path $CONFIG_FILE_LEGACY -Parent
+        if (-not (Test-Path $legacyDir)) {
+            New-Item -ItemType Directory -Force -Path $legacyDir | Out-Null
+        }
+        @{ install_path = $InstallPath } | ConvertTo-Json | Out-File $CONFIG_FILE_LEGACY -Encoding UTF8
     }
-    @{ install_path = $InstallPath } | ConvertTo-Json | Out-File $CONFIG_FILE_LEGACY -Encoding UTF8
 }
 
 function Clear-Config {
@@ -888,9 +902,6 @@ function Invoke-DownloadToCache($url, $label) {
 }
 
 function Invoke-DownloadAndExtract($url, $dest, $label) {
-    $prevProgress = $ProgressPreference
-    $ProgressPreference = 'SilentlyContinue'
-
     Write-Host ""
     Write-Host "Downloading $label..." -ForegroundColor Yellow
     Write-Info "  $url"
@@ -905,7 +916,12 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
     if (Test-Path $zipPath) {
         Write-Ok "$label zip already cached — using $filename"
         Write-Info "Extracting to $dest..."
+        # Expand-Archive renders progress ("Expanding X of Y files") that
+        # flashes over the dashboard; downloads keep theirs.
+        $prevProgress = $ProgressPreference
+        $ProgressPreference = 'SilentlyContinue'
         Expand-Archive -Path $zipPath -DestinationPath $dest -Force
+        $ProgressPreference = $prevProgress
     } else {
         try {
             Invoke-WebRetry -Uri $url -OutFile $zipPath -Headers @{ "User-Agent" = $UA_STRING } -MaxRetries 3 -RetryDelay 5
@@ -920,7 +936,10 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
         }
 
         Write-Info "Extracting to $dest..."
+        $prevProgress = $ProgressPreference
+        $ProgressPreference = 'SilentlyContinue'
         Expand-Archive -Path $zipPath -DestinationPath $dest -Force
+        $ProgressPreference = $prevProgress
     }
 
     # Flatten wrapper folder if present.
@@ -937,7 +956,7 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
         Get-ChildItem $inner -Force | ForEach-Object {
             Move-Item $_.FullName $dest -Force -ErrorAction SilentlyContinue
         }
-        Remove-Item $inner -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Tree $inner
     }
     elseif ($dirsOnly.Count -ge 1) {
         # Multiple directories or mixed files/dirs — try to find known wrapper patterns
@@ -950,13 +969,11 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
                 Get-ChildItem $inner -Force | ForEach-Object {
                     Move-Item $_.FullName $dest -Force -ErrorAction SilentlyContinue
                 }
-                Remove-Item $inner -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Tree $inner
                 break
             }
         }
     }
-
-    $ProgressPreference = $prevProgress
 
     Write-Ok "$label extracted"
 }
@@ -1303,7 +1320,7 @@ function Invoke-FixSqliteDll {
                 Write-Warn "Could not find sqlite3.dll in downloaded archive - skipping"
             }
 
-            Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Tree $extractDir
         }
         else {
             Write-Warn "Could not resolve latest SQLite3 DLL URL - skipping"
@@ -1849,7 +1866,7 @@ function Invoke-InstallWebStack {
             if (Test-MariaDbInstalled) {
                 Stop-WebStackServices
                 Backup-MariaDbData
-                Remove-Item $MARIADB_PATH -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Tree $MARIADB_PATH
             }
             Invoke-ExtractZip $mariadbZip  $MARIADB_PATH     "MariaDB"
             if (Test-Path "$BASE\data_backup_update") { Restore-MariaDbData }
@@ -1912,7 +1929,7 @@ function Invoke-InstallWebStack {
                 # version swap and is restored below.
                 Stop-WebStackServices
                 Backup-MariaDbData
-                Remove-Item $MARIADB_PATH -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Tree $MARIADB_PATH
             }
             Invoke-DownloadAndExtract $mariadbUrl $MARIADB_PATH "MariaDB"
             if ($installedMariadbVer) { Restore-MariaDbData }
@@ -1985,7 +2002,7 @@ function Invoke-InstallWebStack {
         if ($restored.Count -gt 0) {
             Write-Ok "Restored: $($restored -join ', ')"
         }
-        Remove-Item $configBackupDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Tree $configBackupDir
     }
 
     # Create test file
@@ -2049,7 +2066,7 @@ function Backup-MariaDbData {
     if (Test-Path $dataDir) {
         Write-Info "Backing up databases before MariaDB update..."
         if (Test-Path $backupDir) {
-            Remove-Item $backupDir -Recurse -Force
+            Remove-Tree $backupDir
         }
         New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
         Get-ChildItem $dataDir | ForEach-Object {
@@ -2165,12 +2182,12 @@ function Invoke-UpdateWebStack {
     Write-Warn "Removing outdated installations..."
 
     if ($needsApache) {
-        Remove-Item $APACHE_PATH -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Tree $APACHE_PATH
         Invoke-DownloadAndExtract $latestApacheUrl $APACHE_PATH "Apache"
         Invoke-ConfigureApache
     }
     if ($needsPhp) {
-        Remove-Item $PHP_PATH -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Tree $PHP_PATH
         Invoke-DownloadAndExtract $latestPhpUrl $PHP_PATH "PHP"
         Invoke-ConfigurePhp
         Invoke-FixSqliteDll
@@ -2179,7 +2196,7 @@ function Invoke-UpdateWebStack {
     if ($needsMariadb) {
         Backup-MariaDbData
 
-        Remove-Item $MARIADB_PATH -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Tree $MARIADB_PATH
         Invoke-DownloadAndExtract $latestMariadbUrl $MARIADB_PATH "MariaDB"
 
         Restore-MariaDbData
@@ -2187,7 +2204,7 @@ function Invoke-UpdateWebStack {
         Invoke-ConfigureMariaDb
     }
     if ($needsPma) {
-        Remove-Item $PHPMYADMIN_PATH -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Tree $PHPMYADMIN_PATH
         Invoke-DownloadAndExtract $latestPmaUrl $PHPMYADMIN_PATH "phpMyAdmin"
         Invoke-ConfigurePhpMyAdmin
     }
@@ -2960,19 +2977,19 @@ function Invoke-DeleteWebStack {
     }
     Write-Ok "Config files backed up to $configBackupDir"
 
-    Remove-Item $APACHE_PATH -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Tree $APACHE_PATH
     Write-Ok "Apache removed"
 
-    Remove-Item $PHP_PATH -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Tree $PHP_PATH
     Write-Ok "PHP removed"
 
-    Remove-Item $MARIADB_PATH -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Tree $MARIADB_PATH
     Write-Ok "MariaDB removed"
 
-    Remove-Item $PHPMYADMIN_PATH -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Tree $PHPMYADMIN_PATH
     Write-Ok "phpMyAdmin removed"
 
-    Remove-Item $LOGS_PATH -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Tree $LOGS_PATH
     Write-Ok "Log files removed"
     Write-Host ""
 
