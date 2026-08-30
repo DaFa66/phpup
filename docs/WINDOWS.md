@@ -165,13 +165,15 @@ On reinstall, the script detects both backups and offers to restore your databas
 
 ## Persistent Config
 
-The script saves state to `%APPDATA%\phpup\config.json`:
+The script saves state to **`config.json` in the install folder** (e.g. `C:\phpup\config.json`), so the config travels with the stack:
 
 - **Install path** — prompted once, remembered thereafter
 - **Component versions** — tracked after each install/update (PHP records the full label, e.g. `8.6.0 beta1`)
 - **Service registration state** — persisted between runs
 - **PATH entries** — tracked for clean uninstall
 - **PHP floor (`php_min_series`)** — written on first save (default `8.2`); edit it to change the oldest PHP series `fu` offers as a download candidate
+
+A discovery pointer (`%APPDATA%\phpup\config.json`) is written only when the install path differs from the default `C:\phpup` — it lets a custom/moved stack be found on later runs. Default-path installs don't create it.
 
 Example:
 

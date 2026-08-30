@@ -13,6 +13,26 @@ overview of every release.
 
 ---
 
+## [1.2.2-nix] — 2026-08-30
+
+### macOS & Linux (phpup.sh v1.2.2)
+
+*Previous platform update: [1.2.1-nix](#121-nix--2026-08-30).*
+
+Patch release: MariaDB data-dir safety on the Mac/Linux fallback paths, mirroring the Windows data-safety fix.
+
+### Changed
+- **MariaDB data dir preserved before re-init** — the brew fallback in `configure_mariadb_brew` previously wiped `${BREW_PREFIX}/var/mysql` whenever root access couldn't be auto-confirmed; a user with a non-blank root password would lose every database. It now moves a populated data dir aside to `var/mysql.backup-<date>` and warns instead of destroying it; only an empty/missing dir is wiped for a fresh init.
+- **Same protection on MacPorts** — the `datadir_initialized` failure path preserves an existing data dir (`.preserved-<date>`) when user databases are present alongside a missing `mysql/` system schema, instead of wiping the whole tree.
+
+### Fixed
+- ShellCheck SC2155 (declare-and-assign masking return values) on the two new backup-dir lines.
+
+### Verified
+- `bash -n` OK · ShellCheck 0 errors · brew guard sandbox 4/4 (populated preserved, empty wiped, missing fresh-init, system-schema-only preserved) · partial-stack notice shared dashboard (brew/ports included) · full fu round-trip + live stack checks on Ubuntu 24.04 (FPM path)
+
+---
+
 ## [1.2.1-nix] — 2026-08-30
 
 ### macOS & Linux (phpup.sh v1.2.1)
@@ -92,6 +112,26 @@ Patch release from the dual-stack test (MacPorts alongside Homebrew on one Mac):
 
 ### Notes
 - No tag: patch-level per RELEASES.md (milestone tags only; CHANGELOG is the record)
+
+---
+
+## [2.4.4-win] — 2026-08-30
+
+### Windows (phpup.ps1 v2.4.4)
+
+*Previous platform update: [2.4.3-win](#243-win--2026-08-30).*
+
+Patch release from the delete + reinstall live test: download UX clean-up and config-pointer simplification.
+
+### Fixed
+- **Download progress bars restored on the install/update path** — `Invoke-DownloadAndExtract` suppressed `$ProgressPreference` around the *entire* function, hiding the live progress bar for every component download (most painfully MariaDB, where a blank "Downloading..." line looked like the script had hung). Suppression now covers only the `Expand-Archive` steps; `Invoke-WebRequest` downloads render their progress bars again.
+- **Delete/extract progress flash silenced** — `Remove-Item -Recurse` rendered "Removed X of Y files [MB at MB/s]" over the dashboard during delete, update, and install flows. New `Remove-Tree` helper (save/restore around the call) applied to all flow-level wipes: delete flow (all 5 components), update flow, install MariaDB upgrade branches (online + offline), SQLite temp dir, config/data backup-dir cleanup. Extract helpers and the fu apply block keep their existing scoped suppression.
+
+### Changed
+- **`%APPDATA%` discovery pointer written only for non-default install paths** — the legacy pointer at `%APPDATA%\phpup\config.json` is load-bearing only when the stack lives somewhere other than the default `C:\phpup` (custom/moved installs rediscover their location through it). Default-path installs no longer create the redundant file; `Get-Config` behavior unchanged, so custom-path discovery still works. Added `$DEFAULT_BASE` as the anchor constant.
+
+### Verified
+- PS1 PARSE OK · 11/11 progress behavior tests (no global suppression, download live, both `Expand-Archive` sites wrapped, `Remove-Tree` suppresses) · 5/5 pointer tests (default → no pointer, custom → pointer + refresh) · user delete → clear cache → reinstall live test: clean install display, no noise, download bars on all components, database backup restored, services up
 
 ---
 
@@ -750,7 +790,9 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**2.4.4-win**](#244-win--2026-08-30) | 2026-08-30 | Download progress bars restored, delete/extract progress silenced, %APPDATA% pointer default-path only |
 | [**2.4.3-win**](#243-win--2026-08-30) | 2026-08-30 | fu download `True` path fix, Listen dedupe, partial-stack recovery notice, MariaDB data backup before upgrade, PMA skip |
+| [**2.4.2-win**](#242-win--2026-08-28) | 2026-08-28 | Dashboard mod_php status + wiring check, Process Status reorder |
 | [**2.4.1-win**](#241-win--2026-08-18) | 2026-08-18 | fu phpMyAdmin Alias fix, Directory self-heal |
 | [**2.4.0-win**](#240-win--2026-08-17) | 2026-08-17 | fu series management, variants, pre-release labels |
 | [**2.3.0-win**](#230-win--2026-08-17) | 2026-08-17 | Soft ARM64 (Prism), VC++ arch-aware |
@@ -773,6 +815,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**1.2.2-nix**](#122-nix--2026-08-30) | 2026-08-30 | MariaDB data dir preserved before re-init (brew + ports), SC2155 cleanup |
 | [**1.2.1-nix**](#121-nix--2026-08-30) | 2026-08-30 | Partial-stack recovery notice (dashboard) |
 | [**1.1.0-nix**](#110-nix--2026-08-28) | 2026-08-28 | Apache + PHP-FPM, mod_php auto-migration, rollback-safe fu, PMA secret/tmp fixes |
 | [**1.0.2-nix**](#102-nix--2026-08-21) | 2026-08-21 | Dual-stack machine fixes, stack-aware services, PMA blowfish |

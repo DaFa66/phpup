@@ -5,7 +5,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-08-28
-#  Version: 2.4.3
+#  Version: 2.4.4
 # =======================================================================
 
 param(
