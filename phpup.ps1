@@ -5,7 +5,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-08-28
-#  Version: 2.4.2
+#  Version: 2.4.3
 # =======================================================================
 
 param(
@@ -130,6 +130,17 @@ function Test-MariaDbRunning {
 
 function Test-StackComplete {
     return (Test-ApacheInstalled) -and (Test-PhpInstalled) -and (Test-MariaDbInstalled) -and (Test-PhpMyAdminInstalled)
+}
+
+function Test-PartialStack {
+    # True when the stack is incomplete but at least one component exists —
+    # distinguishes "fresh machine" from "broken/partial install worth recovering".
+    $present = 0
+    if (Test-ApacheInstalled)    { $present++ }
+    if (Test-PhpInstalled)       { $present++ }
+    if (Test-MariaDbInstalled)   { $present++ }
+    if (Test-PhpMyAdminInstalled){ $present++ }
+    return ($present -gt 0) -and -not (Test-StackComplete)
 }
 
 function Get-VersionTag([string]$candidate, [string]$installed) {
@@ -1064,10 +1075,12 @@ function Invoke-ConfigureApache {
     $conf = $conf -replace '(?m)^ServerRoot\s+".*"', "ServerRoot `"$apacheUnix`""
     Write-Ok "ServerRoot configured"
 
-    # 2. Listen on port 80
-    $newConf = $conf -replace '(?m)^Listen\s+\d+', 'Listen 80'
-    if ($newConf -ne $conf) { $conf = $newConf }
-    else { $conf += "`r`nListen 80`r`n" }
+    # 2. Listen on port 80 — exactly one directive
+    # Remove every existing Listen line, then append a single Listen 80.
+    # Idempotent AND self-healing: a file with duplicate Listen lines (e.g.
+    # from an older buggy run) is collapsed to one on the next configure.
+    $conf = [regex]::Replace($conf, '(?m)^Listen\s+\d+[^\r\n]*(?:\r\n|\n|$)', '')
+    $conf += "`r`nListen 80`r`n"
     Write-Ok "Port 80 configured"
 
     # 2b. Set ServerName to suppress AH00558 warnings
@@ -1830,7 +1843,17 @@ function Invoke-InstallWebStack {
         # Extract directly
         if ($apacheZip)   { Invoke-ExtractZip $apacheZip   $APACHE_PATH      "Apache" }
         if ($phpZip)      { Invoke-ExtractZip $phpZip      $PHP_PATH         "PHP" }
-        if ($mariadbZip)  { Invoke-ExtractZip $mariadbZip  $MARIADB_PATH     "MariaDB" }
+        if ($mariadbZip)  {
+            # Same protection as the online upgrade path: if an existing
+            # install is being overwritten, stop + back up data first.
+            if (Test-MariaDbInstalled) {
+                Stop-WebStackServices
+                Backup-MariaDbData
+                Remove-Item $MARIADB_PATH -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            Invoke-ExtractZip $mariadbZip  $MARIADB_PATH     "MariaDB"
+            if (Test-Path "$BASE\data_backup_update") { Restore-MariaDbData }
+        }
         if ($pmaZip)      { Invoke-ExtractZip $pmaZip      $PHPMYADMIN_PATH  "phpMyAdmin" }
 
         if (-not $apacheZip -or -not $phpZip -or -not $mariadbZip) {
@@ -1881,8 +1904,18 @@ function Invoke-InstallWebStack {
         if ($installedMariadbVer -and $resolvedMariadbVer -and ([version]$resolvedMariadbVer -le [version]$installedMariadbVer)) {
             Write-Ok "MariaDB $installedMariadbVer already installed — skipping download"
         } else {
-            if ($installedMariadbVer) { Write-Info "MariaDB $installedMariadbVer -> $resolvedMariadbVer" }
+            if ($installedMariadbVer) {
+                Write-Info "MariaDB $installedMariadbVer -> $resolvedMariadbVer"
+                # Upgrading a live install: stop the server first so the
+                # binaries are not locked, then back up the data directory
+                # before touching the installation. Data survives the
+                # version swap and is restored below.
+                Stop-WebStackServices
+                Backup-MariaDbData
+                Remove-Item $MARIADB_PATH -Recurse -Force -ErrorAction SilentlyContinue
+            }
             Invoke-DownloadAndExtract $mariadbUrl $MARIADB_PATH "MariaDB"
+            if ($installedMariadbVer) { Restore-MariaDbData }
         }
     }
 
@@ -1919,9 +1952,15 @@ function Invoke-InstallWebStack {
 
     if (-not $Offline) {
         # ── phpMyAdmin ──────────────────────────────────────────
-        Write-Host ""
-        Write-Bold "── phpMyAdmin ──"
-        Invoke-DownloadAndExtract $pmaUrl     $PHPMYADMIN_PATH "phpMyAdmin"
+        # Skip if already installed and at/above the resolved version
+        # (matches the Apache/PHP/MariaDB skip logic above).
+        $installedPmaVer = Get-PhpMyAdminVersion
+        if ($installedPmaVer -and $pmaUrl -and ([version](Get-VersionFromUrl $pmaUrl 'phpmyadmin') -le [version]$installedPmaVer)) {
+            Write-Ok "phpMyAdmin $installedPmaVer already installed — skipping download"
+        } else {
+            if ($installedPmaVer) { Write-Info "phpMyAdmin $installedPmaVer -> $(Get-VersionFromUrl $pmaUrl 'phpmyadmin')" }
+            Invoke-DownloadAndExtract $pmaUrl $PHPMYADMIN_PATH "phpMyAdmin"
+        }
     }
     Invoke-ConfigurePhpMyAdmin
 
@@ -3138,13 +3177,23 @@ function Show-Dashboard {
         Write-Host $DOWNLOAD_CACHE -ForegroundColor Cyan
     }
 
+    # ---- Partial-stack recovery notice ----
+    # A component went missing (failed fu apply, manual deletion, partial
+    # install). Tell the user Install recovers it without touching the rest.
+    if (-not $stackComplete -and (Test-PartialStack)) {
+        Write-Host ""
+        Write-Warn "A partial web stack was detected — one or more components are missing."
+        Write-Info "  Install (I) will recover the missing components only."
+        Write-Info "  Your websites, databases and settings are preserved."
+    }
+
     # ---- Commands ----
     Write-Host ""
     Write-Host "Stack Commands:" -ForegroundColor White
     Write-Host "~~~~~~~~~~~~~~~"
 
     if (-not $stackComplete) {
-        Write-Host "I  Install the web stack" -ForegroundColor Cyan
+        Write-Host "I  Install the web stack (recovers missing components)" -ForegroundColor Cyan
     }
     else {
         Write-Host "U  Update all components" -ForegroundColor Cyan

@@ -108,6 +108,8 @@ System paths (managed by apt):
 
 The hidden **`fu`** command switches between PHP versions using the [ondrej/php repository](https://deb.sury.org/). Select a version from the numbered list (8.2 → latest stable). The previous PHP stays installed — switching back is another `fu`.
 
+**Partial stack?** If one or more components are missing (a failed `fu` apply, a manually deleted directory, an interrupted install), the dashboard shows a **partial stack detected** notice and Install recovers only what's missing — websites, databases, and settings are preserved.
+
 `fu` handles:
 - Installing the new versioned packages (`phpX.Y-cli` + `phpX.Y-fpm`)
 - Switching the FPM service (`systemctl` stop old `phpX.Y-fpm` → start new)

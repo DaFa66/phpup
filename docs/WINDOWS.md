@@ -147,6 +147,12 @@ Apache's PHP module follows the installed PHP major: 7.x loads `php7apache2_4.dl
 
 The dashboard's **Process Status** section groups the web server with its PHP engine (`Apache` → `mod_php` → `MariaDB`). The PHP row reports the real integration state instead of a generic CLI message: `mod_php ------> active` (green) when the module line is wired and Apache is running, `stopped` (red) when Apache is down, `not wired` (yellow) when the LoadModule line is missing or points at a dead DLL (a stale module line after a broken version switch), and `not installed` (red) when php.exe is absent.
 
+## Partial Stack Recovery
+
+If one or more components are missing (a failed `fu` apply, a manually deleted folder, an interrupted install), the dashboard shows a **partial stack detected** notice and offers **I** Install as the recovery path. Install skips components already at or above the latest version (Apache, PHP, MariaDB, and phpMyAdmin are all checked) and installs only what's missing — websites, databases, and settings are preserved.
+
+MariaDB upgrades are data-safe: the install path stops the services, backs up the data directory to `data_backup_update\`, extracts the new version, and restores the data before restarting. This applies to both online installs and `-Offline` cached-zip installs.
+
 ## Service Registration
 
 During install, you're prompted to register Apache and MariaDB as Windows services for auto-start on boot. If you skip it, the **S** toggle will offer registration later. Services are named `phpup_Apache` and `phpup_MariaDB`. The dashboard shows current registration state and the **S** command works in both directions — it can also unregister services when they're no longer needed.

@@ -6,7 +6,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-08-29
-#  Version: 1.2.0
+#  Version: 1.2.1
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -969,11 +969,21 @@ show_dashboard() {
     fi
 
     # Commands
+    # Partial-stack recovery notice: a component went missing (failed fu
+    # apply, manual deletion, partial install). Install recovers only the
+    # missing piece — websites, databases and settings are preserved.
+    if [[ $STACK == 0 ]] && { [[ $APACHE == 1 || $MARIADB == 1 || $PHP == 1 || $PHPMYADMIN == 1 ]]; }; then
+        printf "\n"
+        print_warn "A partial web stack was detected — one or more components are missing."
+        printf "  Install (I) will recover the missing components only.\n"
+        printf "  Your websites, databases and settings are preserved.\n"
+    fi
+
     printf "${BOLD}Stack Commands:${RESET}\n"
     printf "~~~~~~~~~~~~~~~\n"
 
     if [[ $STACK == 0 ]]; then
-        printf "${CYAN}${UNDERLINE}I${RESET}${CYAN}nstall${RESET}  Install the PHP stack.\n"
+        printf "${CYAN}${UNDERLINE}I${RESET}${CYAN}nstall${RESET}  Install the PHP stack (recovers missing components).\n"
     else
         printf "${CYAN}${UNDERLINE}U${RESET}${CYAN}pdate${RESET}   Update components to latest versions.\n"
         printf "${CYAN}${UNDERLINE}R${RESET}${CYAN}estart${RESET}  Restart all services.\n"

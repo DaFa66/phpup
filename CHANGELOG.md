@@ -13,6 +13,19 @@ overview of every release.
 
 ---
 
+## [1.2.1-nix] — 2026-08-30
+
+### macOS & Linux (phpup.sh v1.2.1)
+
+*Previous platform update: [1.2.0-nix](#120-nix--2026-08-29).*
+
+Patch release: partial-stack recovery visibility, matching the Windows dashboard behavior from v2.4.3.
+
+**Added**
+- Partial-stack recovery notice on the dashboard: when one or more components are missing (failed `fu` apply, manual deletion, partial install), the script now says so and tells the user that Install recovers the missing components without touching websites, databases or settings
+
+---
+
 ## [1.2.0-nix] — 2026-08-29
 
 ### macOS & Linux (phpup.sh v1.2.0)
@@ -79,6 +92,25 @@ Patch release from the dual-stack test (MacPorts alongside Homebrew on one Mac):
 
 ### Notes
 - No tag: patch-level per RELEASES.md (milestone tags only; CHANGELOG is the record)
+
+---
+
+## [2.4.3-win] — 2026-08-30
+
+### Windows (phpup.ps1 v2.4.3)
+
+*Previous platform update: [2.4.2-win](#242-win--2026-08-28).*
+
+Patch release from the Windows live test: the fu download/extract path regressed in the v2.4.2 helper refactor, plus hardening for partial-stack recovery and version-swap data safety.
+
+**Fixed**
+- `fu` PHP download no longer produces a `True C:\phpup\downloads\...` path — `Invoke-WebRetry -OutFile` returned `$true` into the caller's output stream, so `Invoke-DownloadToCache` returned an array (`@($true, $path)`) instead of a string and `Expand-Archive` failed with "Cannot convert value to type System.String", wiping the PHP folder and cascading into a missing php.ini / Apache start failure (regression from the v2.4.2 retry-helper refactor)
+- Apache configuration no longer appends duplicate `Listen 80` lines — the replace-vs-append decision compared content instead of presence, so an already-correct `Listen 80` was treated as missing and a new line was appended on every install/update, eventually failing with "Cannot define multiple Listeners" (`AH00526`); the step now removes every existing `Listen` line and appends exactly one (idempotent and self-healing)
+- MariaDB upgrade during install now stops services, backs up the data directory, and restores it after extracting the new version — previously the install path extracted over the live install while the server was running (binaries locked, extraction silently failed and reported `[ OK ]`; had the server been stopped, a data-dir wipe was possible)
+- Install no longer re-downloads/re-extracts phpMyAdmin when the installed version is already at or above the resolved version (matches the Apache/PHP/MariaDB skip logic)
+
+**Added**
+- Partial-stack recovery notice on the dashboard: when one or more components are missing (failed `fu` apply, manual deletion, partial install), the script now says so and tells the user that `I` Install recovers the missing components without touching websites, databases or settings
 
 ---
 
@@ -718,7 +750,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| [**2.4.2-win**](#242-win--2026-08-28) | 2026-08-28 | Dashboard mod_php status + wiring check, Process Status reorder |
+| [**2.4.3-win**](#243-win--2026-08-30) | 2026-08-30 | fu download `True` path fix, Listen dedupe, partial-stack recovery notice, MariaDB data backup before upgrade, PMA skip |
 | [**2.4.1-win**](#241-win--2026-08-18) | 2026-08-18 | fu phpMyAdmin Alias fix, Directory self-heal |
 | [**2.4.0-win**](#240-win--2026-08-17) | 2026-08-17 | fu series management, variants, pre-release labels |
 | [**2.3.0-win**](#230-win--2026-08-17) | 2026-08-17 | Soft ARM64 (Prism), VC++ arch-aware |
@@ -741,7 +773,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| [**1.2.0-nix**](#120-nix--2026-08-29) | 2026-08-29 | Real config in install folder, legacy migration, configurable php_min_series + env override |
+| [**1.2.1-nix**](#121-nix--2026-08-30) | 2026-08-30 | Partial-stack recovery notice (dashboard) |
 | [**1.1.0-nix**](#110-nix--2026-08-28) | 2026-08-28 | Apache + PHP-FPM, mod_php auto-migration, rollback-safe fu, PMA secret/tmp fixes |
 | [**1.0.2-nix**](#102-nix--2026-08-21) | 2026-08-21 | Dual-stack machine fixes, stack-aware services, PMA blowfish |
 | [**1.0.1-nix**](#101-nix--2026-08-11) | 2026-08-11 | Homebrew `fu` numbered menu, formula-aware `u` |
