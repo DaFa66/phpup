@@ -1591,10 +1591,24 @@ configure_mariadb() {
     elif mysql -u root -h 127.0.0.1 -e "SELECT 1" &>/dev/null 2>&1; then
         print_ok "MariaDB root access confirmed (no password)"
     else
-        # Fallback: stop, wipe, and reinitialize
+        # Fallback: reinitialize — but never destroy populated data.
+        # A user with non-blank root auth reaches this branch; wiping
+        # their data dir would be catastrophic. Preserve it instead.
+        local brew_datadir="${BREW_PREFIX}/var/mysql"
+        local datadir_populated=0
+        if [[ -d "$brew_datadir" ]] && [[ -n "$(ls -A "$brew_datadir" 2>/dev/null)" ]]; then
+            datadir_populated=1
+        fi
         brew services stop mariadb 2>/dev/null
         sleep 1
-        rm -rf "${BREW_PREFIX}/var/mysql" 2>/dev/null || true
+        if [[ $datadir_populated -eq 1 ]]; then
+            local backup_dir
+            backup_dir="${BREW_PREFIX}/var/mysql.backup-$(date +%Y%m%d-%H%M%S)"
+            mv "$brew_datadir" "$backup_dir" 2>/dev/null || sudo mv "$brew_datadir" "$backup_dir" 2>/dev/null || true
+            print_warn "MariaDB data dir preserved at ${backup_dir} — root access needs manual setup"
+        else
+            rm -rf "$brew_datadir" 2>/dev/null || true
+        fi
         brew services start mariadb 2>/dev/null
         sleep 5
         if mysql -u root -e "SELECT 1" &>/dev/null 2>&1; then
@@ -1689,10 +1703,20 @@ configure_mariadb_ports() {
     # Wipe and retry once; a second failure surfaces as a warning, not a silent
     # "MariaDB started" false positive.
     if ! datadir_initialized; then
-        print_warn "MariaDB data dir incomplete — wiping and re-initializing"
+        # Never destroy data: a missing/broken mysql/ system schema with
+        # user databases present is a corruption case, not a fresh-init
+        # case. Only wipe a truly empty datadir; preserve anything else.
+        if [[ -d "$datadir" ]] && [[ -n "$(ls -A "$datadir" 2>/dev/null)" ]]; then
+            local preserve_dir
+            preserve_dir="${PORT_PREFIX}/var/db/${MARIADB_PORT}.preserved-$(date +%Y%m%d-%H%M%S)"
+            sudo mv "$datadir" "$preserve_dir" 2>/dev/null || true
+            print_warn "MariaDB data dir preserved at ${preserve_dir} — re-initializing alongside it"
+        else
+            print_warn "MariaDB data dir incomplete — re-initializing"
+        fi
         sudo "${PORT_PREFIX}/bin/port" unload "${MARIADB_PORT}-server" >/dev/null 2>&1
         sleep 1
-        if [[ -d "$datadir" ]]; then
+        if [[ -d "$datadir" ]] && [[ -z "$(ls -A "$datadir" 2>/dev/null)" ]]; then
             sudo rm -rf "$datadir" 2>/dev/null || true
         fi
         sudo mkdir -p "$datadir"
