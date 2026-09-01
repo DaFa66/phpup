@@ -152,6 +152,8 @@ MariaDB server from the browser.
 | phpMyAdmin        | `http://localhost/phpmyadmin`               |
 | PHP test page     | `http://localhost/phpinfo.php`              |
 
+> MariaDB data safety: if the data dir is populated but can't be initialized for blank-root auth, phpup moves it aside (`.preserved-<date>`) rather than wiping it. Only a truly empty data dir is re-initialized.
+
 ## Everyday commands
 
 Back in phpup's dashboard:

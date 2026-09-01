@@ -77,7 +77,7 @@ $(brew --prefix)/etc/my.cnf             # MariaDB configuration
 $(brew --prefix)/etc/phpmyadmin.config.inc.php  # phpMyAdmin configuration
 $(brew --prefix)/share/phpmyadmin/      # phpMyAdmin web files
 $(brew --prefix)/var/mysql/             # MariaDB data directory
-~/.config/phpup/config.json             # phpup persistent config
+~/phpup/config.json                    # phpup persistent config
 ```
 
 > Run `brew --prefix` to see the actual path on your machine.
@@ -105,6 +105,7 @@ $(brew --prefix)/var/mysql/             # MariaDB data directory
 - Data directory initialized with blank root password
 - Auth switched from `unix_socket` to `mysql_native_password` so phpMyAdmin can connect over TCP
 - Service managed via `brew services`
+- If blank-root auth can't be confirmed, a populated data dir is **preserved** (moved aside to `var/mysql.backup-<date>`) rather than wiped. Only an empty or missing data dir is re-initialized
 
 ### phpMyAdmin
 

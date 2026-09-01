@@ -94,7 +94,7 @@ System paths (managed by apt):
 - Data directory initialized with blank root password
 - Auth switched from `unix_socket` to `mysql_native_password` so phpMyAdmin can connect over TCP
 - Error log configured with `[mysqld]` group header
-- On Homebrew and MacPorts, a data dir that can't be reached via blank-root auth is **preserved** (moved aside to `var/mysql.backup-<date>` / `.preserved-<date>`) rather than wiped — only a genuinely empty/missing data dir is re-initialized
+- Data dir is never wiped: if blank-root auth can't be confirmed, phpup warns and leaves it untouched
 
 ### phpMyAdmin
 
