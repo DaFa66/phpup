@@ -1054,17 +1054,16 @@ port_owner_active() {
     return 1
 }
 
-# Best-effort name of the process holding a port. Uses sudo only when the
-# credential is already cached (never triggers a new prompt just to diagnose);
-# falls back to a plain hint when the holder can't be resolved.
+# Best-effort name of the process holding a port. Tries sudo -n first (only
+# succeeds with a cached credential — never prompts); falls back to plain ss,
+# then to a hint when the holder can't be resolved.
 port_holder_label() {
     local port="$1" ssout line
-    if sudo -n true 2>/dev/null; then
-        ssout=$(sudo -n ss -ltnp 2>/dev/null || true)
-    else
+    ssout=$(sudo -n ss -ltnp 2>/dev/null || true)
+    if [[ -z "$ssout" ]]; then
         ssout=$(ss -ltnp 2>/dev/null || true)
     fi
-    line=$(printf '%s\n' "$ssout" | awk -v p=":$port" '$4 ~ ":" p "$" {print; exit}')
+    line=$(printf '%s\n' "$ssout" | awk -v p="$port" '$4 ~ ":" p "$" {print; exit}')
     if [[ -n "$line" ]]; then
         local label
         label=$(printf '%s\n' "$line" | sed -n 's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/\1 (PID \2)/p' | head -1)
