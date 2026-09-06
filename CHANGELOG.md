@@ -13,6 +13,24 @@ overview of every release.
 
 ---
 
+## [1.2.5-nix] — 2026-09-06
+
+### macOS & Linux (phpup.sh v1.2.5)
+
+*Previous platform update: [1.2.4-nix](#124-nix--2026-09-06).*
+
+Patch release from the Debian 13 live test: phpMyAdmin broke after an update with `Access denied for user 'pma'@'localhost'` — the controluser password in MariaDB had drifted from the one in phpup's config override.
+
+### Fixed
+- **Update flow no longer configures phpMyAdmin while MariaDB is stopped** — `cmd_update` stopped all services, ran `configure_phpmyadmin`, then started services. Every MariaDB step in PMA config (storage tables, control-user password) silently failed against the dead server, but the override was still rewritten, so the configured controlpass drifted from the DB. `configure_phpmyadmin` now runs after `start_services` in all three update branches (apt, MacPorts, Homebrew).
+- **Control password is captured before the override rewrite** — the "reuse existing pass" logic read the override *after* the rewrite heredoc had erased it, so every configure generated a fresh random pass (and an update with MariaDB down wrote it without ever reaching the DB). The existing pass is now captured first and only generated when none exists.
+- **Silent failures are now loud** — the pma control-user alignment only runs when MariaDB is reachable, verifies the login afterwards, and prints a warning (instead of `2>/dev/null || true`) whenever alignment is skipped or fails. Config stays stable when the DB is down.
+
+### Verified
+- `bash -n` OK · live diagnosis on Debian 13 reproduced the drift (override pass 24 hex vs DB user mismatch) · manual realign fixed PMA instantly (login OK on localhost + 127.0.0.1) · structure reviewed for all three update branches
+
+---
+
 ## [1.2.4-nix] — 2026-09-06
 
 ### macOS & Linux (phpup.sh v1.2.4)
@@ -847,6 +865,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**1.2.5-nix**](#125-nix--2026-09-06) | 2026-09-06 | Update flow PMA control-user password drift fixed (configure after start, stable pass) |
 | [**1.2.4-nix**](#124-nix--2026-09-06) | 2026-09-06 | fu menu flags pre-release series (alpha/beta/RC) |
 | [**1.2.3-nix**](#123-nix--2026-09-06) | 2026-09-06 | Update check groups pending apt updates per component family |
 | [**1.2.2-nix**](#122-nix--2026-08-30) | 2026-08-30 | MariaDB data dir preserved before re-init (brew + ports), SC2155 cleanup |

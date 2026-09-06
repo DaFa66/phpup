@@ -6,7 +6,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-09-06
-#  Version: 1.2.4
+#  Version: 1.2.5
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -1968,8 +1968,14 @@ configure_phpmyadmin_apt() {
     # erases it — re-appending the SAME value keeps re-configures idempotent
     # (a fresh random secret per run would rotate PMA cookies/sessions on every U).
     local pma_secret_val
-    pma_secret_val=$(sed -n "s/.*'\\([0-9a-f]\\{32\\}\\)'.*/\\1/p" "$pma_override" 2>/dev/null | tail -1)
+    pma_secret_val=$(sed -n "s/.*'\([0-9a-f]\{32\}\)'.*/\1/p" "$pma_override" 2>/dev/null | tail -1)
     [[ -n "$pma_secret_val" ]] || pma_secret_val=$(pma_secret)
+    # Capture the existing control pass BEFORE the rewrite below erases it —
+    # reuse keeps config and MariaDB in lock-step (a fresh pass per run would
+    # desync whenever MariaDB is unreachable at configure time).
+    local pma_pass=""
+    pma_pass=$(grep -oP "(?<=controlpass'\] = ')[^']*" "$pma_override" 2>/dev/null | head -1)
+    [[ -n "$pma_pass" ]] || pma_pass=$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')
     sudo tee "$pma_override" > /dev/null <<'PMACONF'
 <?php
 // phpup — phpMyAdmin configuration overrides
@@ -2024,15 +2030,24 @@ CONFDINCLUDE
             # forms — Debian's script uses `USE phpmyadmin;` without backticks)
             sed 's/phpmyadmin/pma/g' "$pma_sql" | mariadb -u root 2>/dev/null || true
         fi
-        # Stable control password: reuse one already written to the override
-        # (survives delete via /etc), else generate one.
-        local pma_pass=""
-        if [[ -f "$pma_override" ]]; then
-            pma_pass=$(grep -oP "(?<=controlpass'\] = ')[^']*" "$pma_override" 2>/dev/null | head -1)
+        # Align the pma control user only while MariaDB is reachable — the
+        # update flow stops services before configuring, and a silent ALTER
+        # failure would drift the config controlpass away from the DB, which
+        # breaks PMA's controluser login.
+        if mariadb -u root -e "SELECT 1" &>/dev/null 2>&1; then
+            # MariaDB 12.x does NOT auto-create users on GRANT — CREATE USER first.
+            if mariadb -u root -e "CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY '${pma_pass}'; ALTER USER 'pma'@'localhost' IDENTIFIED BY '${pma_pass}'; GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost'; FLUSH PRIVILEGES;"; then
+                if MYSQL_PWD="$pma_pass" mariadb -u pma -e "SELECT 1" &>/dev/null 2>&1; then
+                    print_ok "Configured phpMyAdmin storage database (pma)"
+                else
+                    print_warn "pma control-user password set but login verification failed"
+                fi
+            else
+                print_warn "Could not set the pma control-user password"
+            fi
+        else
+            print_warn "MariaDB not running — pma control-user alignment skipped (keeping existing pass)"
         fi
-        [[ -z "$pma_pass" ]] && pma_pass=$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')
-        # Ensure the pma control user exists with the configured password
-        mariadb -u root -e "CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY '${pma_pass}'; ALTER USER 'pma'@'localhost' IDENTIFIED BY '${pma_pass}'; GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null || true
         # Wire controluser + storage into the override using server index 1
         # (avoids $cfg['Servers'] array_key issue when conf.d loads early).
         sudo tee -a "$pma_override" > /dev/null <<EOF
@@ -2040,7 +2055,6 @@ CONFDINCLUDE
 \$cfg['Servers'][1]['controlpass'] = '${pma_pass}';
 \$cfg['Servers'][1]['pmadb'] = 'pma';
 EOF
-        print_ok "Configured phpMyAdmin storage database (pma)"
     else
         print_info "phpMyAdmin storage tables not found — skipping storage setup"
     fi
@@ -2479,8 +2493,10 @@ cmd_update() {
 
         configure_apache
         configure_php
-        configure_phpmyadmin
         start_services
+        # PMA config touches MariaDB (pma control user) — run it once the DB is
+        # up so password alignment can't fail silently.
+        configure_phpmyadmin
     elif [[ $USE_PORTS == 1 ]]; then
         print_info "Updating ports tree (port selfupdate)..."
         print_info "This can take a minute or two — the ports tree is a large download."
@@ -2523,8 +2539,9 @@ cmd_update() {
             read -r pma_upgrade
             [[ "$pma_upgrade" != "n" && "$pma_upgrade" != "N" ]] && install_pma_tarball "$pma_latest" "$PMA_DIR" || print_warn "phpMyAdmin upgrade failed"
         fi
-        configure_apache; configure_php; configure_phpmyadmin
+        configure_apache; configure_php
         start_services
+        configure_phpmyadmin
     else
         brew update &>/dev/null
         # Detect the ACTIVE PHP formula — meta 'php' or a versioned php@X.Y
@@ -2577,8 +2594,8 @@ cmd_update() {
         detect_all
         configure_apache
         configure_php
-        configure_phpmyadmin
         start_services
+        configure_phpmyadmin
     fi
 
     # Save new versions
