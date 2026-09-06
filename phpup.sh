@@ -5,8 +5,8 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-08-29
-#  Version: 1.2.2
+#  Date: 2026-09-06
+#  Version: 1.2.3
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -631,6 +631,30 @@ pma_secret() {
 # output is piped (non-TTY), plus the "can be upgraded" notices. Real errors pass through.
 apt_update_quiet() {
     sudo apt update -qq > /dev/null 2>&1 || true
+}
+
+# Collapse `apt list --upgradable` output into compact per-family summary lines.
+# Raw apt lines look like:
+#   php8.5-cli/trixie 8.5.10-1+0~20260828.25+debian13~1.gbpfea0b8 amd64 [upgradable from: 8.5.9-1+0~...]
+# Emits "<family>|<old>|<new>|<count>" per family (php8.x / apache2 / mariadb-server),
+# versions stripped of epoch + debian revision so only the upstream version shows.
+summarize_apt_outdated() {
+    printf '%s\n' "$1" | awk '
+        {
+            pkg = $1; sub(/\/.*/, "", pkg)
+            new = $2; sub(/-.*/, "", new); sub(/^[0-9]+:/, "", new)
+            old = $0; sub(/^.*\[upgradable from: /, "", old); sub(/\]$/, "", old)
+            sub(/-.*/, "", old); sub(/^[0-9]+:/, "", old)
+            if (pkg ~ /^php[0-9]+\.[0-9]+/)        { fam = pkg; sub(/-.*/, "", fam) }
+            else if (pkg ~ /^libapache2-mod-php/)  { fam = "php-mod" }
+            else if (pkg ~ /^apache2/)             { fam = "apache2" }
+            else if (pkg ~ /^mariadb-server/)      { fam = "mariadb-server" }
+            else                                    { next }
+            if (!(fam in seen)) { seen[fam] = 1; order[++n] = fam; first_old[fam] = old; first_new[fam] = new }
+            count[fam]++
+        }
+        END { for (i = 1; i <= n; i++) { f = order[i]; printf "%s|%s|%s|%d\n", f, first_old[f], first_new[f], count[f] } }
+    '
 }
 
 # ---- Prerequisites Check ------------------------------------
@@ -2386,15 +2410,10 @@ cmd_update() {
             # Resolve full current version from the running binary
             local php_current_full
             php_current_full=$("$(apt_php_bin)" -r 'echo PHP_VERSION;' 2>/dev/null)
-            local msg="PHP ${php_current_full} → ${php_latest_full}"
-            if [[ -z "$outdated" ]]; then
-                outdated="$msg"
-            else
-                outdated="${msg}"$'\n'"${outdated}"
-            fi
+            local switch_msg="PHP ${php_current_full} → ${php_latest_full}"
         fi
 
-        if [[ -z "$outdated" ]]; then
+        if [[ -z "$outdated" && -z "${switch_msg:-}" ]]; then
             print_ok "All components are up to date"
             printf "\n"
             read -r -p "Press Enter to continue..."
@@ -2402,7 +2421,24 @@ cmd_update() {
         fi
 
         printf "\n${CYAN}Updates available:${RESET}\n"
-        printf "%s\n" "$outdated"
+        if [[ -n "${switch_msg:-}" ]]; then
+            printf "  %s\n" "$switch_msg"
+        fi
+        if [[ -n "$outdated" ]]; then
+            local fam label oldv newv cnt plural
+            while IFS='|' read -r fam oldv newv cnt; do
+                case "$fam" in
+                    php*)            label="PHP ${fam#php}" ;;
+                    apache2)         label="Apache" ;;
+                    mariadb-server)  label="MariaDB" ;;
+                    php-mod)         label="Apache PHP module" ;;
+                    *)               label="$fam" ;;
+                esac
+                plural="packages"
+                [[ "$cnt" == "1" ]] && plural="package"
+                printf "  ${BOLD}%-11s${RESET} %-8s → %-8s (%s %s)\n" "$label" "$oldv" "$newv" "$cnt" "$plural"
+            done < <(summarize_apt_outdated "$outdated")
+        fi
         printf "\n"
 
         printf "${BOLD}Apply these updates? [y/N]:${RESET} "

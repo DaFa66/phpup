@@ -13,6 +13,22 @@ overview of every release.
 
 ---
 
+## [1.2.3-nix] — 2026-09-06
+
+### macOS & Linux (phpup.sh v1.2.3)
+
+*Previous platform update: [1.2.2-nix](#122-nix--2026-08-30).*
+
+Patch release from the Debian 13 live test: the update check's "Updates available" list dumped every raw `apt list --upgradable` line (long sury archive suffixes, one line per PHP module), making a routine point-release look like a wall of noise.
+
+### Changed
+- **Update check groups pending updates per component family** — new `summarize_apt_outdated` helper collapses the raw apt lines into one readable row per family (`PHP 8.4   8.4.24 → 8.4.25   (16 packages)`), with versions stripped of epoch + Debian revision so only the upstream version shows. Apache and MariaDB each keep their own single line when they have updates. The package set actually upgraded is unchanged.
+
+### Verified
+- `bash -n` OK (repo + LF test copy) · summarizer dry-run against the live Debian 13 output (php8.4 ×16, php8.5 ×15 → two grouped lines, no packages dropped) · user live run of `u` on Debian 13 confirmed the summary display
+
+---
+
 ## [2.4.4-win] — 2026-08-30
 
 ### Windows (phpup.ps1 v2.4.4)
@@ -815,6 +831,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**1.2.3-nix**](#123-nix--2026-09-06) | 2026-09-06 | Update check groups pending apt updates per component family |
 | [**1.2.2-nix**](#122-nix--2026-08-30) | 2026-08-30 | MariaDB data dir preserved before re-init (brew + ports), SC2155 cleanup |
 | [**1.2.1-nix**](#121-nix--2026-08-30) | 2026-08-30 | Partial-stack recovery notice (dashboard) |
 | [**1.1.0-nix**](#110-nix--2026-08-28) | 2026-08-28 | Apache + PHP-FPM, mod_php auto-migration, rollback-safe fu, PMA secret/tmp fixes |
