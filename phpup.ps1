@@ -1542,7 +1542,36 @@ function Get-PmaStorageConfig {
 #  SERVICE MANAGEMENT
 # ============================================================
 
+function Test-TcpPortListening {
+    param([int]$Port)
+    $c = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    if ($c) { return $true }
+    # Fallback for older systems: parse netstat -ano output
+    $n = netstat -ano 2>$null | Select-String ":$Port\s" | Select-String "LISTENING"
+    return [bool]$n
+}
+
+function Assert-StackPortsFree {
+    # Refuse to start into ports another stack is holding (IIS, Docker,
+    # XAMPP, a second MariaDB/MySQL...). phpup's OWN running components are
+    # exempt, so restart over a live phpup stack passes.
+    $busy = $false
+    if ((Test-TcpPortListening -Port 80) -and -not (Test-ApacheRunning)) {
+        Write-Err "Port 80 is already in use — another stack is running."
+        Write-Info "See who holds it: netstat -ano | findstr :80"
+        $busy = $true
+    }
+    if ((Test-TcpPortListening -Port 3306) -and -not (Test-MariaDbRunning)) {
+        Write-Err "Port 3306 is already in use — another database server is running."
+        Write-Info "See who holds it: netstat -ano | findstr :3306"
+        $busy = $true
+    }
+    return (-not $busy)
+}
+
 function Start-WebStackServices {
+    # Refuse to start into ports another stack is holding.
+    if (-not (Assert-StackPortsFree)) { return }
     Write-Host ""
     Write-Warn "Starting services..."
 
