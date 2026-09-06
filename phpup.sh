@@ -2762,10 +2762,6 @@ cmd_delete() {
         sudo rm -rf /var/lib/apache2 /var/lib/php /var/lib/phpmyadmin 2>/dev/null || true
         # Remove the phpup-managed Apache FPM conf (regenerated on reinstall)
         sudo rm -f "$(apache_fpm_conf)" "$(apache_fpm_conf).phpup.bak" 2>/dev/null || true
-        # Remove the apt MariaDB-generated feedback.cnf (feedback=OFF). MySQL
-        # 26+ treats 'feedback' as an unknown variable and aborts, so a foreign
-        # MySQL on the same box would fail after a phpup reinstall left it.
-        sudo rm -f /etc/mysql/mariadb.conf.d/feedback.cnf 2>/dev/null || true
         # /var/lib/mysql is the live datadir — its contents were backed up above;
         # removing it gives a genuinely fresh reinstall. Configs stay in /etc/mysql.
         sudo rm -rf /var/lib/mysql 2>/dev/null || true
@@ -2838,6 +2834,13 @@ cmd_delete() {
         rm -f "${HOME}/Library/LaunchAgents/homebrew.mxcl.*.plist" 2>/dev/null || true
         print_ok "Removed stale LaunchAgent plists"
     fi
+
+    # Remove the apt MariaDB-generated feedback.cnf (feedback=OFF) on ALL
+    # backends: MySQL 26+ treats 'feedback' as an unknown variable and aborts,
+    # and on Linux a brew/ports MySQL reads the same /etc/mysql include chain,
+    # so the file would break a foreign MySQL after a phpup reinstall. It only
+    # exists on Debian/Ubuntu (apt MariaDB postinst); a harmless no-op elsewhere.
+    sudo rm -f /etc/mysql/mariadb.conf.d/feedback.cnf 2>/dev/null || true
 
     # Remove remaining logs
     rm -rf "$LOGS_DIR" 2>/dev/null || true
