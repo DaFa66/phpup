@@ -310,11 +310,16 @@ apt_php_bin() {
 
 detect_php() {
     if [[ $USE_APT == 1 ]]; then
-        if command -v php &>/dev/null 2>&1; then
+        # Only a dpkg-owned binary counts as the stack's PHP. After a delete
+        # the alternatives link is gone, and brew/getphp shims left on PATH
+        # (brew shellenv in ~/.bashrc) would otherwise fake a partial stack.
+        local managed_bin
+        managed_bin=$(apt_php_bin 2>/dev/null || true)
+        if [[ -n "$managed_bin" ]] && dpkg -S "$managed_bin" >/dev/null 2>&1; then
             PHP=1
             # Report the active version from the managed binary (versioned
             # installs have no php meta package)
-            PHP_VERSION=$("$(apt_php_bin)" -r 'echo PHP_VERSION;' 2>/dev/null || dpkg -s php 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
+            PHP_VERSION=$("$managed_bin" -r 'echo PHP_VERSION;' 2>/dev/null || dpkg -s php 2>/dev/null | grep '^Version:' | awk '{print $2}' | cut -d- -f1 | cut -d: -f2)
         else
             PHP=0
             PHP_VERSION=""
