@@ -1063,7 +1063,8 @@ check_stack_ports_free() {
         if tcp_port_listening "$port" && ! port_owner_active "$port"; then
             print_err "Port ${port} is already in use — another stack is running."
             printf "${YELLOW}  Stop it first (e.g. a brew/getphp, ddev or docker stack).${RESET}\n"
-            printf "${YELLOW}  See who holds it: ss -ltnp | grep ':${port}'${RESET}\n"
+            printf "${YELLOW}  See who holds it (sudo needed for other users' processes):${RESET}\n"
+            printf "${YELLOW}    sudo ss -ltnp | grep ':${port}'${RESET}\n"
             busy=1
         fi
     done
