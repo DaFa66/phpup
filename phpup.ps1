@@ -1551,20 +1551,32 @@ function Test-TcpPortListening {
     return [bool]$n
 }
 
+function Get-PortHolderName {
+    param([int]$Port)
+    $line = netstat -ano 2>$null | Select-String ":$Port\s" | Select-String "LISTENING" | Select-Object -First 1
+    if ($line) {
+        $pidStr = ($line.ToString().Trim() -split '\s+')[-1]
+        $proc = Get-Process -Id ([int]$pidStr) -ErrorAction SilentlyContinue
+        if ($proc) { return "$($proc.ProcessName) (PID $pidStr)" }
+    }
+    return "unknown (run: netstat -ano | findstr :$Port)"
+}
+
 function Assert-StackPortsFree {
     # Refuse to start into ports another stack is holding (IIS, Docker,
     # XAMPP, a second MariaDB/MySQL...). phpup's OWN running components are
     # exempt, so restart over a live phpup stack passes.
     $busy = $false
     if ((Test-TcpPortListening -Port 80) -and -not (Test-ApacheRunning)) {
-        Write-Err "Port 80 is already in use — another stack is running."
-        Write-Info "See who holds it: netstat -ano | findstr :80"
+        Write-Err "Port 80 is in use by another stack — $(Get-PortHolderName -Port 80)"
         $busy = $true
     }
     if ((Test-TcpPortListening -Port 3306) -and -not (Test-MariaDbRunning)) {
-        Write-Err "Port 3306 is already in use — another database server is running."
-        Write-Info "See who holds it: netstat -ano | findstr :3306"
+        Write-Err "Port 3306 is in use by another stack — $(Get-PortHolderName -Port 3306)"
         $busy = $true
+    }
+    if ($busy) {
+        Write-Info "Stop the other stack first, then run R or S to try again."
     }
     return (-not $busy)
 }

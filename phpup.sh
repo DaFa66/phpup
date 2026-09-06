@@ -1054,6 +1054,28 @@ port_owner_active() {
     return 1
 }
 
+# Best-effort name of the process holding a port. Uses sudo only when the
+# credential is already cached (never triggers a new prompt just to diagnose);
+# falls back to a plain hint when the holder can't be resolved.
+port_holder_label() {
+    local port="$1" ssout line
+    if sudo -n true 2>/dev/null; then
+        ssout=$(sudo -n ss -ltnp 2>/dev/null || true)
+    else
+        ssout=$(ss -ltnp 2>/dev/null || true)
+    fi
+    line=$(printf '%s\n' "$ssout" | awk -v p=":$port" '$4 ~ ":" p "$" {print; exit}')
+    if [[ -n "$line" ]]; then
+        local label
+        label=$(printf '%s\n' "$line" | sed -n 's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/\1 (PID \2)/p' | head -1)
+        if [[ -n "$label" ]]; then
+            echo "$label"
+            return
+        fi
+    fi
+    echo "unknown (run: sudo ss -ltnp | grep ':$port')"
+}
+
 # Refuse to start when another stack holds the web/DB ports. Loud, not silent:
 # without this, an apt systemctl start just fails with stderr swallowed and
 # phpup still reports "[ OK ] Services started".
@@ -1061,14 +1083,15 @@ check_stack_ports_free() {
     local busy=0 port
     for port in 80 3306; do
         if tcp_port_listening "$port" && ! port_owner_active "$port"; then
-            print_err "Port ${port} is already in use — another stack is running."
-            printf "${YELLOW}  Stop it first (e.g. a brew/getphp, ddev or docker stack).${RESET}\n"
-            printf "${YELLOW}  See who holds it (sudo needed for other users' processes):${RESET}\n"
-            printf "${YELLOW}    sudo ss -ltnp | grep ':${port}'${RESET}\n"
+            print_err "Port ${port} is in use by another stack — $(port_holder_label "$port")"
             busy=1
         fi
     done
-    return $busy
+    if [[ $busy == 1 ]]; then
+        printf "${YELLOW}  Stop the other stack first, then run R or S to try again.${RESET}\n"
+        return 1
+    fi
+    return 0
 }
 
 # ---- Service Management -------------------------------------
