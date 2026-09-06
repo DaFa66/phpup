@@ -6,7 +6,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-09-06
-#  Version: 1.2.3
+#  Version: 1.2.4
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -2996,16 +2996,22 @@ switch_php_apt() {
 
     printf "\n${CYAN}Available PHP versions:${RESET}\n"
 
-    local i=1 v
+    local i=1 v candidate_ver
     declare -a opts=()
     while read -r v; do
-        local tag=""
+        local tag="" pre=""
+        # Flag pre-release series (alpha/beta/RC) so switching to one is an
+        # informed choice — same honest-disclosure rule as Windows fu.
+        candidate_ver=$(apt-cache policy "php${v}" 2>/dev/null | awk '/Candidate:/{print $2; exit}' | tr '[:upper:]' '[:lower:]')
+        if [[ "$candidate_ver" == *alpha* || "$candidate_ver" == *beta* || "$candidate_ver" == *rc* || "$candidate_ver" == *preview* ]]; then
+            pre=" ${YELLOW}(pre-release)${RESET}"
+        fi
         if [[ "$v" == "$current" ]]; then
             tag=" ${GREEN}(active)${RESET}"
         elif [[ -x "/usr/bin/php${v}" ]]; then
             tag=" ${YELLOW}(installed)${RESET}"
         fi
-        printf "  %d) PHP %s%b\n" "$i" "$v" "$tag"
+        printf "  %d) PHP %s%b%b\n" "$i" "$v" "$tag" "$pre"
         opts[$i]="$v"
         ((i++))
     done <<< "$versions"

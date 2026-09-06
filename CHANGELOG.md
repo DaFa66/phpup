@@ -13,6 +13,22 @@ overview of every release.
 
 ---
 
+## [1.2.4-nix] — 2026-09-06
+
+### macOS & Linux (phpup.sh v1.2.4)
+
+*Previous platform update: [1.2.3-nix](#123-nix--2026-09-06).*
+
+Patch release from the fu live test on Debian 13 (PHP 8.6 alpha1): the fu menu listed pre-release series exactly like stable ones, making an alpha switch look like a routine bump.
+
+### Changed
+- **fu menu flags pre-release series** — a series whose apt candidate is an alpha/beta/RC (e.g. PHP 8.6 at `8.6.0~alpha1`) now carries a yellow `(pre-release)` marker in the version list, matching the honest-disclosure rule Windows fu has followed since v2.4.0. Pre-releases remain selectable for testing, just no longer silently.
+
+### Verified
+- `bash -n` OK · label logic dry-run (alpha/beta/RC flagged after lowercase, stable versions clean) · follows the Debian 13 live fu test that exposed the gap (8.6 alpha1 install + switch back to 8.5)
+
+---
+
 ## [1.2.3-nix] — 2026-09-06
 
 ### macOS & Linux (phpup.sh v1.2.3)
@@ -831,6 +847,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**1.2.4-nix**](#124-nix--2026-09-06) | 2026-09-06 | fu menu flags pre-release series (alpha/beta/RC) |
 | [**1.2.3-nix**](#123-nix--2026-09-06) | 2026-09-06 | Update check groups pending apt updates per component family |
 | [**1.2.2-nix**](#122-nix--2026-08-30) | 2026-08-30 | MariaDB data dir preserved before re-init (brew + ports), SC2155 cleanup |
 | [**1.2.1-nix**](#121-nix--2026-08-30) | 2026-08-30 | Partial-stack recovery notice (dashboard) |
