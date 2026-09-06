@@ -1024,8 +1024,59 @@ show_dashboard() {
     printf "\n"
 }
 
+# ---- Port Availability --------------------------------------
+# Whether a TCP port is already listening (ss on Linux, netstat elsewhere).
+tcp_port_listening() {
+    local port="$1"
+    if command -v ss &>/dev/null 2>&1; then
+        ss -ltn 2>/dev/null | awk -v p="$port" '$4 ~ ":" p "$" {found=1} END { exit !found }'
+    else
+        netstat -an 2>/dev/null | awk -v p="$port" '$4 ~ "[.]" p "$" && $6 == "LISTEN" {found=1} END { exit !found }'
+    fi
+}
+
+# Whether the phpup-managed service that legitimately owns a port is active.
+# Exempting it means restart/reinstall over a live phpup stack passes while a
+# foreign stack (brew/getphp, ddev, docker, MAMP...) still trips the check.
+port_owner_active() {
+    local port="$1"
+    if [[ $USE_APT == 1 ]]; then
+        case "$port" in
+            80)   systemctl is-active --quiet apache2 2>/dev/null && return 0 ;;
+            3306) systemctl is-active --quiet mariadb 2>/dev/null && return 0 ;;
+        esac
+    else
+        case "$port" in
+            80)   stack_proc -x httpd &>/dev/null && return 0 ;;
+            3306) { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; } && return 0 ;;
+        esac
+    fi
+    return 1
+}
+
+# Refuse to start when another stack holds the web/DB ports. Loud, not silent:
+# without this, an apt systemctl start just fails with stderr swallowed and
+# phpup still reports "[ OK ] Services started".
+check_stack_ports_free() {
+    local busy=0 port
+    for port in 80 3306; do
+        if tcp_port_listening "$port" && ! port_owner_active "$port"; then
+            print_err "Port ${port} is already in use — another stack is running."
+            printf "${YELLOW}  Stop it first (e.g. a brew/getphp, ddev or docker stack).${RESET}\n"
+            printf "${YELLOW}  See who holds it: ss -ltnp | grep ':${port}'${RESET}\n"
+            busy=1
+        fi
+    done
+    return $busy
+}
+
 # ---- Service Management -------------------------------------
 start_services() {
+    # Refuse to start into ports another stack is holding.
+    if ! check_stack_ports_free; then
+        printf "\n"
+        return 1
+    fi
     print_info "Starting services..."
     if [[ $USE_APT == 1 ]]; then
         [[ $APACHE == 1 ]] && sudo systemctl start apache2 2>/dev/null
@@ -1145,7 +1196,7 @@ stop_services() {
 
 restart_services() {
     stop_services
-    start_services
+    start_services || print_warn "Services did not start — see the messages above"
 }
 
 toggle_services() {
@@ -1158,7 +1209,7 @@ toggle_services() {
         stop_services
         printf "\n${CYAN}Services stopped. Press S again to start them.${RESET}\n"
     else
-        start_services
+        start_services || print_warn "Services did not start — see the messages above"
     fi
 }
 
@@ -2363,7 +2414,7 @@ cmd_install() {
 
     # Start services
     printf "\n"
-    start_services
+    start_services || print_warn "Services did not start — see the messages above"
 
     # Detect versions post-install
     detect_all
