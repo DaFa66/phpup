@@ -13,6 +13,23 @@ overview of every release.
 
 ---
 
+## [2.4.5-win] — 2026-09-06
+
+### Windows (phpup.ps1 v2.4.5)
+
+*Previous platform update: [2.4.4-win](#244-win--2026-08-30).*
+
+Feature parity release: phpup refuses to start into ports another stack holds (IIS, Docker, XAMPP, a second database server...), mirroring the nix guard — and names the holder instead of failing blind.
+
+### Added
+- **Start refuses to run into another stack's ports** — `Assert-StackPortsFree` checks whether :80/:3306 are already listening (`Get-NetTCPConnection`, netstat fallback) before `Start-WebStackServices` runs, and all start paths (install, update, restart, S toggle) funnel through that one function. phpup's own running components are exempt, so restart over a live phpup stack passes.
+- **Named holders** — `Get-PortHolderName` resolves the listener's PID via `Get-Process`, so the refusal reads `Port 80 is in use by another stack — httpd (PID 1234)` rather than leaving the user to run netstat themselves.
+
+### Verified
+- PS1 PARSE OK · mirrors the nix `check_stack_ports_free` guard, which was validated live on Debian 13 (silent pass over phpup's own stack, loud refusal with named holders for a brew/getphp stack)
+
+---
+
 ## [1.2.5-nix] — 2026-09-06
 
 ### macOS & Linux (phpup.sh v1.2.5)
@@ -30,7 +47,7 @@ Patch release from the Debian 13 live test: phpMyAdmin broke after an update wit
 - **Delete removes the apt MariaDB-generated `feedback.cnf`** — `feedback=OFF` is unknown to MySQL 26+ (aborts on start), and a brew/ports MySQL on Linux reads the same `/etc/mysql` include chain, so the file left in `/etc/mysql/mariadb.conf.d` would break a foreign MySQL after a phpup reinstall. Removed in the shared delete tail on all backends (harmless no-op on macOS); other `/etc` configs remain untouched.
 
 ### Verified
-- `bash -n` OK · live diagnosis on Debian 13 reproduced the drift (override pass 24 hex vs DB user mismatch) · manual realign fixed PMA instantly (login OK on localhost + 127.0.0.1) · structure reviewed for all three update branches
+- `bash -n` OK · PS1 PARSE OK · live on Debian 13: PMA controluser drift reproduced + realigned (login OK), full delete → reinstall cycle restored t2 (8/8 tables) with clean "not installed" detection despite brew/getphp shims present, foreign-stack port guard refused with named holders (httpd/mysqld), feedback.cnf disabled lets brew MySQL start · Mac (brew/ports) leg still to run
 
 ---
 
@@ -843,6 +860,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**2.4.5-win**](#245-win--2026-09-06) | 2026-09-06 | Refuses to start into another stack's ports; names the holder |
 | [**2.4.4-win**](#244-win--2026-08-30) | 2026-08-30 | Download progress bars restored, delete/extract progress silenced, %APPDATA% pointer default-path only |
 | [**2.4.3-win**](#243-win--2026-08-30) | 2026-08-30 | fu download `True` path fix, Listen dedupe, partial-stack recovery notice, MariaDB data backup before upgrade, PMA skip |
 | [**2.4.2-win**](#242-win--2026-08-28) | 2026-08-28 | Dashboard mod_php status + wiring check, Process Status reorder |

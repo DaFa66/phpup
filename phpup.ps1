@@ -4,8 +4,8 @@
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-08-28
-#  Version: 2.4.4
+#  Date: 2026-09-06
+#  Version: 2.4.5
 # =======================================================================
 
 param(
