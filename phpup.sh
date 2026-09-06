@@ -2762,6 +2762,10 @@ cmd_delete() {
         sudo rm -rf /var/lib/apache2 /var/lib/php /var/lib/phpmyadmin 2>/dev/null || true
         # Remove the phpup-managed Apache FPM conf (regenerated on reinstall)
         sudo rm -f "$(apache_fpm_conf)" "$(apache_fpm_conf).phpup.bak" 2>/dev/null || true
+        # Remove the apt MariaDB-generated feedback.cnf (feedback=OFF). MySQL
+        # 26+ treats 'feedback' as an unknown variable and aborts, so a foreign
+        # MySQL on the same box would fail after a phpup reinstall left it.
+        sudo rm -f /etc/mysql/mariadb.conf.d/feedback.cnf 2>/dev/null || true
         # /var/lib/mysql is the live datadir — its contents were backed up above;
         # removing it gives a genuinely fresh reinstall. Configs stay in /etc/mysql.
         sudo rm -rf /var/lib/mysql 2>/dev/null || true
