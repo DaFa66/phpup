@@ -13,6 +13,35 @@ overview of every release.
 
 ---
 
+## [1.2.6-nix] — 2026-09-12
+
+### macOS & Linux (phpup.sh v1.2.6)
+
+*Previous platform update: [1.2.5-nix](#125-nix--2026-09-06).*
+
+Patch release from the macOS leg of the 1.2.5 verification — the leg the previous release notes left outstanding. A dual-stack Mac (Homebrew beside MacPorts) exposed the dashboard and the `S` toggle reading the *neighbouring* stack's processes, and showed that Apache's PHP module was wired to a different formula than the one phpup manages.
+
+### Fixed
+- **Service Status no longer reads another stack's processes** — every check is pinned to the active backend's executable path via `stack_proc`, the helper the port guard already used. Bare `pgrep -x httpd` matched ANY stack's httpd, so on a mixed brew/ports Mac the dashboard reported the neighbour as running and the `S` toggle took the stop branch forever — it could never start. MacPorts' `mysqld` is matched alongside `mariadbd`. Linux is unaffected (systemd units are already stack-specific).
+- **`S` verifies a stop instead of assuming one** — `stop_services` pre-checks whether anything is actually running (`Services were not running`) and verifies afterwards, returning non-zero and naming what is still up rather than printing `[ OK ] Services stopped` unconditionally. `S` announces a stop only when one really happened.
+- **`R` asks for the password once on Homebrew, not twice** — the brew start phase runs `apachectl restart`, itself a stop+start, so stopping Apache in the stop phase was redundant work *and* a second `sudo` prompt. The start phase now owns Apache on brew; MacPorts still gets its unload and apt still starts with `systemctl start`.
+- **Port guard names the holder on macOS** — `port_holder_label` used `ss` (Linux-only), so the guard refused to start without saying what held :80/:3306. It now falls back to `sudo -n lsof` and reports e.g. `httpd (PID 23797)`. The Linux `ss` path is unchanged.
+- **PHP version no longer read from bare `php` on PATH** — the Homebrew branch of `detect_php` called bare `php`, so a MacPorts/getphp/stale-MAMP `php` earlier on `PATH` reported *that* stack's version while phpup manages brew's. It now resolves the formula phpup actually manages — the same bug class as the apt `update-alternatives` fix in 1.1.0.
+- **The dashboard reports the PHP Apache actually serves** — the version is read from the `LoadModule php_module` path in `httpd.conf`, not from the `php` CLI symlink. The two can point at different kegs (module on the meta `php`, symlink on a versioned `php@X.Y`); only the module describes what is really serving requests — the number `phpinfo` shows.
+- **Apache's PHP module now follows the active formula** — `configure_apache` hardcoded `$(brew --prefix)/opt/php/lib/httpd/modules/libphp.so` and only appended the `LoadModule` line *if absent*, so an existing line was never rewritten. Switching PHP relinked the CLI and changed nothing that actually ran: Apache kept serving the previous keg's module. The path is now derived from the active formula and the line replaced (delete-then-add — the approach the MacPorts branch already used), so install, update and `fu` all repoint it, and the reported, served and managed versions can no longer drift apart.
+
+### Changed
+- **Service Status labels PHP by how it is served** — `PHP-FPM` was hardcoded for every backend, so on macOS the dashboard read `PHP-FPM → Active (mod_php)`, contradicting itself. macOS now reports `mod_php` (PHP runs inside Apache); Linux keeps `PHP-FPM`.
+- **phpup no longer drives brew's php-fpm on macOS** — Apache serves PHP via `mod_php` there, so the standalone `php-fpm` service is not part of this stack and is no longer started, stopped or killed. A stack genuinely wired to `proxy_fcgi` is still treated as FPM.
+
+### Docs
+- README and `docs/MACOS.md` updated for `mod_php` reporting and the module re-pointing on `u`/`fu`; added a `PATH`-order troubleshooting note for `php -v` reporting another stack's PHP.
+
+### Verified
+- `bash -n` OK · 12-assertion sandbox harness (real functions against a fake Homebrew prefix and a real `httpd.conf`): the module line is repointed in both directions, stays a single `LoadModule` line with a single `FilesMatch` block, and is idempotent across runs; the reported version follows the module and falls back to the active formula when the module line is missing, relative, or points at a missing keg. Stack pinning confirmed live both directions on the dual-stack Mac (ports `Stopped/Stopped/Stopped`, brew `Running/Running/Running`, `S` stopping the right stack; `R` single password prompt). apt/Linux paths untouched.
+
+---
+
 ## [2.4.5-win] — 2026-09-06
 
 ### Windows (phpup.ps1 v2.4.5)
@@ -886,6 +915,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**1.2.6-nix**](#126-nix--2026-09-12) | 2026-09-12 | Stack-aware service status, Apache PHP module follows the active formula, dashboard reports the served PHP |
 | [**1.2.5-nix**](#125-nix--2026-09-06) | 2026-09-06 | Update flow PMA control-user password drift fixed (configure after start, stable pass) |
 | [**1.2.4-nix**](#124-nix--2026-09-06) | 2026-09-06 | fu menu flags pre-release series (alpha/beta/RC) |
 | [**1.2.3-nix**](#123-nix--2026-09-06) | 2026-09-06 | Update check groups pending apt updates per component family |

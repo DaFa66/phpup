@@ -119,7 +119,7 @@ $(brew --prefix)/var/mysql/             # MariaDB data directory
 
 The hidden **`fu`** command switches PHP versions using Homebrew formulae (`php@8.2`, `php@8.3`, …, `php@8.5`). Pick a version from the numbered list — the previous one stays installed, so switching back is instant.
 
-Under the hood, `fu` uses `brew link --overwrite --force php@X.Y` to repoint the `php` symlink. The Apache module and PHP-FPM (if installed) are restarted automatically.
+Under the hood, `fu` uses `brew link --overwrite --force php@X.Y` to repoint the `php` symlink **and** rewrites Apache's `LoadModule php_module` line to that same formula — relinking alone changes the CLI while Apache carries on serving the previous keg's module. **U** re-points it the same way after an upgrade. On macOS PHP runs as `mod_php` inside Apache, so there is no separate PHP-FPM service to manage or restart.
 
 ## Service Management
 
@@ -176,6 +176,10 @@ MariaDB might be using `unix_socket` auth. Run `mysql -u root` in the terminal �
 
 **`php -v` shows the wrong version after `fu`:**
 You might have multiple PHP versions linked. Run `brew unlink php && brew link --overwrite --force php@8.x` (replace `8.x` with your desired version), or just run `fu` again — it does this automatically.
+
+**`php -v` shows a version phpup never installed:**
+
+Another stack is earlier on your `PATH`. MacPorts installs into `/opt/local/bin`, so if that comes before `/usr/local/bin` (or `/opt/homebrew/bin`), `php -v` reports MacPorts' PHP while phpup manages Homebrew's. phpup itself is immune — it resolves the formula it manages rather than bare `php` — but your shell follows `PATH` order. Compare `echo $PATH` with the dashboard.
 
 **First install is taking forever:**
 It shouldn't — Homebrew uses pre-built bottles on modern macOS. If you're seeing source compiles (lines like `==> make`), you might be on an older macOS where bottles aren't available. Check the [MacPorts guide](INSTALL-OLDER-MAC.md) — it covers the slow path and why it happens.

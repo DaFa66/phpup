@@ -6,7 +6,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-09-06
-#  Version: 1.2.5
+#  Version: 1.2.6
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -286,6 +286,22 @@ brew_active_php() {
     fi
 }
 
+# The keg whose Apache module httpd.conf ACTUALLY loads — i.e. the PHP that
+# serves requests. Read from the LoadModule line rather than assumed: the
+# module can point at the meta 'php' formula while the CLI link points at a
+# versioned php@X.Y, and then only the module describes what Apache really
+# runs. Prints the keg prefix (e.g. /usr/local/opt/php); fails when unwired.
+brew_serving_php_keg() {
+    local conf="${BREW_PREFIX}/etc/httpd/httpd.conf"
+    [[ -f "$conf" ]] || return 1
+    local mod_path
+    mod_path=$(grep -E '^[[:space:]]*LoadModule[[:space:]]+php_module[[:space:]]+' "$conf" 2>/dev/null | tail -1 | awk '{print $3}')
+    [[ -n "$mod_path" ]] || return 1
+    # Trim back from the module directory to the keg prefix
+    [[ "$mod_path" == *"/lib/httpd/modules/"* ]] || return 1
+    printf '%s' "${mod_path%%/lib/httpd/modules/*}"
+}
+
 APT_PHP_BIN_CACHE=""
 
 apt_php_bin() {
@@ -334,13 +350,33 @@ detect_php() {
         fi
     elif [[ -d "${BREW_PREFIX}/Cellar/php" ]] || compgen -G "${BREW_PREFIX}/Cellar/php@*" >/dev/null 2>&1; then
         PHP=1
-        # Report the ACTIVE version from the linked binary — after a fu switch
-        # the linked formula may be a versioned one (php@8.4), NOT the meta
-        # 'php'; the Cellar/php dir alone would keep reporting the old meta.
-        PHP_VERSION=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
+        # Report the PHP that Apache ACTUALLY loads — that is the version
+        # serving requests, and the one phpinfo shows. Read it from the
+        # LoadModule path in httpd.conf, not from the CLI link: the two can
+        # point at different kegs (module on the meta 'php', link on a
+        # versioned php@X.Y), and then only the module describes reality.
+        # Never bare `php` from PATH — another stack earlier on PATH (MacPorts
+        # /opt/local/bin, getphp, a stale MAMP/XAMPP entry) would report THAT
+        # stack's version. Same bug class as the apt/update-alternatives fix
+        # in 1.1.0.
+        local _php_f _php_keg _php_bin
+        _php_keg=$(brew_serving_php_keg 2>/dev/null || true)
+        _php_bin=""
+        if [[ -n "$_php_keg" && -x "${_php_keg}/bin/php" ]]; then
+            _php_bin="${_php_keg}/bin/php"
+        else
+            # No module wired yet (fresh install) — use the active formula.
+            _php_f=$(brew_active_php)
+            _php_bin="${BREW_PREFIX}/opt/${_php_f}/bin/php"
+        fi
+        PHP_VERSION=$("$_php_bin" -r 'echo PHP_VERSION;' 2>/dev/null)
         if [[ -z "$PHP_VERSION" ]]; then
-            # Nothing linked/in PATH — fall back to the highest installed
-            # version across the meta formula and any php@X.Y kegs.
+            # Formula path not runnable — bare php is better than nothing.
+            PHP_VERSION=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
+        fi
+        if [[ -z "$PHP_VERSION" ]]; then
+            # Still nothing — fall back to the highest installed version
+            # across the meta formula and any php@X.Y kegs.
             local best_ver=""
             for d in "${BREW_PREFIX}/Cellar/php" "${BREW_PREFIX}"/Cellar/php@*; do
                 [[ -d "$d" ]] || continue
@@ -408,26 +444,45 @@ is_service_running() {
             *) return 1 ;;
         esac
     else
+        # Every check is pinned to the ACTIVE backend's executable path via
+        # stack_proc(), so a coexisting stack's httpd/mysqld is never mistaken
+        # for ours. Bare `pgrep -x httpd` matched ANY stack's process: on a
+        # dual-stack Mac the dashboard reported the neighbouring brew stack as
+        # this stack's services, and the S toggle then took the stop branch
+        # forever (it could never reach the start path).
         case "$svc" in
             apache|httpd)
-                pgrep -x "httpd" &>/dev/null && return 0 || return 1
+                stack_proc -x "httpd" && return 0 || return 1
                 ;;
             mariadb)
                 # MacPorts runs the server as "mysqld" (no mariadbd binary name);
                 # brew/apt use "mariadbd". Match either so detection works on all
                 # three backends.
-                { pgrep -x "mariadbd" &>/dev/null || pgrep -x "mysqld" &>/dev/null; } && return 0 || return 1
+                { stack_proc -x "mariadbd" || stack_proc -x "mysqld"; } && return 0 || return 1
                 ;;
             php)
-                if [[ $USE_PORTS == 1 ]]; then
+                if php_via_apache; then
                     # mod_php inside Apache — no standalone PHP-FPM service
                     is_service_running apache && return 0 || return 1
                 fi
-                pgrep -f "(^|/)php-fpm" &>/dev/null && return 0 || return 1
+                stack_proc -f "(^|/)php-fpm" && return 0 || return 1
                 ;;
             *) return 1 ;;
         esac
     fi
+}
+
+# Whether PHP is served INSIDE Apache (mod_php) rather than by a standalone
+# PHP-FPM service. macOS uses mod_php on BOTH backends — brew loads libphp.so
+# via httpd.conf, ports uses phpXX-apache2handler — while apt/Linux runs
+# PHP-FPM. Detected from Apache's own config, so a stack genuinely wired to
+# proxy_fcgi is still treated as FPM.
+php_via_apache() {
+    [[ $USE_APT == 1 ]] && return 1
+    [[ $USE_PORTS == 1 ]] && return 0
+    local conf="${BREW_PREFIX}/etc/httpd/httpd.conf"
+    [[ -f "$conf" ]] || return 1
+    grep -qE "^[[:space:]]*LoadModule[[:space:]]+php[0-9]*_module" "$conf" 2>/dev/null
 }
 
 # ---- PHP-FPM Helpers (apt) ----------------------------------
@@ -958,9 +1013,18 @@ show_dashboard() {
         printf "${RED}Not available${RESET}\n"
     fi
 
-    printf "%-10s -----> " "PHP-FPM"
+    # Label reflects HOW PHP is actually served here: a standalone PHP-FPM
+    # service on apt/Linux, but mod_php inside Apache on macOS (both backends).
+    if php_via_apache; then
+        printf "%-10s -----> " "mod_php"
+    else
+        printf "%-10s -----> " "PHP-FPM"
+    fi
     if [[ $PHP == 1 ]]; then
-        if [[ $USE_APT == 1 ]]; then
+        if php_via_apache; then
+            # mod_php runs inside Apache, so it shares Apache's state
+            is_service_running php && printf "${GREEN}Running${RESET}\n" || printf "${RED}Stopped${RESET}\n"
+        else
             local fpm_ver
             fpm_ver=$(fpm_active_version || true)
             if [[ -n "$fpm_ver" ]]; then
@@ -972,13 +1036,8 @@ show_dashboard() {
             elif dpkg -l 'php*-fpm' 2>/dev/null | grep -q '^ii'; then
                 printf "${RED}FPM installed — none active${RESET}\n"
             else
-                is_service_running apache && printf "${GREEN}Active (mod_php)${RESET}\n" || printf "${RED}Stopped${RESET}\n"
+                printf "${RED}Not installed${RESET}\n"
             fi
-        elif [[ $USE_PORTS == 1 ]]; then
-            # ports: mod_php inside Apache (phpXX-apache2handler)
-            is_service_running apache && printf "${GREEN}Active (mod_php)${RESET}\n" || printf "${RED}Stopped${RESET}\n"
-        else
-            is_service_running php && printf "${GREEN}Running${RESET}\n" || printf "${RED}Stopped${RESET}\n"
         fi
     else
         printf "${RED}Not available${RESET}\n"
@@ -1054,25 +1113,45 @@ port_owner_active() {
     return 1
 }
 
-# Best-effort name of the process holding a port. Tries sudo -n first (only
-# succeeds with a cached credential — never prompts); falls back to plain ss,
-# then to a hint when the holder can't be resolved.
+# Best-effort name of the process holding a port.
+# Linux: ss — sudo -n first (only succeeds with a cached credential, never
+# prompts), then plain ss.
+# macOS: lsof, because ss does not exist there. sudo -n is tried first for a
+# reason: a root-owned listener (httpd, another stack's server) is INVISIBLE to
+# an unprivileged lsof, so without it the holder would be reported as unknown
+# even though the port is demonstrably busy.
+# Falls back to a platform-correct hint when the holder can't be resolved.
 port_holder_label() {
-    local port="$1" ssout line
-    ssout=$(sudo -n ss -ltnp 2>/dev/null || true)
-    if [[ -z "$ssout" ]]; then
-        ssout=$(ss -ltnp 2>/dev/null || true)
+    local port="$1" out line label
+    if command -v ss &>/dev/null; then
+        out=$(sudo -n ss -ltnp 2>/dev/null || true)
+        if [[ -z "$out" ]]; then
+            out=$(ss -ltnp 2>/dev/null || true)
+        fi
+        line=$(printf '%s\n' "$out" | awk -v p="$port" '$4 ~ ":" p "$" {print; exit}')
+        if [[ -n "$line" ]]; then
+            label=$(printf '%s\n' "$line" | sed -n 's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/\1 (PID \2)/p' | head -1)
+            if [[ -n "$label" ]]; then
+                echo "$label"
+                return
+            fi
+        fi
+        echo "unknown (run: sudo ss -ltnp | grep ':$port')"
+        return
     fi
-    line=$(printf '%s\n' "$ssout" | awk -v p="$port" '$4 ~ ":" p "$" {print; exit}')
+    out=$(sudo -n lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+    if [[ -z "$out" ]]; then
+        out=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+    fi
+    line=$(printf '%s\n' "$out" | awk '$1 != "COMMAND" && NF {print; exit}')
     if [[ -n "$line" ]]; then
-        local label
-        label=$(printf '%s\n' "$line" | sed -n 's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/\1 (PID \2)/p' | head -1)
+        label=$(printf '%s' "$line" | awk '{print $1 " (PID " $2 ")"}')
         if [[ -n "$label" ]]; then
             echo "$label"
             return
         fi
     fi
-    echo "unknown (run: sudo ss -ltnp | grep ':$port')"
+    echo "unknown (run: sudo lsof -nP -iTCP:$port -sTCP:LISTEN)"
 }
 
 # Refuse to start when another stack holds the web/DB ports. Loud, not silent:
@@ -1162,7 +1241,10 @@ start_services() {
             fi
         fi
 
-        if [[ $PHP == 1 ]]; then
+        # macOS serves PHP via mod_php inside Apache — no standalone FPM service
+        # to start (that is an apt/Linux concept). Only drive it when Apache is
+        # genuinely wired to FPM.
+        if [[ $PHP == 1 ]] && ! php_via_apache; then
             local brew_php_svc
             brew_php_svc=$(brew_active_php)
             brew services start "$brew_php_svc" 2>/dev/null
@@ -1179,6 +1261,15 @@ start_services() {
 
 stop_services() {
     print_info "Stopping services..."
+
+    # Only OUR services count. If this stack is not running, say so instead of
+    # reporting a stop that never happened — the pinned is_service_running makes
+    # this accurate, so a neighbouring stack's processes no longer read as ours.
+    if ! is_service_running apache && ! is_service_running mariadb && ! is_service_running php; then
+        print_info "Services were not running"
+        return 0
+    fi
+
     if [[ $USE_APT == 1 ]]; then
         [[ $APACHE == 1 ]] && sudo systemctl stop apache2 2>/dev/null
         [[ $MARIADB == 1 ]] && sudo systemctl stop mariadb 2>/dev/null
@@ -1201,7 +1292,7 @@ stop_services() {
     else
         # Kill the brew stack's httpd only (path-pinned; a coexisting ports
         # stack may be running its own httpd on another machine state)
-        if [[ $APACHE == 1 ]] && is_service_running apache; then
+        if [[ $APACHE == 1 ]] && [[ ${SKIP_APACHE_STOP:-0} != 1 ]] && is_service_running apache; then
             sudo "${BREW_PREFIX}/bin/apachectl" stop >/dev/null 2>&1
             sleep 1
             if ! stack_proc -x httpd &>/dev/null; then
@@ -1210,15 +1301,48 @@ stop_services() {
         fi
         [[ $MARIADB == 1 ]] && brew services stop mariadb
         stack_kill -x mysqld mariadbd
-        [[ $PHP == 1 ]] && brew services stop "$(brew_active_php)"
-        stack_kill -f "(^|/)php-fpm"
+        # macOS serves PHP via mod_php INSIDE Apache — there is no standalone
+        # FPM service in this stack, so do not drive (or kill) php-fpm.
+        if [[ $PHP == 1 ]] && ! php_via_apache; then
+            brew services stop "$(brew_active_php)"
+            stack_kill -f "(^|/)php-fpm"
+        fi
     fi
     sleep 3
+
+    # Verify rather than assume — never claim success while our services are
+    # still up. Mirrors the loud start path (1.2.5): a stop that stopped nothing
+    # (or silently failed) must not report OK.
+    local _still=""
+    # Apache is deliberately left running when a Homebrew restart is in flight
+    # (the start phase restarts it), so it must not be counted as "still up" here.
+    if [[ ${SKIP_APACHE_STOP:-0} != 1 ]]; then
+        [[ $APACHE == 1 ]] && is_service_running apache && _still="Apache"
+    fi
+    [[ $MARIADB == 1 ]] && is_service_running mariadb && _still="${_still:+$_still, }MariaDB"
+    # A standalone FPM service is separate from Apache; mod_php is already
+    # covered by the Apache check above (same process).
+    if [[ $PHP == 1 ]] && ! php_via_apache; then
+        is_service_running php && _still="${_still:+$_still, }PHP"
+    fi
+
+    if [[ -n "$_still" ]]; then
+        print_warn "Some services are still running — $_still"
+        return 1
+    fi
     print_ok "Services stopped"
 }
 
 restart_services() {
+    # The Homebrew start path runs `apachectl restart`, which is itself a
+    # stop+start — so stopping Apache here is redundant work AND a second sudo
+    # authentication (the reported "asked for my password twice on R"). Let the
+    # start phase own Apache. Ports genuinely needs its unload, and apt starts
+    # with `systemctl start`, so neither of those is skipped.
+    SKIP_APACHE_STOP=0
+    [[ $USE_APT == 0 && $USE_PORTS == 0 ]] && SKIP_APACHE_STOP=1
     stop_services
+    SKIP_APACHE_STOP=0
     start_services || print_warn "Services did not start — see the messages above"
 }
 
@@ -1229,8 +1353,11 @@ toggle_services() {
     is_service_running php && any_running=1
 
     if [[ $any_running == 1 ]]; then
-        stop_services
-        printf "\n${CYAN}Services stopped. Press S again to start them.${RESET}\n"
+        # Only announce a stop that actually happened (stop_services verifies
+        # and explains itself on failure).
+        if stop_services; then
+            printf "\n${CYAN}Services stopped. Press S again to start them.${RESET}\n"
+        fi
     else
         start_services || print_warn "Services did not start — see the messages above"
     fi
@@ -1288,11 +1415,25 @@ configure_apache() {
         print_ok "Set Apache user/group to www-data (Linux)"
     fi
 
-    # PHP module — skip if libphp.so doesn't exist (brew install may have failed)
-    local php_module_path="${BREW_PREFIX}/opt/php/lib/httpd/modules/libphp.so"
+    # PHP module — wired to the ACTIVE PHP formula. The module decides which
+    # PHP serves requests, so it has to follow the formula phpup manages: a
+    # line left pointing at another keg (meta 'php' vs a versioned php@X.Y)
+    # means Apache serves a PHP that phpup can neither update nor switch, and
+    # fu would relink the CLI while changing nothing that actually runs.
+    local php_formula php_module_path current_mod
+    php_formula=$(brew_active_php)
+    php_module_path="${BREW_PREFIX}/opt/${php_formula}/lib/httpd/modules/libphp.so"
+
     if [[ -f "$php_module_path" ]]; then
-        if ! grep -q "LoadModule php_module" "$conf"; then
+        current_mod=$(grep -E '^[[:space:]]*LoadModule[[:space:]]+php_module[[:space:]]+' "$conf" 2>/dev/null | tail -1 | awk '{print $3}')
+        if [[ "$current_mod" != "$php_module_path" ]]; then
+            # Replace, never append: an existing line is exactly what stops the
+            # wiring from following a switch. Same approach as the ports branch.
+            sed -i.bak "/^LoadModule php[0-9]*_module /d" "$conf"
             printf "\\nLoadModule php_module %s\\n" "$php_module_path" >> "$conf"
+            print_ok "Enabled php_module (${php_formula} — repointed from ${current_mod:-none})"
+        else
+            print_ok "Enabled php_module (${php_formula})"
         fi
 
         if ! grep -q '<FilesMatch \\.php$>' "$conf"; then
@@ -1303,7 +1444,6 @@ configure_apache() {
 </FilesMatch>
 PHPFILESMATCH
         fi
-        print_ok "Enabled php_module"
     else
         print_warn "PHP module not found (${php_module_path}) — PHP may not have installed correctly"
     fi

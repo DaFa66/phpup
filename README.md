@@ -91,7 +91,7 @@ If you already have a working Homebrew stack, phpup keeps it — it never silent
 
 The dashboard shows installed versions, running services, useful paths, and available commands — all in one place. The **Process Status** section groups the web server with its PHP engine (`Apache` → `PHP` → `MariaDB`):
 
-- **Windows/macOS** — PHP reports `active` when the module is wired and running, `stopped` when Apache is down, `not wired` when the module line is missing or stale, and `not installed` when no PHP is present
+- **Windows/macOS** — PHP reports `active` when the module is wired and running, `stopped` when Apache is down, `not wired` when the module line is missing or stale, and `not installed` when no PHP is present. On macOS the row is labelled `mod_php` (PHP runs inside Apache) and the Web Stack version is read from the module Apache actually loads — so it matches `phpinfo`
 - **Linux** — PHP runs as **PHP-FPM**, reported as `Running (8.5)` / `Stopped (8.5)` with the active FPM version shown; the Web Stack section shows the CLI version separately
 
 ### Commands
@@ -117,7 +117,7 @@ phpup doesn't hardcode version numbers. Every install and update dynamically res
 | **MariaDB**    | [mariadb.org](https://mariadb.org)                                                         | REST API, sorts by support policy (Rolling > LTS), then version |
 | **phpMyAdmin** | [phpmyadmin.net](https://www.phpmyadmin.net)                                               | Latest stable release                                           |
 
-PHP is always the latest stable major version (8.2+, currently 8.5). Use the hidden **`fu`** command to switch versions — on Windows it manages cached zips and can fill missing series (including EOL ones like 7.4 if the `php_min_series` floor is lowered), flags newer patches, shows pre-release labels (`8.6.0 beta1`), and re-points Apache's PHP module automatically when you cross major versions. On Linux it switches the Apache PHP-FPM runtime and the CLI default together, with automatic rollback if the new version fails to start.
+PHP is always the latest stable major version (8.2+, currently 8.5). Use the hidden **`fu`** command to switch versions — on Windows it manages cached zips and can fill missing series (including EOL ones like 7.4 if the `php_min_series` floor is lowered), flags newer patches, shows pre-release labels (`8.6.0 beta1`), and re-points Apache's PHP module automatically when you cross major versions. On Linux it switches the Apache PHP-FPM runtime and the CLI default together, with automatic rollback if the new version fails to start. On macOS it relinks the formula **and** re-points Apache's `php_module` at that same formula, so the version serving requests always matches the version phpup reports.
 
 ## After Installation
 
