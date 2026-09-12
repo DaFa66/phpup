@@ -54,26 +54,25 @@ phpup picks the right package manager for your Mac automatically:
 | Your Mac                                 | Backend                                                    |
 | ---------------------------------------- | ---------------------------------------------------------- |
 | Apple Silicon (M1/M2/M3/M4)              | [Homebrew](https://brew.sh) — always                       |
-| Intel, macOS 14+ (Sonoma/Sequoia)        | [Homebrew](https://brew.sh) — while supported              |
-| Intel, macOS 10.15–13 (Catalina–Ventura) | [MacPorts](https://www.macports.org/) — automatic fallback |
+| Intel (any macOS version)                | [MacPorts](https://www.macports.org/) — automatic            |
 
 You can override the automatic selection with an environment variable:
 
-### Force Homebrew (even on older Intel Macs where phpup would pick MacPorts)
+### Force Homebrew (even on an Intel Mac, where phpup now picks MacPorts)
 
 ```bash
 PHPPUP_BACKEND=brew /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)"
 ```
 
-### Force MacPorts (even on Apple Silicon or modern Intel)
+### Force MacPorts (even on Apple Silicon)
 
 ```bash
 PHPPUP_BACKEND=port /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh)"
 ```
 
-If you already have a working Homebrew stack, phpup keeps it — it never silently migrates you to MacPorts.
+If you already have a working Homebrew stack, phpup keeps it — it never silently migrates you to MacPorts, and it never nags. On an Intel Mac the dashboard header carries the caveat (`Homebrew: /usr/local (Intel — PHP builds from source)`), a one-time `[ NOTE ]` explains it and names the way out (`PHPPUP_BACKEND=port`), and any install, update or `fu` that is about to compile PHP from source says so **before** it starts, with the expected time.
 
-> **On an older Intel Mac (Catalina → Ventura)?** Follow the step-by-step, screenshot-led guide: **[docs/INSTALL-OLDER-MAC.md](docs/INSTALL-OLDER-MAC.md)**
+> **On an Intel Mac?** Homebrew no longer supports the platform at all, so follow the step-by-step, screenshot-led guide: **[docs/INSTALL-OLDER-MAC.md](docs/INSTALL-OLDER-MAC.md)**
 
 ## The Dashboard
 

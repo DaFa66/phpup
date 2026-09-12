@@ -5,7 +5,7 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-09-06
+#  Date: 2026-09-12
 #  Version: 1.2.6
 # ============================================================
 
@@ -19,6 +19,9 @@ CONFIG_FILE="${BASE_DIR}/config.json"
 LEGACY_CONFIG_DIR="${HOME}/.config/phpup"
 PHP_MIN_SERIES="8.2"    # fu download floor; overridable via config.json
 DATA_BACKUP_DIR="${BASE_DIR}/data_backup"
+# Set by detect_backend when an Intel Mac keeps the Homebrew backend: brew has
+# retired Intel, ships no bottles there, and so compiles PHP from source.
+INTEL_BREW_NO_BOTTLES=0
 
 # ---- Colour Constants ---------------------------------------
 ESC='\033'
@@ -83,7 +86,6 @@ USE_PORTS=0            # 1 = MacPorts backend active (Intel macOS only)
 MACPORTS=0             # 1 = /opt/local/bin/port present on machine
 PORT_PREFIX="/opt/local"
 MACPORTS_PATHS_FILE="/etc/paths.d/macports"   # new-login-shell PATH entry (self-healed by manage_path)
-BREW_MIN_OS_MAJOR=14   # Homebrew officially supports the latest 3 macOS releases (14/15/26 as of 2026-08)
 MARIADB_PORT="mariadb-12.3"   # fallback candidate: mariadb-11.4
 PHP_PORT="php85"               # active PHP port (changes on fu switch)
 PMA_DIR="/opt/local/share/phpmyadmin"   # ports backend tarball target
@@ -302,6 +304,45 @@ brew_serving_php_keg() {
     printf '%s' "${mod_path%%/lib/httpd/modules/*}"
 }
 
+# Switchable PHP formulae on Homebrew, oldest line first. Brew keeps its NEWEST
+# line as the un-suffixed meta formula ('php', also accepted as php@X.Y) while
+# the php@X.Y formulae are the pinned OLDER lines — so a menu built from php@X.Y
+# alone silently omits the newest PHP available, the one most users want. Lines
+# come from brew's own metadata rather than `brew search`, which lists the
+# newest line's alias inconsistently between invocations. The newest line is
+# printed as 'php' (its canonical name, which is what brew install/link expect).
+brew_php_lines() {
+    local lines newest l
+    lines=$(brew info --json=v2 php 2>/dev/null | grep -o '"php@[0-9][0-9.]*"' | tr -d '"' | sort -V -u)
+    if [[ -z "$lines" ]]; then
+        # No metadata (offline, or the php formula is gone) — the meta formula
+        # is still the newest line, so offer at least that.
+        printf 'php\n'
+        return
+    fi
+    newest=$(printf '%s\n' "$lines" | tail -1)
+    while read -r l; do
+        [[ -z "$l" ]] && continue
+        if [[ "$l" == "$newest" ]]; then
+            printf 'php\n'
+        else
+            printf '%s\n' "$l"
+        fi
+    done <<< "$lines"
+}
+
+# The newest PHP line in its versioned alias form, e.g. 'php@8.5'. The meta
+# 'php' formula IS that line (php@X.Y for the same X.Y is an alias for it), and
+# the alias form is what the fu menu shows, so the list reads as versions and a
+# typed '8.5' selects the newest line.
+brew_newest_php_alias() {
+    local line
+    line=$(brew info --json=v2 php 2>/dev/null | sed -n 's/.*"stable": "\([0-9][0-9.]*\)".*/\1/p' | head -1)
+    [[ -z "$line" ]] && line=$("${BREW_PREFIX}/opt/php/bin/php" -r 'echo PHP_VERSION;' 2>/dev/null)
+    [[ -z "$line" ]] && return 1
+    printf 'php@%s' "${line%.*}"
+}
+
 APT_PHP_BIN_CACHE=""
 
 apt_php_bin() {
@@ -321,6 +362,29 @@ apt_php_bin() {
     if [[ -n "$bin" && -x "$bin" ]]; then
         APT_PHP_BIN_CACHE="$bin"
         echo "$bin"
+    fi
+}
+
+# The PHP binary belonging to THIS stack — the one phpup configures, serves and
+# reports. Never bare `php` from PATH: another stack earlier on PATH (MacPorts
+# /opt/local/bin, getphp, a stale MAMP entry) answers for a stack phpup does not
+# manage. Reading MacPorts' PHP_EXTENSION_DIR is what made configure_php "find"
+# extension .so files that brew's PHP does not have, and enable them in brew's
+# php.ini — where every php process then warned on startup, for good. Same bug
+# class as the detect_php PATH fix in 1.2.6.
+stack_php_bin() {
+    if [[ $USE_APT == 1 ]]; then
+        local b
+        b=$(apt_php_bin 2>/dev/null || true)
+        if [[ -n "$b" ]]; then
+            printf '%s' "$b"
+        else
+            command -v php 2>/dev/null
+        fi
+    elif [[ $USE_PORTS == 1 ]]; then
+        printf '%s' "${PORT_PREFIX}/bin/php"
+    else
+        printf '%s' "${BREW_PREFIX}/opt/$(brew_active_php)/bin/php"
     fi
 }
 
@@ -372,7 +436,7 @@ detect_php() {
         PHP_VERSION=$("$_php_bin" -r 'echo PHP_VERSION;' 2>/dev/null)
         if [[ -z "$PHP_VERSION" ]]; then
             # Formula path not runnable — bare php is better than nothing.
-            PHP_VERSION=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
+            PHP_VERSION=$(php -n -r 'echo PHP_VERSION;' 2>/dev/null)
         fi
         if [[ -z "$PHP_VERSION" ]]; then
             # Still nothing — fall back to the highest installed version
@@ -677,6 +741,7 @@ detect_all() {
 print_ok()    { printf "[${GREEN}  OK  ${RESET}] %s\n" "$1"; }
 print_err()   { printf "[${RED} ERROR ${RESET}] %s\n" "$1"; }
 print_warn()  { printf "[${YELLOW}  WAIT ${RESET}] %s\n" "$1"; }
+print_note()  { printf "[${CYAN} NOTE ${RESET}] %s\n" "$1"; }
 print_info()  { printf "${CYAN}%s${RESET}\n" "$1"; }
 
 # 32-byte phpMyAdmin blowfish secret. PMA warns on missing AND on >32 bytes —
@@ -956,8 +1021,10 @@ show_dashboard() {
         printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}port${RESET}\n" \
             "$ARCH" "$OS_NAME" "$OS_VERSION"
     else
-        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Homebrew: ${CYAN}%s${RESET}\n" \
-            "$ARCH" "$OS_NAME" "$OS_VERSION" "$BREW_PREFIX"
+        local brew_note=""
+        [[ $INTEL_BREW_NO_BOTTLES == 1 ]] && brew_note=" (Intel — PHP builds from source)"
+        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Homebrew: ${CYAN}%s${RESET}%s\n" \
+            "$ARCH" "$OS_NAME" "$OS_VERSION" "$BREW_PREFIX" "$brew_note"
     fi
     printf "\n"
 
@@ -1623,14 +1690,17 @@ configure_php() {
         return
     fi
 
-    local php_ini="${BREW_PREFIX}/etc/php/$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)/php.ini"
+    local php_bin php_ini
+    php_bin=$(stack_php_bin)
+    php_ini="${BREW_PREFIX}/etc/php/$("${php_bin}" -n -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)/php.ini"
 
-    # Fallback: search for php.ini
+    # Fallback: ask THIS stack's binary where its ini lives — never bare `php`,
+    # which on a dual-stack Mac answers with the neighbouring stack's ini.
     if [[ ! -f "$php_ini" ]]; then
-        php_ini=$(php -r 'echo php_ini_loaded_file();' 2>/dev/null)
+        php_ini=$("${php_bin}" -r 'echo php_ini_loaded_file();' 2>/dev/null)
     fi
     if [[ ! -f "$php_ini" ]]; then
-        php_ini=$(php -i 2>/dev/null | grep "Loaded Configuration File" | awk -F' => ' '{print $2}')
+        php_ini=$("${php_bin}" -i 2>/dev/null | grep "Loaded Configuration File" | awk -F' => ' '{print $2}')
     fi
 
     if [[ ! -f "$php_ini" ]]; then
@@ -1644,11 +1714,20 @@ configure_php() {
 
     print_info "Configuring PHP..."
 
-    # Enable extensions only if the .so file exists (Homebrew PHP 8.x compiles most statically)
-    local ext_dir
-    ext_dir=$(php -r 'echo PHP_EXTENSION_DIR;' 2>/dev/null)
+    # Enable extensions only if the .so file exists for THIS stack's PHP, and
+    # never for one that binary already provides statically. Both halves matter:
+    # Homebrew compiles most extensions into the binary, so an `extension=` line
+    # for one of those can only ever produce a startup warning — while reading
+    # PHP_EXTENSION_DIR from bare `php` (MacPorts, on a dual-stack Mac) "found"
+    # .so files belonging to the OTHER stack and enabled them here anyway.
+    local ext_dir static_exts
+    ext_dir=$("${php_bin}" -n -r 'echo PHP_EXTENSION_DIR;' 2>/dev/null)
+    static_exts=$("${php_bin}" -n -m 2>/dev/null)
     local extensions=("curl" "fileinfo" "gd" "intl" "mbstring" "mysqli" "openssl" "pdo_mysql" "pdo_sqlite" "sodium" "sqlite3")
     for ext in "${extensions[@]}"; do
+        if printf '%s\n' "$static_exts" | grep -qix "$ext"; then
+            continue
+        fi
         if [[ -f "${ext_dir}/${ext}.so" ]]; then
             sed -i.bak "s/^; *extension=${ext}/extension=${ext}/" "$php_ini" 2>/dev/null || true
         fi
@@ -2530,6 +2609,9 @@ cmd_install() {
 
         printf "\n"
         print_info "Installing packages via Homebrew..."
+        if [[ $INTEL_BREW_NO_BOTTLES == 1 ]]; then
+            print_note "PHP compiles from source on this Mac (Intel — Homebrew ships no bottles): expect 15-30 min."
+        fi
         printf "\n"
 
         [[ $APACHE == 0 ]] && printf 'y\n' | HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew install httpd && APACHE=1
@@ -2768,32 +2850,56 @@ cmd_update() {
         # the prefix; update THAT, not the unlinked meta).
         local active_php
         active_php=$(brew_active_php)
-        # Newest PHP line available in Homebrew — used for the fu hint so a
-        # user on an older line knows a newer one exists (u only patches
-        # within the ACTIVE line; fu is the line switcher).
-        local newest_line
-        newest_line=$(brew search '/php@/' 2>/dev/null | tr ' ' '\n' | grep -E '^php@[0-9]+\.[0-9]+$' | sort -V | tail -1)
+        # Brew keeps its NEWEST line as the meta 'php' formula; php@X.Y are the
+        # pinned OLDER lines. If this stack sits on an older line, u offers the
+        # move up — the way the apt branch offers a cross-series PHP upgrade.
+        # The meta keg's own CLI is the yardstick; never bare `php` from PATH.
+        local php_target="" switch_msg="" active_full="" target_full="" active_line target_line
+        if [[ "$active_php" != "php" && -x "${BREW_PREFIX}/opt/php/bin/php" ]]; then
+            active_line="${active_php#php@}"
+            target_line=$("${BREW_PREFIX}/opt/php/bin/php" -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+            if [[ -n "$target_line" && "$target_line" != "$active_line" ]] && \
+               [[ "$(printf '%s\n%s\n' "$active_line" "$target_line" | sort -V | tail -1)" == "$target_line" ]]; then
+                php_target="php"
+                active_full=$("${BREW_PREFIX}/opt/${active_php}/bin/php" -r 'echo PHP_VERSION;' 2>/dev/null)
+                target_full=$("${BREW_PREFIX}/opt/php/bin/php" -r 'echo PHP_VERSION;' 2>/dev/null)
+                # Prefer brew's advertised stable version — u upgrades the meta
+                # keg, so that is what this run actually leaves behind.
+                local _avail
+                _avail=$(brew info --json=v2 php 2>/dev/null | sed -n 's/.*"stable": "\([0-9][0-9.]*\)".*/\1/p' | head -1)
+                [[ -n "$_avail" ]] && target_full="$_avail"
+                switch_msg="PHP ${active_full:-$active_line} → ${target_full:-$target_line} (moves onto the newest line)"
+            fi
+        fi
         local outdated
-        outdated=$(brew outdated --formula httpd mariadb "$active_php" phpmyadmin 2>/dev/null)
+        if [[ -n "$php_target" ]]; then
+            # Switching lines — the outgoing formula is deliberately left at its
+            # current patch (see the upgrade below), so do not advertise its
+            # patch update here either.
+            outdated=$(brew outdated --formula httpd mariadb phpmyadmin "$php_target" 2>/dev/null)
+        else
+            outdated=$(brew outdated --formula httpd mariadb "$active_php" phpmyadmin 2>/dev/null)
+        fi
 
-        if [[ -z "$outdated" ]]; then
+        if [[ -z "$outdated" && -z "$switch_msg" ]]; then
             print_ok "All stack components are up to date"
             local cur_ver
-            cur_ver=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
+            cur_ver=$("${BREW_PREFIX}/opt/${active_php}/bin/php" -r 'echo PHP_VERSION;' 2>/dev/null)
             [[ -z "$cur_ver" ]] && cur_ver="$PHP_VERSION"
             print_info "PHP ${cur_ver} (${active_php}) is up to date within its version line"
-            if [[ -n "$newest_line" && "$newest_line" != "$active_php" ]]; then
-                print_info "PHP ${newest_line#php@} is available in Homebrew — use fu to switch PHP versions."
-            fi
             printf "\n"
             read -r -p "Press Enter to continue..."
             return
         fi
 
         printf "\n${CYAN}Updates available:${RESET}\n"
-        printf "%s\n" "$outdated"
-        if [[ -n "$newest_line" && "$newest_line" != "$active_php" ]]; then
-            print_info "PHP ${newest_line#php@} is also available in Homebrew — use fu to switch PHP versions."
+        [[ -n "$switch_msg" ]] && printf "  %s\n" "$switch_msg"
+        [[ -n "$outdated" ]] && printf "%s\n" "$outdated"
+        if [[ -n "$php_target" ]]; then
+            print_info "u will relink the 'php' formula and re-point Apache's PHP module at it."
+        fi
+        if [[ $INTEL_BREW_NO_BOTTLES == 1 ]] && { [[ -n "$php_target" ]] || [[ "$outdated" == *php* ]]; }; then
+            print_note "PHP compiles from source on this Mac (Intel — Homebrew ships no bottles): expect 15-30 min."
         fi
         printf "\n"
 
@@ -2808,8 +2914,29 @@ cmd_update() {
 
         stop_services
         printf "\n"
+        if [[ -n "$php_target" ]]; then
+            print_info "Moving PHP onto the newest line (${target_full})..."
+            local _phpf
+            for _phpf in $(brew_php_lines); do
+                brew unlink "$_phpf" 2>/dev/null || true
+            done
+        fi
         print_info "Upgrading packages via Homebrew..."
-        HOMEBREW_NO_AUTO_UPDATE=1 printf 'y\n' | brew upgrade httpd mariadb "$active_php" phpmyadmin
+        if [[ -n "$php_target" ]]; then
+            # Switching lines: leave the OUTGOING formula alone. Upgrading it
+            # would be a wasted source build — 15-30 min wherever brew has no
+            # bottles, which is now every Intel Mac — and it stays installed so
+            # fu can switch back to it.
+            HOMEBREW_NO_AUTO_UPDATE=1 printf 'y\n' | brew upgrade httpd mariadb phpmyadmin "$php_target"
+        else
+            HOMEBREW_NO_AUTO_UPDATE=1 printf 'y\n' | brew upgrade httpd mariadb "$active_php" phpmyadmin
+        fi
+        if [[ -n "$php_target" ]]; then
+            # configure_apache below re-points Apache's php_module at it, so the
+            # served, reported and managed PHP stay the same version.
+            HOMEBREW_NO_AUTO_UPDATE=1 brew link --overwrite --force "$php_target" 2>&1 \
+                || print_warn "Could not relink ${php_target} — PHP may still be on ${active_php}"
+        fi
         detect_all
         configure_apache
         configure_php
@@ -3467,10 +3594,21 @@ cmd_forced_update() {
     # Homebrew path — PHP version switching (numbered menu, same UX as ports)
     local -a php_names
     local php_list current_php i choice target formula
-    # brew search returns space-separated formulae on one line — split and filter
-    php_list=$(brew search '/php@/' 2>/dev/null | tr ' ' '\n' | grep -E '^php@[0-9]+\.[0-9]+$' | sort -V)
-    # current = the versioned formula matching the ACTIVE php binary
-    current_php="php@$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)"
+    local newest_alias active_canon
+    # Brew keeps its NEWEST line as the un-suffixed meta formula ('php', also
+    # accepted as php@X.Y); php@X.Y are the pinned OLDER lines. A list built from
+    # php@X.Y alone therefore omits the newest PHP available.
+    active_canon=$(brew_active_php)
+    newest_alias=$(brew_newest_php_alias 2>/dev/null || true)
+    php_list=$(brew_php_lines)
+    # Show the newest line in its versioned alias form (php@8.5), so the menu
+    # reads as versions and a typed version selects it.
+    if [[ -n "$newest_alias" ]]; then
+        php_list=$(printf '%s\n' "$php_list" | sed "s|^php$|${newest_alias}|")
+    fi
+    # Mark the entry that is currently linked — same form as the list above
+    current_php="$active_canon"
+    [[ "$current_php" == "php" && -n "$newest_alias" ]] && current_php="$newest_alias"
     php_names=()
     i=0
     while read -r formula; do
@@ -3480,9 +3618,12 @@ cmd_forced_update() {
 
     target=$(php_switch_prompt "brew" "$current_php" "No versioned PHP formulae found in Homebrew — run Update (U) to refresh first" "${php_names[@]}")
     [[ $? -ne 0 ]] && return
+    # The newest line is served by the meta 'php' formula — act on the canonical
+    # name (what brew install/link expect) once the selection is made.
+    [[ -n "$newest_alias" && "$target" == "$newest_alias" ]] && target="php"
     if [[ -n "$target" ]]; then
         # If the user picked the version already active, no work needed
-        if [[ "$target" == "$current_php" ]]; then
+        if [[ "$target" == "$active_canon" ]]; then
             print_ok "${target} is already the active PHP version — nothing to do"
             printf "\n"
             read -r -p "Press Enter to return to the dashboard..."
@@ -3490,6 +3631,9 @@ cmd_forced_update() {
         fi
         printf "\n"
         print_info "Switching PHP to ${target}..."
+        if [[ $INTEL_BREW_NO_BOTTLES == 1 ]] && ! brew list --versions "$target" >/dev/null 2>&1; then
+            print_note "This builds PHP from source on this Mac (Intel — Homebrew ships no bottles): expect 15-30 min."
+        fi
 
         # Stop services (the ACTIVE php service — may be php@X.Y, not meta)
         sudo "${BREW_PREFIX}/bin/apachectl" stop 2>/dev/null
@@ -3499,7 +3643,9 @@ cmd_forced_update() {
         # install + link the target — stream live so the user sees progress;
         # $? captures brew's real exit status so a failed install can never
         # be reported as a successful switch.
-        for f in "${php_names[@]}" php; do
+        # Unlink every PHP formula (canonical names) so exactly one owns the
+        # prefix symlinks before the target is linked.
+        for f in $(brew_php_lines); do
             brew unlink "$f" 2>/dev/null || true
         done
         HOMEBREW_NO_AUTO_UPDATE=1 brew install "$target" 2>&1
@@ -3605,38 +3751,58 @@ check_offline() {
     return 0
 }
 
+# One-time notice for an Intel Mac keeping the Homebrew backend: why brew is slow
+# here, and how to move to the route that is still bottled. Shown once (marker
+# file), because repeating it on every run is exactly what makes a dashboard noisy.
+intel_brew_notice() {
+    [[ $INTEL_BREW_NO_BOTTLES == 1 ]] || return 0
+    local marker="${BASE_DIR}/.intel-brew-notice"
+    [[ -f "$marker" ]] && return 0
+    printf "\n"
+    print_note "Homebrew has retired Intel Macs and ships no PHP bottles here, so PHP compiles from source (15-30 min per build)."
+    print_info "MacPorts still bottles Intel and is the supported route:  PHPPUP_BACKEND=port"
+    printf "\n"
+    mkdir -p "$BASE_DIR" 2>/dev/null
+    : > "$marker" 2>/dev/null || true
+}
+
 # ---- Backend Selection --------------------------------------
 detect_backend() {
     [[ $USE_APT == 1 ]] && return          # Linux: apt, never touch
-    if [[ "$ARCH" == "arm64" ]]; then      # Q1: Apple Silicon = brew only
-        USE_PORTS=0
-        return
-    fi
-    # Intel (x86_64) below
+
+    # An explicit PHPPUP_BACKEND choice outranks everything else — including the
+    # Apple Silicon default below, which the docs promise can be overridden.
     local choice="${PHPPUP_BACKEND:-}"
     case "$choice" in
         port|macports) USE_PORTS=1; return ;;
         brew|homebrew) USE_PORTS=0; return ;;
     esac
-    # No explicit choice → decide by availability/support
-    # Natural routing first (without the brew-stack guard):
-    local want_ports=0
-    if [[ $OS_MAJOR -lt 11 ]]; then        # Catalina & older: brew cannot run modern formulas
-        want_ports=1
-    elif command -v brew &>/dev/null && [[ $OS_MAJOR -ge $BREW_MIN_OS_MAJOR ]]; then
-        want_ports=0                        # supported brew present → keep (backward compat)
-    elif [[ $MACPORTS == 1 ]]; then
-        want_ports=1                        # brew absent/unsupported, ports present → prefer port
-    elif [[ $OS_MAJOR -lt $BREW_MIN_OS_MAJOR ]]; then
-        want_ports=1                        # brew unsupported on this OS → bootstrap MacPorts
+
+    if [[ "$ARCH" == "arm64" ]]; then      # Q1: Apple Silicon = brew only
+        USE_PORTS=0
+        return
     fi
+    # Intel (x86_64) below
+    # No explicit choice → decide by availability/support.
+    # Homebrew retired Intel x86_64 in September 2026 (Tier 3: no new bottles,
+    # source-compile only; unsupported from 2027) and now points Intel users at
+    # MacPorts. There are no PHP bottles for Intel any more, so every PHP
+    # install or upgrade on brew compiles from source — 15-30 minutes each.
+    # MacPorts still bottles Intel, so it is the supported route on every Intel
+    # Mac, whatever the macOS version. (Apple Silicon returned above.)
+    local want_ports=1
 
     # N3: backward compat — a working Homebrew stack already installed wins over
     # the MacPorts route when the natural routing would have picked ports
-    # (macOS 11–13 and older). MacPorts stays available via PHPPUP_BACKEND=port.
+    # (Intel, since the natural routing now always picks ports). MacPorts stays
+    # available via PHPPUP_BACKEND=port.
     if [[ $want_ports == 1 ]] && [[ -n "$BREW_PREFIX" ]] && { [[ -d "${BREW_PREFIX}/Cellar/httpd" ]] || [[ -d "${BREW_PREFIX}/Cellar/mariadb" ]] || [[ -d "${BREW_PREFIX}/Cellar/php" ]]; }; then
         USE_PORTS=0
-        print_info "Homebrew stack detected — keeping Homebrew backend (MacPorts available via PHPPUP_BACKEND=port)"
+        # Deliberately silent: detect_backend runs on every dashboard render, and
+        # a banner above the dashboard each time is noise. The fact lives in the
+        # dashboard header, with a one-time notice on first sighting and a cost
+        # warning at the point of decision (install / update / fu).
+        INTEL_BREW_NO_BOTTLES=1
         return
     fi
 
@@ -3662,6 +3828,7 @@ main() {
     if [[ $USE_PORTS == 1 ]]; then
         export PATH="${PORT_PREFIX}/bin:${PORT_PREFIX}/sbin:${PATH}"
     fi
+    intel_brew_notice
 
     # Migrate pre-1.2.0 config, then load persisted state
     migrate_config

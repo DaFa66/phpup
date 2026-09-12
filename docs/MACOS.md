@@ -22,15 +22,16 @@ Press **I** to install. That's the whole Quick Start. There isn't a Step 2.
 
 ## Backend Selection
 
-On a modern Mac, phpup uses Homebrew. Always. Here's exactly when:
+On Apple Silicon, phpup uses Homebrew. Always. On an **Intel** Mac it uses
+[MacPorts](https://www.macports.org/) instead, because Homebrew has retired the
+platform (see [Intel Macs](#intel-macs-homebrew-has-retired-you)):
 
 | Your Mac                             | Backend                                           | Why                                                  |
 | ------------------------------------ | ------------------------------------------------- | ---------------------------------------------------- |
 | Apple Silicon (M1/M2/M3/M4)          | [Homebrew](https://brew.sh) — always              | Native bottles, fast, no reason not to               |
-| Intel, macOS 14+ (Sonoma/Sequoia)    | [Homebrew](https://brew.sh) — while supported     | Still in Homebrew's 3-release window                 |
-| Intel, macOS 11–13 (Big Sur–Ventura) | [MacPorts](https://www.macports.org/) — automatic | Homebrew is phasing out Intel; ports keeps you going |
+| Intel (any macOS version)            | [MacPorts](https://www.macports.org/) — automatic | Homebrew retired Intel; ports still bottles it       |
 
-Running an older Intel Mac? You want the [MacPorts install guide](INSTALL-OLDER-MAC.md) instead — that's the one with screenshots and coffee recommendations.
+On an Intel Mac you want the [MacPorts install guide](INSTALL-OLDER-MAC.md) — screenshots, an explanation of the slow path, and no coffee judgement.
 
 ## Forcing a backend
 
@@ -154,17 +155,16 @@ Config files live in the Homebrew prefix and are wiped on uninstall — that's b
 | Login to phpMyAdmin?        | Username: `root` / Password: _(blank)_ |
 | PHP from terminal?          | `php` available via brew's symlink     |
 
-## Intel Macs & the Homebrew Phase-Out
+## Intel Macs: Homebrew Has Retired You
 
-A note for Intel Mac owners: Homebrew is winding down Intel support. Intel moves to Tier 3 (no new bottles, source-compile only) in September 2026 and becomes fully unsupported in September 2027.
+Homebrew moved Intel x86_64 to **Tier 3** in September 2026: no new bottles, source-compile only, and it now prints a notice of its own telling Intel users to move to [MacPorts](https://www.macports.org/). Full removal follows in 2027.
 
-**What this means for you:**
+**What that means in practice:**
 
-- **macOS 14+ (Sonoma/Sequoia):** You're fine for now — Homebrew still ships bottles. phpup will keep using brew.
-- **macOS 11–13 (Big Sur–Ventura):** phpup automatically switches to [MacPorts](https://www.macports.org/) so you don't get stranded. See the [MacPorts install guide](INSTALL-OLDER-MAC.md).
-- **Apple Silicon:** Unaffected — this is an Intel-only issue.
-
-phpup handles the transition so you don't have to think about it. If you're on an Intel Mac, sooner or later you'll see `Package: port` on your dashboard instead of `Package: brew`. That's normal.
+- **PHP has no Intel bottles any more.** Every install or upgrade compiles from source — 15–30 minutes each, and a single `u` or `fu` can trigger more than one. The same applies to dependencies (`openssl@3`, `curl`, `pcre2` and friends), so a routine update can run for the better part of an hour.
+- **New Intel installs get MacPorts automatically.** phpup routes every Intel Mac to MacPorts, which still ships Intel bottles, whatever the macOS version.
+- **An existing Homebrew stack is not migrated behind your back.** phpup keeps it, and tells you where it matters instead of nagging: the dashboard header carries `(Intel — PHP builds from source)`, a one-time `[ NOTE ]` on first sighting names the `PHPPUP_BACKEND=port` route, and any install, update or `fu` that is about to compile PHP says so **before** it starts — with the expected 15–30 minutes. (Homebrew's own notice arrives only once the build is under way.) Moving to MacPorts is your call, because a stack migration has to bring the databases with it (see the [MacPorts install guide](INSTALL-OLDER-MAC.md)).
+- **Apple Silicon:** unaffected. This is Intel-only.
 
 ## Troubleshooting
 

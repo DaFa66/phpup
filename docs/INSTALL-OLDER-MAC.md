@@ -1,15 +1,15 @@
-# Installing phpup on an Older Mac (macOS 10.15 Catalina – 13 Ventura)
+# Installing phpup on an Intel Mac (macOS 10.15 Catalina and newer)
 
 > This guide walks you through installing the full PHP web stack on an **Intel
 > Mac that Homebrew no longer supports**. phpup automatically detects this and
-> uses the **MacPorts** backend, which still supports older macOS versions.
+> uses the **MacPorts** backend, which still supports Intel Macs.
 >
 > You will end up with: **Apache + PHP + MariaDB + phpMyAdmin**, all configured
 > and working together — exactly what you'd get on a modern Mac.
 
 ## What you need
 
-- An Intel Mac running macOS 10.15 Catalina or newer (up to macOS 13 Ventura)
+- An Intel Mac running macOS 10.15 Catalina or newer. Homebrew has retired Intel on **every** macOS version, so phpup uses MacPorts here regardless — on macOS 11+ it serves pre-built binaries, on 10.15 the big components compile from source.
 - An internet connection
 - About 30–60 minutes of patience for your first install (PHP is compiled from
   source on older macOS — see [Why is it slow?](#why-is-it-slow))
