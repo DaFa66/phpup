@@ -5,8 +5,8 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-09-12
-#  Version: 1.2.6
+#  Date: 2026-09-13
+#  Version: 1.2.7
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -3451,36 +3451,43 @@ switch_php_apt() {
 # $1 = backend ("ports" | "brew"), $2 = current php name, $3 = empty-list
 # warning text, $4+ = candidate names. Echoes the chosen target ("" = skip).
 # Dotted input maps per backend: ports "8.4" -> php84, brew -> php@8.4.
+#
+# STREAMS: both callers capture this function with $( ), so everything the user
+# must SEE goes to stderr and stdout carries nothing but the returned target.
+# Anything printed to stdout here is swallowed into $target instead of reaching
+# the terminal: the menu vanishes and the Enter-to-skip case returns a non-empty
+# string, so the caller switches PHP when the user asked it not to.
 php_switch_prompt() {
     local backend="$1" current_php="$2" empty_warn="$3"; shift 3
     local -a php_names=("$@")
     local i=0 choice target=""
-    printf "\n${CYAN}Available PHP versions:${RESET}\n"
+    printf "\n${CYAN}Available PHP versions:${RESET}\n" >&2
     for name in "${php_names[@]}"; do
         i=$((i+1))
         if [[ "$name" == "$current_php" ]]; then
-            printf "  ${GREEN}%d) %s${RESET} (current)\n" "$i" "$name"
+            printf "  ${GREEN}%d) %s${RESET} (current)\n" "$i" "$name" >&2
         else
-            printf "  %d) %s\n" "$i" "$name"
+            printf "  %d) %s\n" "$i" "$name" >&2
         fi
     done
     if [[ $i -eq 0 ]]; then
-        print_warn "$empty_warn"
-        printf "\n"
+        print_warn "$empty_warn" >&2
+        printf "\n" >&2
         read -r -p "Press Enter to return to the dashboard..."
         return 1
     fi
-    printf "\n${BOLD}Enter the number of the version to switch to (e.g. 3), a version like 8.4, or press Enter to skip:${RESET} "
+    printf "\n${BOLD}Enter the number of the version to switch to (e.g. 3), a version like 8.4, or press Enter to skip:${RESET} " >&2
     read -r choice
     if [[ -n "$choice" ]]; then
         # N5: validate FIRST — only a menu number or a plain version/formula
         # string may reach the sudo'd commands below (no free-form injection).
         if [[ "$choice" =~ ^[0-9]+$ ]]; then
             if [[ "$choice" -ge 1 && "$choice" -le "$i" ]]; then
-                target="${php_names[$choice]}"
+                # The menu numbers from 1, but $@ re-indexes the array from 0.
+                target="${php_names[$((choice - 1))]}"
             else
-                print_err "Invalid choice '${choice}' — pick a number from the list (nothing was changed)"
-                printf "\n"
+                print_err "Invalid choice '${choice}' — pick a number from the list (nothing was changed)" >&2
+                printf "\n" >&2
                 read -r -p "Press Enter to return to the dashboard..."
                 return 1
             fi
@@ -3492,22 +3499,22 @@ php_switch_prompt() {
                 target="php@${choice}"
             fi
             if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
-                print_err "PHP ${choice} is not available (nothing was changed)"
-                printf "\n"
+                print_err "PHP ${choice} is not available (nothing was changed)" >&2
+                printf "\n" >&2
                 read -r -p "Press Enter to return to the dashboard..."
                 return 1
             fi
         elif [[ "$choice" =~ ^(php8[0-9]+|php@[0-9]+\.[0-9]+)$ ]]; then
             target="$choice"
             if ! printf '%s\n' "${php_names[@]}" | grep -qx "$target"; then
-                print_err "PHP ${choice} is not available (nothing was changed)"
-                printf "\n"
+                print_err "PHP ${choice} is not available (nothing was changed)" >&2
+                printf "\n" >&2
                 read -r -p "Press Enter to return to the dashboard..."
                 return 1
             fi
         else
-            print_err "Invalid input '${choice}' — expected a number or a version like 8.4 (nothing was changed)"
-            printf "\n"
+            print_err "Invalid input '${choice}' — expected a number or a version like 8.4 (nothing was changed)" >&2
+            printf "\n" >&2
             read -r -p "Press Enter to return to the dashboard..."
             return 1
         fi
@@ -3643,6 +3650,18 @@ cmd_forced_update() {
         # install + link the target — stream live so the user sees progress;
         # $? captures brew's real exit status so a failed install can never
         # be reported as a successful switch.
+        # Defence in depth: $target must be a plain PHP formula name before the
+        # unlink loop runs. Unlinking every PHP keg is destructive and happens
+        # BEFORE the install, so it may never run on an unvalidated value — a
+        # menu-return bug once unlinked the whole stack on the way to a failed
+        # install, leaving no 'php' on PATH.
+        if [[ ! "$target" =~ ^php(@[0-9]+\.[0-9]+)?$ ]]; then
+            print_err "Refusing to switch — '${target}' is not a PHP formula name"
+            printf "\n"
+            read -r -p "Press Enter to return to the dashboard..."
+            return
+        fi
+
         # Unlink every PHP formula (canonical names) so exactly one owns the
         # prefix symlinks before the target is linked.
         for f in $(brew_php_lines); do

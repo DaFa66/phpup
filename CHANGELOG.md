@@ -13,6 +13,24 @@ overview of every release.
 
 ---
 
+## [1.2.7-nix] — 2026-09-13
+
+### macOS & Linux (phpup.sh v1.2.7)
+
+*Previous platform update: [1.2.6-nix](#126-nix--2026-09-12).*
+
+Patch release fixing the `fu` version-switch menu, which was unusable on both macOS backends. The shared menu helper (extracted from the two inline menu blocks in the 2026-08-29 dedupe, `99ed3b5`) printed its UI to stdout while both callers captured it with `$( )` — so the menu went into the variable that was meant to hold the chosen version, and nothing reached the screen.
+
+### Fixed
+- **`fu` printed no version list and went ahead with a switch when the user pressed Enter to skip** — `php_switch_prompt` rendered the list, the prompt and its errors on stdout, but both callers invoke it as `target=$(php_switch_prompt …)`, and command substitution captures stdout. The whole menu therefore landed in `$target` instead of on the terminal: `read` waited with nothing displayed (the apparent hang), Enter returned a ~200-character blob rather than an empty string, the `[[ -n "$target" ]]` skip guard saw it as a real selection and carried on into the switch, and `print_info "Switching PHP to ${target}…"` then dumped the swallowed menu onto the screen mid-sentence — the stray `…` after `press Enter to skip: ` being `print_info`'s own ellipsis. The helper's user-facing output now goes to stderr (14 sites) and stdout carries nothing but the returned target. This affected the Homebrew *and* MacPorts menus identically; the helper has been in the script since that refactor and was never exercised through `$( )` on either backend until the Intel Mac leg.
+- **`fu` mapped a menu number to the wrong version** — the candidate list is re-indexed from 0 when `"$@"` is assigned, while the printed menu numbers from 1, so the number was used directly as an array subscript: `1` selected `php@8.2`, `3` selected `php@8.4`, and the last entry (`5`) resolved to an unset element — an accidental skip. Now `target="${php_names[$((choice - 1))]}"`. Dotted (`8.4`) and bare formula (`php@8.3`) input were always correct. With the stream fix alone this would have become a *silent* wrong-version switch, which is why both are fixed together.
+- **An abandoned `fu` switch could leave the stack with no `php` on `PATH`** — the Homebrew leg unlinks every PHP keg *before* installing the target, so a target that was not a formula name unlinked the stack and then failed at the install. A formula-name guard now runs ahead of the unlink loop, so an unvalidated value can never reach the destructive step.
+
+### Verified
+- `bash -n` OK · ad-hoc sandbox harness (the real `php_switch_prompt` sliced out of the script, run through the real `$( )` call shape with `print_*` stubbed): the menu and prompt now appear on stderr, Enter returns an empty target with `rc=0` so the caller skips, `1`–`5` return `php@8.1`–`php@8.5` exactly as printed, dotted and bare-formula input still resolve, and invalid input (`99`, `rm -rf /`) is still rejected with `rc=1` and the error visible. The MacPorts leg shares the fixed helper; the apt leg has its own inline menu and is untouched.
+
+---
+
 ## [1.2.6-nix] — 2026-09-12
 
 ### macOS & Linux (phpup.sh v1.2.6)
@@ -925,6 +943,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**1.2.7-nix**](#127-nix--2026-09-13) | 2026-09-13 | `fu` version-switch menu: stderr stream contract, 1-based selection, unlink guard |
 | [**1.2.6-nix**](#126-nix--2026-09-12) | 2026-09-12 | Stack-aware service status, Apache PHP module follows the active formula, dashboard reports the served PHP |
 | [**1.2.5-nix**](#125-nix--2026-09-06) | 2026-09-06 | Update flow PMA control-user password drift fixed (configure after start, stable pass) |
 | [**1.2.4-nix**](#124-nix--2026-09-06) | 2026-09-06 | fu menu flags pre-release series (alpha/beta/RC) |
