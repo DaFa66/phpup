@@ -53,7 +53,7 @@ phpup picks the right package manager for your Mac automatically:
 
 | Your Mac                                 | Backend                                                    |
 | ---------------------------------------- | ---------------------------------------------------------- |
-| Apple Silicon (M1/M2/M3/M4)              | [Homebrew](https://brew.sh) — always                       |
+| Apple Silicon (all M-series)             | [Homebrew](https://brew.sh) — always                       |
 | Intel (any macOS version)                | [MacPorts](https://www.macports.org/) — automatic            |
 
 You can override the automatic selection with an environment variable:

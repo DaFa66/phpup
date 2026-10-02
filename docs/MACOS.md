@@ -22,13 +22,13 @@ Press **I** to install. That's the whole Quick Start. There isn't a Step 2.
 
 ## Backend Selection
 
-On Apple Silicon, phpup uses Homebrew. Always. On an **Intel** Mac it uses
+On Apple Silicon, phpup uses Homebrew. Always, on every M-series generation. On an **Intel** Mac it uses
 [MacPorts](https://www.macports.org/) instead, because Homebrew has retired the
 platform (see [Intel Macs](#intel-macs-homebrew-has-retired-you)):
 
 | Your Mac                             | Backend                                           | Why                                                  |
 | ------------------------------------ | ------------------------------------------------- | ---------------------------------------------------- |
-| Apple Silicon (M1/M2/M3/M4)          | [Homebrew](https://brew.sh) — always              | Native bottles, fast, no reason not to               |
+| Apple Silicon (all M-series)         | [Homebrew](https://brew.sh) — always              | Native bottles, fast, no reason not to               |
 | Intel (any macOS version)            | [MacPorts](https://www.macports.org/) — automatic | Homebrew retired Intel; ports still bottles it       |
 
 On an Intel Mac you want the [MacPorts install guide](INSTALL-OLDER-MAC.md) — screenshots, an explanation of the slow path, and no coffee judgement.
