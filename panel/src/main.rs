@@ -272,9 +272,11 @@ impl App {
             admin_verb: None,
             toast: None,
             // First run opens Settings: the source choice is the first thing a
-            // new user needs to see.
+            // new user needs to see. PHPUP_PANEL_OPEN_SETTINGS forces it open,
+            // which is how the panel gets screenshotted without clicking.
             sized_once: false,
-            settings_open: !Settings::path().map(|p| p.is_file()).unwrap_or(false),
+            settings_open: std::env::var("PHPUP_PANEL_OPEN_SETTINGS").is_ok()
+                || !Settings::path().map(|p| p.is_file()).unwrap_or(false),
             settings_rect: None,
             settings_toggle_rect: None,
             about_open: false,
@@ -825,15 +827,15 @@ impl App {
 
         let resp = egui::Panel::right("settings")
             .resizable(false)
-            .exact_size(340.0)
+            .exact_size(358.0)
             .frame(
                 Frame::group(ui.style())
                     .fill(p.surface)
                     // Extra right margin: the auto scrollbar otherwise sits on
                     // top of the last column of text and clips it.
                     .inner_margin(Margin {
-                        left: 18,
-                        right: 26,
+                        left: 16,
+                        right: 14,
                         top: 18,
                         bottom: 18,
                     })
@@ -843,7 +845,7 @@ impl App {
                 // A floating scrollbar is drawn on top of the content, so the
                 // last column sits underneath it. Reserve the lane instead.
                 ui.style_mut().spacing.scroll.floating = false;
-                ui.style_mut().spacing.scroll.bar_outer_margin = 6.0;
+                ui.style_mut().spacing.scroll.bar_outer_margin = 8.0;
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -927,6 +929,8 @@ impl App {
                                             ui.with_layout(
                                                 Layout::right_to_left(Align::Center),
                                                 |ui| {
+                                                    // Keep the state off the scrollbar.
+                                                    ui.add_space(10.0);
                                                     ui.label(
                                                         RichText::new(state)
                                                             .size(10.5)
@@ -965,7 +969,7 @@ impl App {
 
                         ui.add_space(16.0);
                         section_label(ui, p, "ZOOM");
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             for (label, value) in [
                                 ("Auto", 0.0f32),
                                 ("85%", 0.85),
