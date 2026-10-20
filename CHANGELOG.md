@@ -21,6 +21,13 @@ Feature release adding a machine-readable CLI, so a GUI, tray app or CI job can 
 without the interactive dashboard. Contract: `.junk/cli-contract.md`, to be promoted to
 `docs/CLI.md` on release.
 
+### Fixed
+- **`Get-Process -Name` replaced with .NET lookups** (`GetProcessesByName`) for every
+  process check and stop path on Windows. Windows PowerShell 5.1 writes
+  `Exception of type 'System.OutOfMemoryException' was thrown` to the error stream when the
+  name matches nothing, which polluted redirected stderr with a stack trace pointing at a
+  line that was doing nothing wrong.
+
 ### Added
 - **`status`, `start`, `stop`, `restart`, `version`, `help` verbs** on both scripts, with
   `--json` (PowerShell `-Json`) emitting a stable schema on stdout. No arguments behaves

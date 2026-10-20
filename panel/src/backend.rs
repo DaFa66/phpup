@@ -56,9 +56,9 @@ pub struct Install {
 pub struct SvcItem {
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_or_false")]
     pub registered: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_or_false")]
     pub enabled: bool,
 }
 
@@ -66,17 +66,27 @@ pub struct SvcItem {
 pub struct Services {
     #[serde(default)]
     pub mode: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_or_false")]
     pub registered: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_or_false")]
     pub autostart: bool,
     #[serde(default, deserialize_with = "null_vec")]
     pub items: Vec<SvcItem>,
 }
 
+/// The contract allows `null` for anything that is not known yet, including
+/// booleans (fast status cannot ask the SCM, PHP has no process of its own).
+/// Missing knowledge is not a parse error: it is false.
+fn bool_or_false<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(false))
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct Component {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_or_false")]
     pub installed: bool,
     #[serde(default)]
     pub version: Option<String>,
@@ -92,7 +102,7 @@ pub struct Component {
     pub url: Option<String>,
     #[serde(default)]
     pub sapi: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_or_false")]
     pub cli_on_path: bool,
 }
 
@@ -136,9 +146,9 @@ pub struct Paths {
 pub struct PortInfo {
     #[serde(default)]
     pub port: u16,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_or_false")]
     pub listening: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_or_false")]
     pub ours: bool,
     #[serde(default)]
     pub owner: Option<String>,

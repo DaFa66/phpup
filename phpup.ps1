@@ -142,13 +142,26 @@ function Get-PhpMyAdminVersion {
     return "unknown"
 }
 
+function Get-ProcessesByName {
+    # .NET rather than Get-Process -Name: Windows PowerShell 5.1 writes
+    # "Exception of type 'System.OutOfMemoryException' was thrown" to the error
+    # stream when a name matches nothing, which surfaced as noise in the panel.
+    param([string[]]$Names)
+    $found = @()
+    foreach ($name in $Names) {
+        foreach ($proc in [System.Diagnostics.Process]::GetProcessesByName($name)) {
+            $found += $proc
+        }
+    }
+    return $found
+}
+
 function Test-ApacheRunning {
-    return $null -ne (Get-Process -Name "httpd" -ErrorAction SilentlyContinue)
+    return (@(Get-ProcessesByName -Names @('httpd')).Count -gt 0)
 }
 
 function Test-MariaDbRunning {
-    return ($null -ne (Get-Process -Name "mysqld" -ErrorAction SilentlyContinue)) -or
-           ($null -ne (Get-Process -Name "mariadbd" -ErrorAction SilentlyContinue))
+    return (@(Get-ProcessesByName -Names @('mysqld', 'mariadbd')).Count -gt 0)
 }
 
 function Test-StackComplete {
@@ -1710,7 +1723,7 @@ function Stop-WebStackServices {
         & "$APACHE_PATH\bin\httpd.exe" -k stop 2>&1 | Out-Null
         Start-Sleep -Seconds 2
         if (Test-ApacheRunning) {
-            Get-Process -Name "httpd" -ErrorAction SilentlyContinue | Stop-Process -Force
+            Get-ProcessesByName -Names @('httpd') | Stop-Process -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
         }
         Write-Ok "Apache stopped"
@@ -1728,7 +1741,7 @@ function Stop-WebStackServices {
         $stopped = $true
     }
     elseif (Test-MariaDbRunning) {
-        Get-Process -Name "mysqld", "mariadbd" -ErrorAction SilentlyContinue | Stop-Process -Force
+        Get-ProcessesByName -Names @('mysqld', 'mariadbd') | Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
         Write-Ok "MariaDB stopped"
         $stopped = $true
@@ -3186,7 +3199,7 @@ function Get-ComponentPids {
     # Get-ServicePid instead — never "no PIDs" just because we are unelevated.
     param([string[]]$Names)
     $found = @()
-    foreach ($proc in (Get-Process -Name $Names -ErrorAction SilentlyContinue)) {
+    foreach ($proc in @(Get-ProcessesByName -Names $Names)) {
         $exe = $null
         try { $exe = $proc.ExecutablePath } catch { }
         if ($exe -and ($exe -like "$BASE\*")) { $found += [int]$proc.Id }
@@ -3202,7 +3215,7 @@ function Resolve-ComponentPids {
 
     $pids = @()
     if ($Fast) {
-        foreach ($proc in @(Get-Process -Name $Names -ErrorAction SilentlyContinue)) {
+        foreach ($proc in @(Get-ProcessesByName -Names $Names)) {
             if ($proc) { $pids += [int]$proc.Id }
         }
         return ,@($pids | Sort-Object -Unique)
