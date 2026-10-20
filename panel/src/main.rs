@@ -37,7 +37,7 @@ fn main() -> eframe::Result<()> {
         .with_title("phpup")
         .with_app_id("phpup-panel")
         .with_inner_size([980.0, 700.0])
-        .with_min_inner_size([820.0, 560.0]);
+        .with_min_inner_size([760.0, 520.0]);
     if let Some(icon) = assets::window_icon() {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
@@ -63,6 +63,8 @@ struct Settings {
     source: Source,
     script: Option<String>,
     interval: u32,
+    /// 0.0 follows the OS; anything else is a fixed zoom factor.
+    zoom: f32,
 }
 
 impl Default for Settings {
@@ -72,6 +74,7 @@ impl Default for Settings {
             source: Source::Github,
             script: None,
             interval: 2,
+            zoom: 0.0,
         }
     }
 }
@@ -94,6 +97,7 @@ impl Settings {
             source: Option<String>,
             script: Option<String>,
             interval: Option<u32>,
+            zoom: Option<f32>,
         }
         let Some(path) = Self::path() else {
             return Self::default();
@@ -107,6 +111,7 @@ impl Settings {
                 source: raw.source.as_deref().map(Source::from_str).unwrap_or(Source::Github),
                 script: raw.script,
                 interval: raw.interval.unwrap_or(2).clamp(1, 10),
+                zoom: raw.zoom.unwrap_or(0.0),
             },
             Err(_) => Self::default(),
         }
@@ -122,6 +127,7 @@ impl Settings {
             "source": self.source.as_str(),
             "script": self.script,
             "interval": self.interval,
+            "zoom": self.zoom,
         });
         let _ = std::fs::write(path, serde_json::to_string_pretty(&body).unwrap_or_default());
     }
@@ -204,6 +210,9 @@ struct App {
     toast: Option<Toast>,
     settings_open: bool,
     brand: Option<assets::Brand>,
+    about_open: bool,
+    quitting: bool,
+    applied_zoom: Option<f32>,
     script_input: String,
     applied_dark: Option<bool>,
     applied_pref: Option<ThemePref>,
@@ -237,6 +246,9 @@ impl App {
             // First run opens Settings: the source choice is the first thing a
             // new user needs to see.
             settings_open: !Settings::path().map(|p| p.is_file()).unwrap_or(false),
+            about_open: false,
+            quitting: false,
+            applied_zoom: None,
             brand,
             script_input: String::new(),
             applied_dark: None,
@@ -466,31 +478,7 @@ impl App {
     fn header(&mut self, ui: &mut egui::Ui, p: &Palette) {
         let mut toggle_settings = false;
         let mut toggle_console = false;
-
-        // Quiet facts, separated by dots. These used to be pills, which read as
-        // buttons sitting next to real buttons.
-        let mut facts: Vec<String> = Vec::new();
-        match &self.status {
-            Some(s) => {
-                facts.push(s.stack_state().to_string());
-                if let Some(mode) = &s.services.mode {
-                    facts.push(format!("{mode} mode"));
-                }
-                facts.push(if s.services.registered {
-                    "registered".to_string()
-                } else {
-                    "not registered".to_string()
-                });
-                if s.services.autostart {
-                    facts.push("autostart".to_string());
-                }
-                if let Some(distro) = &s.platform.distro {
-                    facts.push(distro.clone());
-                }
-            }
-            None => facts.push("offline".to_string()),
-        }
-        let facts = facts.join("   ·   ");
+        let mut toggle_about = false;
 
         egui::Panel::top("header")
             .frame(
@@ -501,29 +489,22 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("phpup").size(21.0).strong().color(p.text));
-                    ui.add_space(12.0);
-                    ui.label(RichText::new(facts).size(11.5).color(p.muted));
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("— Bare-metal PHP for local development")
+                            .size(12.0)
+                            .color(p.muted),
+                    );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(RichText::new("Settings").color(p.text))
-                                    .fill(p.surface_2)
-                                    .corner_radius(CornerRadius::same(9)),
-                            )
-                            .clicked()
-                        {
+                        if filled_nav(ui, p, "Settings") {
                             toggle_settings = true;
                         }
-                        if ui
-                            .add(
-                                egui::Button::new(RichText::new("Output").color(p.text))
-                                    .fill(p.surface_2)
-                                    .corner_radius(CornerRadius::same(9)),
-                            )
-                            .clicked()
-                        {
+                        if filled_nav(ui, p, "Output") {
                             toggle_console = true;
+                        }
+                        if plain_nav(ui, p, "About") {
+                            toggle_about = true;
                         }
                     });
                 });
@@ -534,6 +515,101 @@ impl App {
         }
         if toggle_console {
             self.console_open = !self.console_open;
+        }
+        if toggle_about {
+            self.about_open = true;
+        }
+    }
+
+    /// Logo, tagline, versions, links. The image earns its place here rather
+    /// than as a banner above the settings form.
+    fn about_window(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let mut open = self.about_open;
+        let mut link: Option<String> = None;
+
+        egui::Window::new("About phpup")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .frame(
+                Frame::group(ui.style())
+                    .fill(p.surface)
+                    .inner_margin(Margin::same(18))
+                    .stroke(Stroke::new(1.0, p.border)),
+            )
+            .show(ui.ctx(), |ui| {
+                ui.set_max_width(360.0);
+
+                if let Some(brand) = &self.brand {
+                    let width = ui.available_width();
+                    let inset = 0.06;
+                    let height = width * (brand.size.y / brand.size.x);
+                    let sized = egui::load::SizedTexture::new(brand.texture.id(), brand.size);
+                    let uv = egui::Rect::from_min_max(
+                        egui::pos2(inset, inset),
+                        egui::pos2(1.0 - inset, 1.0 - inset),
+                    );
+                    ui.add(
+                        egui::Image::new(sized)
+                            .uv(uv)
+                            .fit_to_exact_size(Vec2::new(width, height))
+                            .corner_radius(CornerRadius::same(10)),
+                    );
+                    ui.add_space(12.0);
+                }
+
+                ui.label(RichText::new("phpup").size(18.0).strong().color(p.text));
+                ui.label(
+                    RichText::new("Bare-metal PHP for local development")
+                        .size(12.0)
+                        .color(p.muted),
+                );
+
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new(
+                        "Apache, PHP, MariaDB and phpMyAdmin in a single directory. No container, \
+                         no virtual machine, no global install — just a stack you can switch, \
+                         back up and delete. This panel is the control surface; phpup itself does \
+                         the installing and updating.",
+                    )
+                    .size(11.5)
+                    .color(p.text),
+                );
+
+                ui.add_space(12.0);
+                let phpup_version = self
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.phpup.version.clone())
+                    .unwrap_or_else(|| "not connected".to_string());
+                for (label, value) in [
+                    ("Panel", env!("CARGO_PKG_VERSION").to_string()),
+                    ("phpup", phpup_version),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(label).size(11.0).color(p.muted));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(value).size(11.0).monospace().color(p.text),
+                            );
+                        });
+                    });
+                }
+
+                ui.add_space(10.0);
+                if ui
+                    .link(RichText::new("github.com/DaFa66/phpup").size(11.5))
+                    .clicked()
+                {
+                    link = Some("https://github.com/DaFa66/phpup".to_string());
+                }
+            });
+
+        self.about_open = open;
+        if let Some(url) = link {
+            backend::open_in_default_app(&url);
         }
     }
 
@@ -676,7 +752,7 @@ impl App {
 
         egui::Panel::right("settings")
             .resizable(false)
-            .exact_size(330.0)
+            .exact_size(340.0)
             .frame(
                 Frame::group(ui.style())
                     .fill(p.surface)
@@ -687,56 +763,108 @@ impl App {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        // Brand first, cropped in slightly so it reads as a hero
-                        // rather than a thumbnail.
-                        if let Some(brand) = &self.brand {
-                            let inset = 0.07;
-                            let width = ui.available_width() - 6.0;
-                            let height = width * (brand.size.y / brand.size.x);
-                            let sized =
-                                egui::load::SizedTexture::new(brand.texture.id(), brand.size);
-                            let uv = egui::Rect::from_min_max(
-                                egui::pos2(inset, inset),
-                                egui::pos2(1.0 - inset, 1.0 - inset),
-                            );
-                            Frame::group(ui.style())
-                                .corner_radius(CornerRadius::same(12))
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::Image::new(sized)
-                                            .uv(uv)
-                                            .fit_to_exact_size(Vec2::new(width, height))
-                                            .corner_radius(CornerRadius::same(12)),
-                                    );
-                                });
-                        }
-
-                        ui.add_space(12.0);
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("Settings").size(16.0).strong().color(p.text),
                             );
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui
-                                    .add(
-                                        egui::Button::new(RichText::new("Close").color(p.muted))
-                                            .fill(Color32::TRANSPARENT)
-                                            .corner_radius(CornerRadius::same(8)),
-                                    )
-                                    .clicked()
-                                {
+                                if plain_nav(ui, p, "Close") {
                                     want_close = true;
                                 }
                             });
                         });
+                        ui.add_space(12.0);
 
-                        ui.add_space(8.0);
+                        // State, mode and registration live here now: in the
+                        // header they read as broken menus.
+                        section_label(ui, p, "STATUS");
+                        match &self.status {
+                            Some(s) => {
+                                let mut facts = vec![s.stack_state().to_string()];
+                                if let Some(mode) = &s.services.mode {
+                                    facts.push(format!("{mode} mode"));
+                                }
+                                facts.push(
+                                    if s.services.registered {
+                                        "registered".to_string()
+                                    } else {
+                                        "not registered".to_string()
+                                    },
+                                );
+                                if s.services.autostart {
+                                    facts.push("autostart".to_string());
+                                }
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(facts.join("  ·  "))
+                                            .size(11.0)
+                                            .color(p.muted),
+                                    )
+                                    .wrap(),
+                                );
+
+                                let os = s.platform.os.clone().unwrap_or_else(|| "-".into());
+                                let arch = s.platform.arch.clone().unwrap_or_else(|| "-".into());
+                                let backend_name =
+                                    s.platform.backend.clone().unwrap_or_else(|| "-".into());
+                                let mut line = format!("{os} {arch}  ·  {backend_name}");
+                                if let Some(distro) = &s.platform.distro {
+                                    line = format!("{distro}  ·  {line}");
+                                }
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(line).size(11.0).color(p.muted),
+                                    )
+                                    .wrap(),
+                                );
+
+                                if !s.services.items.is_empty() {
+                                    ui.add_space(10.0);
+                                    section_label(ui, p, "SERVICES");
+                                    for item in &s.services.items {
+                                        let name = item.name.clone().unwrap_or_default();
+                                        let (state, colour) = if item.enabled {
+                                            ("enabled", p.ok)
+                                        } else if item.registered {
+                                            ("disabled", p.muted)
+                                        } else {
+                                            ("absent", p.muted)
+                                        };
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(name)
+                                                    .size(11.0)
+                                                    .monospace()
+                                                    .color(p.text),
+                                            );
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    ui.label(
+                                                        RichText::new(state)
+                                                            .size(10.5)
+                                                            .color(colour),
+                                                    );
+                                                },
+                                            );
+                                        });
+                                    }
+                                }
+                            }
+                            None => {
+                                ui.label(
+                                    RichText::new("no status yet").size(11.0).color(p.muted),
+                                );
+                            }
+                        }
+
+                        ui.add_space(16.0);
                         section_label(ui, p, "APPEARANCE");
                         ui.horizontal(|ui| {
                             for pref in [ThemePref::System, ThemePref::Light, ThemePref::Dark] {
                                 let selected = self.settings.theme == pref;
-                                let text = RichText::new(pref.label()).size(12.5).color(
-                                    if selected { ON_ACCENT } else { p.text },
+                                let text = RichText::new(pref.label()).size(12.0).color(
+                                    if selected { p.accent_text } else { p.text },
                                 );
                                 let button = egui::Button::new(text)
                                     .fill(if selected { p.accent } else { p.surface_2 })
@@ -748,13 +876,43 @@ impl App {
                             }
                         });
 
-                        ui.add_space(14.0);
+                        ui.add_space(16.0);
+                        section_label(ui, p, "ZOOM");
+                        ui.horizontal(|ui| {
+                            for (label, value) in [
+                                ("Auto", 0.0f32),
+                                ("85%", 0.85),
+                                ("100%", 1.0),
+                                ("115%", 1.15),
+                                ("130%", 1.3),
+                            ] {
+                                let selected = (self.settings.zoom - value).abs() < 0.001;
+                                let text = RichText::new(label).size(11.5).color(
+                                    if selected { p.accent_text } else { p.text },
+                                );
+                                let button = egui::Button::new(text)
+                                    .min_size(Vec2::new(0.0, 22.0))
+                                    .fill(if selected { p.accent } else { p.surface_2 })
+                                    .corner_radius(CornerRadius::same(8));
+                                if ui.add(button).clicked() && !selected {
+                                    self.settings.zoom = value;
+                                    dirty = true;
+                                }
+                            }
+                        });
+                        ui.label(
+                            RichText::new("Auto follows the monitor's own scaling.")
+                                .size(10.5)
+                                .color(p.muted),
+                        );
+
+                        ui.add_space(16.0);
                         section_label(ui, p, "SOURCE");
                         ui.horizontal(|ui| {
                             for src in [Source::Github, Source::Local] {
                                 let selected = self.settings.source == src;
-                                let text = RichText::new(src.label()).size(12.5).color(
-                                    if selected { ON_ACCENT } else { p.text },
+                                let text = RichText::new(src.label()).size(12.0).color(
+                                    if selected { p.accent_text } else { p.text },
                                 );
                                 let button = egui::Button::new(text)
                                     .fill(if selected { p.accent } else { p.surface_2 })
@@ -804,7 +962,9 @@ impl App {
                                 if ui
                                     .add(
                                         egui::Button::new(
-                                            RichText::new("Refresh from GitHub").color(p.text),
+                                            RichText::new("Refresh from GitHub")
+                                                .size(12.0)
+                                                .color(p.text),
                                         )
                                         .fill(p.surface_2)
                                         .corner_radius(CornerRadius::same(8)),
@@ -822,109 +982,35 @@ impl App {
                                         .font(egui::TextStyle::Small),
                                 );
                                 ui.horizontal(|ui| {
-                                    if ui
-                                        .add(
-                                            egui::Button::new(RichText::new("Detect").color(p.text))
-                                                .fill(p.surface_2)
-                                                .corner_radius(CornerRadius::same(8)),
-                                        )
-                                        .clicked()
-                                    {
+                                    if plain_nav(ui, p, "Detect") {
                                         self.settings.script = None;
                                         do_attach = true;
                                         dirty = true;
                                     }
                                     let input = self.script_input.trim().to_string();
-                                    if !input.is_empty()
-                                        && self.settings.script.as_deref() != Some(input.as_str())
-                                    {
-                                        if ui
-                                            .add(
-                                                egui::Button::new(
-                                                    RichText::new("Use path").color(p.text),
-                                                )
-                                                .fill(p.surface_2)
-                                                .corner_radius(CornerRadius::same(8)),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.settings.script = Some(input);
-                                            do_attach = true;
-                                            dirty = true;
-                                        }
+                                    let changed =
+                                        !input.is_empty()
+                                            && self.settings.script.as_deref() != Some(input.as_str());
+                                    if changed && plain_nav(ui, p, "Use path") {
+                                        self.settings.script = Some(input);
+                                        do_attach = true;
+                                        dirty = true;
                                     }
                                 });
                             }
                         }
 
-                        ui.add_space(14.0);
-                        section_label(ui, p, "ENVIRONMENT");
-                        if let Some(s) = &self.status {
-                            let os = s.platform.os.clone().unwrap_or_else(|| "-".into());
-                            let arch = s.platform.arch.clone().unwrap_or_else(|| "-".into());
-                            let backend =
-                                s.platform.backend.clone().unwrap_or_else(|| "-".into());
-                            ui.label(
-                                RichText::new(format!("{os} {arch}  ·  {backend}"))
-                                    .size(11.0)
-                                    .color(p.muted),
-                            );
-                            if let Some(distro) = &s.platform.distro {
-                                ui.label(RichText::new(distro.clone()).size(11.0).color(p.muted));
-                            }
-
-                            ui.add_space(10.0);
-                            section_label(ui, p, "SERVICES");
-                            if s.services.items.is_empty() {
-                                ui.label(
-                                    RichText::new("none registered").size(11.0).color(p.muted),
-                                );
-                            }
-                            for item in &s.services.items {
-                                let name = item.name.clone().unwrap_or_default();
-                                let state = if item.enabled {
-                                    "enabled"
-                                } else if item.registered {
-                                    "registered"
-                                } else {
-                                    "absent"
-                                };
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(name).size(11.5).monospace().color(p.text),
-                                    );
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        ui.label(
-                                            RichText::new(state).size(10.5).color(if item.enabled {
-                                                p.ok
-                                            } else {
-                                                p.muted
-                                            }),
-                                        );
-                                    });
-                                });
-                            }
-                        } else {
-                            ui.label(RichText::new("no status yet").size(11.0).color(p.muted));
-                        }
-
-                        ui.add_space(14.0);
+                        ui.add_space(16.0);
                         section_label(ui, p, "REFRESH");
-                        let mut interval = self.settings.interval as i32;
                         if ui
-                            .add(egui::Slider::new(&mut interval, 1..=10).suffix(" s"))
+                            .add(
+                                egui::Slider::new(&mut self.settings.interval, 1..=10)
+                                    .suffix(" s"),
+                            )
                             .changed()
                         {
-                            self.settings.interval = interval as u32;
                             dirty = true;
                         }
-                        ui.label(
-                            RichText::new(
-                                "One phpup process stays open; the panel reads its stream.",
-                            )
-                            .size(11.0)
-                            .color(p.muted),
-                        );
                     });
             });
 
@@ -1140,27 +1226,6 @@ impl App {
 
         ui.add_space(16.0);
 
-        // Component cards, two per row.
-        let gap = 12.0;
-        let col_width = ((ui.available_width() - gap) / 2.0).max(240.0);
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(col_width);
-                card(ui, p, "Apache", &status.components.apache, PortKind::Web);
-                ui.add_space(gap);
-                card(ui, p, "MariaDB", &status.components.mariadb, PortKind::Db);
-            });
-            ui.add_space(gap);
-            ui.vertical(|ui| {
-                ui.set_width(col_width);
-                card(ui, p, "PHP", &status.components.php, PortKind::None);
-                ui.add_space(gap);
-                card(ui, p, "phpMyAdmin", &status.components.phpmyadmin, PortKind::None);
-            });
-        });
-
-        ui.add_space(18.0);
-
         // Actions
         ui.horizontal(|ui| {
             let idle = self.action.is_none();
@@ -1240,6 +1305,30 @@ impl App {
                 }
             });
         });
+
+        ui.add_space(18.0);
+
+        // Component cards, two per row.
+        let gap = 12.0;
+        let col_width = ((ui.available_width() - gap) / 2.0).max(240.0);
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(col_width);
+                card(ui, p, "Apache", &status.components.apache, PortKind::Web);
+                ui.add_space(gap);
+                card(ui, p, "MariaDB", &status.components.mariadb, PortKind::Db);
+            });
+            ui.add_space(gap);
+            ui.vertical(|ui| {
+                ui.set_width(col_width);
+                card(ui, p, "PHP", &status.components.php, PortKind::None);
+                ui.add_space(gap);
+                card(ui, p, "phpMyAdmin", &status.components.phpmyadmin, PortKind::None);
+            });
+        });
+
+        ui.add_space(18.0);
+
     }
 }
 
@@ -1260,6 +1349,18 @@ impl eframe::App for App {
             self.applied_dark = Some(dark);
         }
         let p = palette(dark);
+
+        // Zoom: 0.0 means follow the OS. Fixed factors are for mixed-DPI desks
+        // where moving between monitors leaves everything the wrong size.
+        if self.settings.zoom > 0.0 {
+            if self.applied_zoom != Some(self.settings.zoom) {
+                ui.ctx().set_zoom_factor(self.settings.zoom);
+                self.applied_zoom = Some(self.settings.zoom);
+            }
+        } else if self.applied_zoom.is_some() {
+            ui.ctx().set_zoom_factor(1.0);
+            self.applied_zoom = None;
+        }
 
         // Tray menu -> panel actions.
         let mut tray_cmd: Option<TrayCmd> = None;
@@ -1283,7 +1384,15 @@ impl eframe::App for App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
-            Some(TrayCmd::Quit) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Some(TrayCmd::Quit) => {
+                // Drop the icon first (that removes it from the tray), then
+                // leave. Closing via the viewport was being swallowed by the
+                // close-to-tray handler, so hide-to-tray turned into a trap.
+                self.quitting = true;
+                self.tray = None;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                std::process::exit(0);
+            }
             Some(TrayCmd::Start) => self.start_action("start"),
             Some(TrayCmd::Stop) => self.start_action("stop"),
             Some(TrayCmd::Restart) => self.start_action("restart"),
@@ -1292,7 +1401,7 @@ impl eframe::App for App {
 
         // Closing the window parks the panel in the tray; Quit is a tray menu
         // item. Without a tray there is nothing to park into, so close normally.
-        if self.tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
+        if !self.quitting && self.tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.push_log("hidden to tray — quit from the tray menu".to_string());
@@ -1303,6 +1412,7 @@ impl eframe::App for App {
         self.console(ui, &p);
         self.settings_panel(ui, &p);
         self.body(ui, &p);
+        self.about_window(ui, &p);
 
         // The watch stream arrives on a thread, which cannot wake egui.
         ctx.request_repaint_after(Duration::from_millis(400));
@@ -1339,6 +1449,24 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     out
+}
+
+fn filled_nav(ui: &mut egui::Ui, p: &Palette, label: &str) -> bool {
+    ui.add(
+        egui::Button::new(RichText::new(label).size(12.5).color(p.text))
+            .fill(p.surface_2)
+            .corner_radius(CornerRadius::same(9)),
+    )
+    .clicked()
+}
+
+fn plain_nav(ui: &mut egui::Ui, p: &Palette, label: &str) -> bool {
+    ui.add(
+        egui::Button::new(RichText::new(label).size(12.0).color(p.muted))
+            .fill(Color32::TRANSPARENT)
+            .corner_radius(CornerRadius::same(8)),
+    )
+    .clicked()
 }
 
 fn section_label(ui: &mut egui::Ui, p: &Palette, text: &str) {
