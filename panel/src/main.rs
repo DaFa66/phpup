@@ -223,6 +223,7 @@ struct App {
     /// Verb that came back exit 4, waiting for the user to consent to UAC.
     admin_verb: Option<String>,
     toast: Option<Toast>,
+    sized_once: bool,
     settings_open: bool,
     /// Last drawn rect of the slide-out, so a click outside it can dismiss.
     settings_rect: Option<egui::Rect>,
@@ -272,6 +273,7 @@ impl App {
             toast: None,
             // First run opens Settings: the source choice is the first thing a
             // new user needs to see.
+            sized_once: false,
             settings_open: !Settings::path().map(|p| p.is_file()).unwrap_or(false),
             settings_rect: None,
             settings_toggle_rect: None,
@@ -337,6 +339,12 @@ impl App {
         match backend::resolve_script(self.settings.source, self.settings.script.as_ref()) {
             Ok(path) => {
                 self.script_input = path.display().to_string();
+                // Persist what discovery found: otherwise the settings file keeps
+                // a null script and every later save writes it back that way.
+                if self.settings.script.as_deref() != Some(self.script_input.as_str()) {
+                    self.settings.script = Some(self.script_input.clone());
+                    self.settings.save();
+                }
                 match backend::probe_cli(&path) {
                     Ok(version) => {
                         let be = Backend::new(path, self.settings.interval);
@@ -832,6 +840,10 @@ impl App {
                     .stroke(Stroke::new(1.0, p.border)),
             )
             .show_collapsible(ui, &mut open, |ui| {
+                // A floating scrollbar is drawn on top of the content, so the
+                // last column sits underneath it. Reserve the lane instead.
+                ui.style_mut().spacing.scroll.floating = false;
+                ui.style_mut().spacing.scroll.bar_outer_margin = 6.0;
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -1623,6 +1635,20 @@ impl eframe::App for App {
         self.settings_panel(ui, &p);
         self.body(ui, &p);
         self.about_window(ui, &p);
+
+        // Size once against the actual monitor: 980x700 points is bigger than a
+        // 1080p screen at 200% scaling, which pushed the settings panel off the
+        // edge entirely.
+        if !self.sized_once {
+            self.sized_once = true;
+            if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+                let want = egui::vec2(
+                    980.0_f32.min(monitor.x * 0.90),
+                    700.0_f32.min(monitor.y * 0.85),
+                );
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
+            }
+        }
 
         // Escape or a click anywhere outside closes the settings slide-out.
         if self.about_open {
