@@ -22,6 +22,12 @@ without the interactive dashboard. Contract: `.junk/cli-contract.md`, to be prom
 `docs/CLI.md` on release.
 
 ### Fixed
+- **Windows reported as "Windows 10" on Windows 11** — the registry still stores
+  `ProductName = "Windows 10 Pro"` on Windows 11, so the banner and `platform.distro`
+  were wrong. The build number now decides: 22000 and above is Windows 11.
+- **`platform.distro` was null in `--fast` and kept its "Windows " prefix in full mode** —
+  the strip pattern expected "Microsoft Windows", which the registry does not supply. The
+  registry read costs ~2ms, so it now runs in both paths.
 - **`Get-Process -Name` replaced with .NET lookups** (`GetProcessesByName`) for every
   process check and stop path on Windows. Windows PowerShell 5.1 writes
   `Exception of type 'System.OutOfMemoryException' was thrown` to the error stream when the

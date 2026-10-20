@@ -3128,6 +3128,15 @@ function Get-PlatformCaption {
             $key = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
             if ($key.ProductName) {
                 $caption = [string]$key.ProductName
+                # Windows 11 still ships ProductName "Windows 10 Pro" in the
+                # registry. Build 22000 is the first Windows 11 build, so trust
+                # the build number and correct the name.
+                $build = 0
+                if ($key.CurrentBuildNumber) {
+                    if ([int]::TryParse([string]$key.CurrentBuildNumber, [ref]$build) -and $build -ge 22000) {
+                        $caption = $caption -replace '^Windows 10', 'Windows 11'
+                    }
+                }
                 if ($key.DisplayVersion) { $caption = "$caption $($key.DisplayVersion)" }
             }
         }
@@ -3349,12 +3358,11 @@ function Get-CliStatus {
     # ---- Platform ----
     $arch = $env:PROCESSOR_ARCHITECTURE
     if ($arch -eq 'AMD64') { $arch = 'x86_64' }
-    $distro = $null
-    if (-not $Fast) {
-        $caption = Get-PlatformCaption
-        if ($caption -match 'Microsoft Windows (.*)') { $caption = $matches[1] }
-        $distro = $caption
-    }
+    # Cost is one registry read (~2ms), so this belongs in the fast path too:
+    # the panel displays it, and a null there just looks broken.
+    $caption = Get-PlatformCaption
+    if ($caption -match '(?:Microsoft )?Windows (.*)') { $caption = $matches[1] }
+    $distro = $caption
 
     $sapi = $null
     $cliOnPath = $false
