@@ -1,0 +1,1112 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod assets;
+mod backend;
+mod theme;
+
+use backend::{Backend, Component, Event, Status};
+use eframe::egui::{
+    self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke, Vec2,
+};
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::{Duration, Instant};
+use theme::{palette, Palette, ThemePref};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+
+const LOG_CAP: usize = 2000;
+
+const ON_ACCENT: Color32 = Color32::from_rgb(0x1a, 0x1d, 0x25);
+const TOAST_TTL: Duration = Duration::from_secs(7);
+
+fn main() -> eframe::Result<()> {
+    let settings = Settings::load();
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("phpup")
+        .with_app_id("phpup-panel")
+        .with_inner_size([980.0, 700.0])
+        .with_min_inner_size([820.0, 560.0]);
+    if let Some(icon) = assets::window_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
+
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "phpup",
+        options,
+        Box::new(move |cc| Ok(Box::new(App::new(cc, settings)))),
+    )
+}
+
+// ---------------------------------------------------------------- settings
+
+#[derive(Clone)]
+struct Settings {
+    theme: ThemePref,
+    script: Option<String>,
+    interval: u32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            theme: ThemePref::System,
+            script: None,
+            interval: 2,
+        }
+    }
+}
+
+impl Settings {
+    fn path() -> Option<PathBuf> {
+        #[cfg(windows)]
+        let base = std::env::var_os("APPDATA").map(PathBuf::from);
+        #[cfg(not(windows))]
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+        base.map(|b| b.join("phpup").join("panel.json"))
+    }
+
+    fn load() -> Self {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            theme: Option<String>,
+            script: Option<String>,
+            interval: Option<u32>,
+        }
+        let Some(path) = Self::path() else {
+            return Self::default();
+        };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
+        match serde_json::from_str::<Raw>(&text) {
+            Ok(raw) => Self {
+                theme: raw.theme.as_deref().map(ThemePref::from_str).unwrap_or(ThemePref::System),
+                script: raw.script,
+                interval: raw.interval.unwrap_or(2).clamp(1, 10),
+            },
+            Err(_) => Self::default(),
+        }
+    }
+
+    fn save(&self) {
+        let Some(path) = Self::path() else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let body = serde_json::json!({
+            "theme": self.theme.as_str(),
+            "script": self.script,
+            "interval": self.interval,
+        });
+        let _ = std::fs::write(path, serde_json::to_string_pretty(&body).unwrap_or_default());
+    }
+}
+
+// -------------------------------------------------------------------- app
+
+struct Tray {
+    _icon: TrayIcon,
+    show: MenuItem,
+    start: MenuItem,
+    stop: MenuItem,
+    restart: MenuItem,
+    quit: MenuItem,
+}
+
+#[derive(Clone, Copy)]
+enum TrayCmd {
+    Show,
+    Start,
+    Stop,
+    Restart,
+    Quit,
+}
+
+fn build_tray() -> Option<Tray> {
+    let (rgba, width, height) = assets::tray_icon()?;
+    let icon = Icon::from_rgba(rgba, width, height).ok()?;
+
+    let menu = Menu::new();
+    let show = MenuItem::new("Show panel", true, None);
+    let start = MenuItem::new("Start stack", true, None);
+    let stop = MenuItem::new("Stop stack", true, None);
+    let restart = MenuItem::new("Restart stack", true, None);
+    let quit = MenuItem::new("Quit", true, None);
+    let _ = menu.append_items(&[
+        &show,
+        &PredefinedMenuItem::separator(),
+        &start,
+        &stop,
+        &restart,
+        &PredefinedMenuItem::separator(),
+        &quit,
+    ]);
+
+    let tray = TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_tooltip("phpup")
+        .with_icon(icon)
+        .build()
+        .ok()?;
+
+    Some(Tray {
+        _icon: tray,
+        show,
+        start,
+        stop,
+        restart,
+        quit,
+    })
+}
+
+struct Toast {
+    text: String,
+    ok: bool,
+    at: Instant,
+}
+
+struct App {
+    settings: Settings,
+    backend: Option<Backend>,
+    tx: Sender<Event>,
+    rx: Receiver<Event>,
+    status: Option<Status>,
+    last_error: Option<String>,
+    last_seen: Option<Instant>,
+    action: Option<&'static str>,
+    needs_admin: bool,
+    toast: Option<Toast>,
+    settings_open: bool,
+    brand: Option<assets::Brand>,
+    script_input: String,
+    applied_dark: Option<bool>,
+    applied_pref: Option<ThemePref>,
+    log: VecDeque<String>,
+    log_pinned: bool,
+    console_open: bool,
+    tray: Option<Tray>,
+}
+
+impl App {
+    fn new(cc: &eframe::CreationContext<'_>, settings: Settings) -> Self {
+        let (tx, rx) = backend::channel_pair();
+        let brand = assets::load(&cc.egui_ctx);
+
+        cc.egui_ctx.all_styles_mut(|style| {
+            style.spacing.item_spacing = Vec2::new(10.0, 10.0);
+            style.spacing.button_padding = Vec2::new(12.0, 7.0);
+        });
+
+        let mut app = Self {
+            settings,
+            backend: None,
+            tx,
+            rx,
+            status: None,
+            last_error: None,
+            last_seen: None,
+            action: None,
+            needs_admin: false,
+            toast: None,
+            settings_open: false,
+            brand,
+            script_input: String::new(),
+            applied_dark: None,
+            applied_pref: None,
+            log: VecDeque::new(),
+            log_pinned: true,
+            console_open: true,
+            tray: build_tray(),
+        };
+        app.attach();
+        app.push_log("panel ready".to_string());
+        if let Some(be) = &app.backend {
+            app.push_log(format!("phpup: {}", be.script.display()));
+        }
+        if app.tray.is_none() {
+            app.push_log("tray icon unavailable on this desktop".to_string());
+        }
+        app
+    }
+
+    fn push_log(&mut self, line: String) {
+        if line.trim().is_empty() {
+            return;
+        }
+        self.log.push_back(line);
+        while self.log.len() > LOG_CAP {
+            self.log.pop_front();
+        }
+    }
+
+    /// Resolve the script and start the status stream.
+    fn attach(&mut self) {
+        let script = backend::discover_script(self.settings.script.as_ref());
+        match script {
+            Some(path) => {
+                self.script_input = path.display().to_string();
+                let be = Backend::new(path, self.settings.interval);
+                be.spawn_watch(self.tx.clone());
+                self.backend = Some(be);
+                self.last_error = None;
+            }
+            None => {
+                self.backend = None;
+                self.last_error = Some(
+                    "No phpup script found. Point the panel at phpup.ps1 (or phpup.sh) in Settings."
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    fn start_action(&mut self, verb: &'static str) {
+        if self.action.is_some() {
+            return;
+        }
+        let Some(be) = &self.backend else { return };
+        be.spawn_action(verb, self.tx.clone());
+        self.action = Some(verb);
+        self.push_log(format!("> {verb}"));
+    }
+
+    fn drain(&mut self) {
+        while let Ok(ev) = self.rx.try_recv() {
+            match ev {
+                Event::Status(status) => {
+                    self.status = Some(*status);
+                    self.last_seen = Some(Instant::now());
+                    if self.last_error.is_some() {
+                        self.last_error = None;
+                    }
+                }
+                Event::ActionFinished {
+                    verb,
+                    exit,
+                    result,
+                    raw,
+                } => {
+                    self.action = None;
+                    let detail = result
+                        .as_ref()
+                        .and_then(|r| r.errors.first().cloned())
+                        .or_else(|| result.as_ref().and_then(|r| r.code.clone()))
+                        .unwrap_or_else(|| raw.clone());
+                    match exit {
+                        0 => {
+                            let changed = result.as_ref().map(|r| r.changed).unwrap_or(false);
+                            self.toast = Some(Toast {
+                                text: if changed {
+                                    format!("{verb}: done")
+                                } else {
+                                    format!("{verb}: already in that state")
+                                },
+                                ok: true,
+                                at: Instant::now(),
+                            });
+                        }
+                        4 => {
+                            self.needs_admin = true;
+                            self.toast = Some(Toast {
+                                text: "Administrator rights required for that action".to_string(),
+                                ok: false,
+                                at: Instant::now(),
+                            });
+                        }
+                        5 => {
+                            self.toast = Some(Toast {
+                                text: format!("Port conflict: {detail}"),
+                                ok: false,
+                                at: Instant::now(),
+                            });
+                        }
+                        3 => {
+                            self.toast = Some(Toast {
+                                text: "No stack installed yet".to_string(),
+                                ok: false,
+                                at: Instant::now(),
+                            });
+                        }
+                        _ => {
+                            self.toast = Some(Toast {
+                                text: format!("{verb} failed{}", if detail.is_empty() { String::new() } else { format!(": {detail}") }),
+                                ok: false,
+                                at: Instant::now(),
+                            });
+                        }
+                    }
+                }
+                Event::Log(line) => self.push_log(line),
+                Event::Failed(msg) => {
+                    self.action = None;
+                    self.push_log(format!("error: {msg}"));
+                    self.last_error = Some(msg);
+                }
+            }
+        }
+        if let Some(t) = &self.toast {
+            if t.at.elapsed() > TOAST_TTL {
+                self.toast = None;
+            }
+        }
+    }
+
+    fn header(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let mut toggle_settings = false;
+        let mut toggle_console = false;
+        let subtitle = self
+            .status
+            .as_ref()
+            .and_then(|s| s.install.path.clone())
+            .unwrap_or_else(|| "no stack found".to_string());
+        let state = self
+            .status
+            .as_ref()
+            .map(|s| s.stack_state().to_string())
+            .unwrap_or_else(|| "offline".to_string());
+
+        egui::Panel::top("header")
+            .frame(
+                Frame::group(ui.style())
+                    .fill(p.surface)
+                    .inner_margin(Margin::symmetric(18, 12)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if let Some(brand) = &self.brand {
+                        let sized = egui::load::SizedTexture::new(brand.texture.id(), brand.size);
+                        ui.add(
+                            egui::Image::new(sized)
+                                .uv(brand.tile_uv)
+                                .fit_to_exact_size(Vec2::splat(56.0))
+                                .corner_radius(CornerRadius::same(13)),
+                        );
+                    }
+                    ui.add_space(4.0);
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("phpup").size(22.0).strong().color(p.text));
+                        ui.label(RichText::new(subtitle).size(11.5).color(p.muted));
+                    });
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("Settings").color(p.text))
+                                    .fill(p.surface_2)
+                                    .corner_radius(CornerRadius::same(9)),
+                            )
+                            .clicked()
+                        {
+                            toggle_settings = true;
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("Output").color(p.text))
+                                    .fill(p.surface_2)
+                                    .corner_radius(CornerRadius::same(9)),
+                            )
+                            .clicked()
+                        {
+                            toggle_console = true;
+                        }
+                        let colour = match state.as_str() {
+                            "complete" => p.ok,
+                            "partial" => p.warn,
+                            _ => p.muted,
+                        };
+                        pill(ui, p, &state, colour);
+                    });
+                });
+            });
+
+        if toggle_settings {
+            self.settings_open = !self.settings_open;
+        }
+        if toggle_console {
+            self.console_open = !self.console_open;
+        }
+    }
+
+    fn footer(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let updated = self
+            .status
+            .as_ref()
+            .and_then(|s| s.generated_at.as_deref())
+            .and_then(|g| g.get(11..19))
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let version = self
+            .status
+            .as_ref()
+            .and_then(|s| s.phpup.version.clone())
+            .unwrap_or_else(|| "-".to_string());
+        let interval = self.settings.interval;
+
+        egui::Panel::bottom("footer")
+            .frame(
+                Frame::group(ui.style())
+                    .fill(p.surface)
+                    .inner_margin(Margin::symmetric(18, 8)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("updated {updated}  ·  phpup {version}  ·  every {interval}s"))
+                            .size(11.0)
+                            .color(p.muted),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if let Some(be) = &self.backend {
+                            ui.label(
+                                RichText::new(be.script.display().to_string())
+                                    .size(11.0)
+                                    .color(p.muted),
+                            );
+                        }
+                    });
+                });
+            });
+    }
+
+    /// The job log: everything phpup says on stderr, plus panel events. This
+    /// is where install/update progress will stream once those verbs exist.
+    fn console(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let mut open = self.console_open;
+        let mut clear = false;
+        let mut copy = false;
+        let mut toggle_pin = false;
+        let pinned = self.log_pinned;
+        let lines: Vec<String> = std::mem::take(&mut self.log).into_iter().collect();
+        let count = lines.len();
+
+        egui::Panel::bottom("console")
+            .resizable(true)
+            .default_size(160.0)
+            .min_size(88.0)
+            .max_size(520.0)
+            .frame(
+                Frame::group(ui.style())
+                    .fill(p.surface)
+                    .inner_margin(Margin::same(12)),
+            )
+            .show_collapsible(ui, &mut open, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Output").size(12.0).strong().color(p.text));
+                    ui.label(
+                        RichText::new(format!("{count} lines"))
+                            .size(10.5)
+                            .color(p.muted),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.small_button("Clear").clicked() {
+                            clear = true;
+                        }
+                        if ui.small_button("Copy").clicked() {
+                            copy = true;
+                        }
+                        if ui
+                            .small_button(if pinned { "Following" } else { "Paused" })
+                            .clicked()
+                        {
+                            toggle_pin = true;
+                        }
+                    });
+                });
+                ui.add_space(2.0);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .stick_to_bottom(pinned)
+                    .show(ui, |ui| {
+                        if lines.is_empty() {
+                            ui.label(
+                                RichText::new("Nothing yet.")
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(p.muted),
+                            );
+                        }
+                        for line in &lines {
+                            ui.label(RichText::new(line).monospace().size(11.0).color(p.muted));
+                        }
+                    });
+            });
+
+        self.log = lines.into_iter().collect();
+        self.console_open = open;
+        if toggle_pin {
+            self.log_pinned = !self.log_pinned;
+        }
+        if clear {
+            self.log.clear();
+        }
+        if copy {
+            let all = self.log.iter().cloned().collect::<Vec<_>>().join("\n");
+            ui.ctx().copy_text(all);
+        }
+    }
+
+    fn settings_panel(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let mut dirty = false;
+        let mut do_attach = false;
+        let mut open = self.settings_open;
+        let mut want_close = false;
+
+        egui::Panel::right("settings")
+            .resizable(false)
+            .exact_size(320.0)
+            .frame(
+                Frame::group(ui.style())
+                    .fill(p.surface)
+                    .inner_margin(Margin::same(18))
+                    .stroke(Stroke::new(1.0, p.border)),
+            )
+            .show_collapsible(ui, &mut open, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Settings").size(16.0).strong().color(p.text));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("Close").color(p.muted))
+                                    .fill(Color32::TRANSPARENT)
+                                    .corner_radius(CornerRadius::same(8)),
+                            )
+                            .clicked()
+                        {
+                            want_close = true;
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+
+                section_label(ui, p, "APPEARANCE");
+                ui.horizontal(|ui| {
+                    for pref in [ThemePref::System, ThemePref::Light, ThemePref::Dark] {
+                        let selected = self.settings.theme == pref;
+                        let text = RichText::new(pref.label())
+                            .size(12.5)
+                            .color(if selected { ON_ACCENT } else { p.text });
+                        let button = egui::Button::new(text)
+                            .fill(if selected { p.accent } else { p.surface_2 })
+                            .corner_radius(CornerRadius::same(8));
+                        if ui.add(button).clicked() && !selected {
+                            self.settings.theme = pref;
+                            dirty = true;
+                        }
+                    }
+                });
+
+                ui.add_space(14.0);
+                section_label(ui, p, "PHPUP SCRIPT");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.script_input)
+                        .desired_width(f32::INFINITY)
+                        .font(egui::TextStyle::Small),
+                );
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("Detect").color(p.text))
+                                .fill(p.surface_2)
+                                .corner_radius(CornerRadius::same(8)),
+                        )
+                        .clicked()
+                    {
+                        self.settings.script = None;
+                        do_attach = true;
+                        dirty = true;
+                    }
+                    let input = self.script_input.trim().to_string();
+                    if !input.is_empty() && self.settings.script.as_deref() != Some(input.as_str()) {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("Use path").color(p.text))
+                                    .fill(p.surface_2)
+                                    .corner_radius(CornerRadius::same(8)),
+                            )
+                            .clicked()
+                        {
+                            self.settings.script = Some(input);
+                            do_attach = true;
+                            dirty = true;
+                        }
+                    }
+                });
+
+                ui.add_space(14.0);
+                section_label(ui, p, "REFRESH");
+                let mut interval = self.settings.interval as i32;
+                if ui
+                    .add(egui::Slider::new(&mut interval, 1..=10).suffix(" s"))
+                    .changed()
+                {
+                    self.settings.interval = interval as u32;
+                    dirty = true;
+                }
+                ui.label(
+                    RichText::new("The panel holds one phpup process open and polls inside it.")
+                        .size(11.0)
+                        .color(p.muted),
+                );
+
+                ui.add_space(18.0);
+                if let Some(brand) = &self.brand {
+                    let width = ui.available_width();
+                    let height = width * (brand.size.y / brand.size.x);
+                    let sized = egui::load::SizedTexture::new(brand.texture.id(), brand.size);
+                    Frame::group(ui.style())
+                        .corner_radius(CornerRadius::same(12))
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Image::new(sized)
+                                    .fit_to_exact_size(Vec2::new(width, height))
+                                    .corner_radius(CornerRadius::same(12)),
+                            );
+                        });
+                }
+            });
+
+        if want_close {
+            open = false;
+        }
+        self.settings_open = open;
+        if dirty {
+            self.settings.save();
+        }
+        if do_attach {
+            self.attach();
+        }
+    }
+
+    fn body(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let mut pending: Option<&'static str> = None;
+        let mut relaunch = false;
+        let mut open_url: Option<String> = None;
+        let mut open_settings = false;
+
+        egui::CentralPanel::no_frame()
+            .frame(
+                Frame::group(ui.style())
+                    .fill(p.bg)
+                    .inner_margin(Margin::same(18)),
+            )
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if self.needs_admin {
+                            Frame::group(ui.style())
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0, p.warn))
+                                .corner_radius(CornerRadius::same(12))
+                                .inner_margin(Margin::same(14))
+                                .show(ui, |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(
+                                            RichText::new(
+                                                "phpup's services are registered, so starting and stopping them needs Administrator rights.",
+                                            )
+                                            .size(12.5)
+                                            .color(p.text),
+                                        );
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    RichText::new("Relaunch elevated")
+                                                        .color(ON_ACCENT)
+                                                        .strong(),
+                                                )
+                                                .fill(p.accent)
+                                                .corner_radius(CornerRadius::same(8)),
+                                            )
+                                            .clicked()
+                                        {
+                                            relaunch = true;
+                                        }
+                                    });
+                                });
+                            ui.add_space(10.0);
+                        }
+
+                        if let Some(status) = &self.status {
+                            self.status_area(ui, p, status, &mut pending, &mut open_url);
+                        } else if let Some(err) = &self.last_error {
+                            Frame::group(ui.style())
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0, p.border))
+                                .corner_radius(CornerRadius::same(14))
+                                .inner_margin(Margin::same(20))
+                                .show(ui, |ui| {
+                                    ui.label(RichText::new("Not connected").size(16.0).strong());
+                                    ui.add_space(4.0);
+                                    ui.label(RichText::new(err).size(12.5).color(p.muted));
+                                    ui.add_space(8.0);
+                                    if ui.button("Open Settings").clicked() {
+                                        open_settings = true;
+                                    }
+                                });
+                        } else {
+                            ui.add_space(40.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(RichText::new("Waiting for phpup…").size(14.0).color(p.muted));
+                            });
+                        }
+                    });
+            });
+
+        if let Some(verb) = pending {
+            self.start_action(verb);
+        }
+        if open_settings {
+            self.settings_open = true;
+        }
+        if relaunch {
+            let _ = backend::relaunch_elevated();
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if let Some(url) = open_url {
+            backend::open_in_default_app(&url);
+        }
+    }
+
+    fn status_area(
+        &self,
+        ui: &mut egui::Ui,
+        p: &Palette,
+        status: &Status,
+        pending: &mut Option<&'static str>,
+        open_url: &mut Option<String>,
+    ) {
+        // Chips
+        ui.horizontal_wrapped(|ui| {
+            let running = (status.components.apache.running() as u8)
+                + (status.components.mariadb.running() as u8);
+            pill(
+                ui,
+                p,
+                &format!("{running}/2 services up"),
+                if running == 2 { p.ok } else if running == 0 { p.muted } else { p.warn },
+            );
+            pill(
+                ui,
+                p,
+                &format!("mode: {}", status.services.mode.as_deref().unwrap_or("-")),
+                p.indigo,
+            );
+            pill(
+                ui,
+                p,
+                if status.services.registered {
+                    "registered"
+                } else {
+                    "not registered"
+                },
+                if status.services.registered { p.ok } else { p.muted },
+            );
+            if let Some(os) = &status.platform.os {
+                let arch = status.platform.arch.clone().unwrap_or_default();
+                pill(ui, p, &format!("{os} {arch}"), p.muted);
+            }
+        });
+
+        if let Some(toast) = &self.toast {
+            ui.add_space(10.0);
+            Frame::group(ui.style())
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, if toast.ok { p.ok } else { p.err }))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(&toast.text)
+                            .size(12.0)
+                            .color(if toast.ok { p.ok } else { p.err }),
+                    );
+                });
+        }
+
+        if !status.warnings.is_empty() {
+            ui.add_space(10.0);
+            for w in &status.warnings {
+                Frame::group(ui.style())
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0, p.warn.gamma_multiply(0.6)))
+                    .corner_radius(CornerRadius::same(10))
+                    .inner_margin(Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(w.message.clone().unwrap_or_default())
+                                .size(12.0)
+                                .color(p.warn),
+                        );
+                    });
+            }
+        }
+
+        ui.add_space(16.0);
+
+        // Component cards, two per row.
+        let gap = 12.0;
+        let col_width = ((ui.available_width() - gap) / 2.0).max(240.0);
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(col_width);
+                card(ui, p, "Apache", &status.components.apache, PortKind::Web);
+                ui.add_space(gap);
+                card(ui, p, "MariaDB", &status.components.mariadb, PortKind::Db);
+            });
+            ui.add_space(gap);
+            ui.vertical(|ui| {
+                ui.set_width(col_width);
+                card(ui, p, "PHP", &status.components.php, PortKind::None);
+                ui.add_space(gap);
+                card(ui, p, "phpMyAdmin", &status.components.phpmyadmin, PortKind::None);
+            });
+        });
+
+        ui.add_space(18.0);
+
+        // Actions
+        ui.horizontal(|ui| {
+            let idle = self.action.is_none();
+            let all_up = status.all_running();
+            let start_on = idle && !all_up;
+            let stop_on = idle && status.any_running();
+
+            let start = egui::Button::new(
+                RichText::new("Start")
+                    .strong()
+                    .color(if start_on { ON_ACCENT } else { p.muted }),
+            )
+            .fill(if start_on {
+                p.accent
+            } else {
+                p.accent.gamma_multiply(0.28)
+            })
+            .corner_radius(CornerRadius::same(10))
+            .min_size(Vec2::new(92.0, 34.0));
+            if ui.add_enabled(start_on, start).clicked() {
+                *pending = Some("start");
+            }
+
+            let restart = egui::Button::new(
+                RichText::new("Restart").color(if idle { p.text } else { p.muted }),
+            )
+            .fill(p.surface_2)
+            .corner_radius(CornerRadius::same(10))
+            .min_size(Vec2::new(92.0, 34.0));
+            if ui.add_enabled(idle, restart).clicked() {
+                *pending = Some("restart");
+            }
+
+            let stop = egui::Button::new(RichText::new("Stop").color(if stop_on {
+                p.err
+            } else {
+                p.muted
+            }))
+            .fill(p.surface_2)
+            .corner_radius(CornerRadius::same(10))
+            .min_size(Vec2::new(92.0, 34.0));
+            if ui.add_enabled(stop_on, stop).clicked() {
+                *pending = Some("stop");
+            }
+
+            if let Some(verb) = self.action {
+                ui.add_space(6.0);
+                ui.spinner();
+                ui.label(RichText::new(format!("{verb}…")).size(12.0).color(p.muted));
+            }
+
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if let Some(www) = &status.paths.www {
+                    if ui.link(RichText::new("www folder").size(12.0)).clicked() {
+                        *open_url = Some(www.clone());
+                    }
+                }
+                if let Some(logs) = &status.paths.logs {
+                    if ui.link(RichText::new("logs").size(12.0)).clicked() {
+                        *open_url = Some(logs.clone());
+                    }
+                }
+                if let Some(pma) = &status.urls.phpmyadmin {
+                    if ui.link(RichText::new("phpMyAdmin").size(12.0)).clicked() {
+                        *open_url = Some(pma.clone());
+                    }
+                }
+                if let Some(root) = &status.urls.root {
+                    if ui.link(RichText::new("localhost").size(12.0)).clicked() {
+                        *open_url = Some(root.clone());
+                    }
+                }
+            });
+        });
+    }
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.drain();
+
+        // egui owns "follow the system": ThemePreference::System is resolved by
+        // winit's OS preference, so nothing platform-specific lives here.
+        if self.applied_pref != Some(self.settings.theme) {
+            ctx.set_theme(self.settings.theme.to_egui());
+            self.applied_pref = Some(self.settings.theme);
+        }
+        let dark = ctx.theme() == egui::Theme::Dark;
+        if self.applied_dark != Some(dark) {
+            theme::apply(&ctx, dark);
+            self.applied_dark = Some(dark);
+        }
+        let p = palette(dark);
+
+        // Tray menu -> panel actions.
+        let mut tray_cmd: Option<TrayCmd> = None;
+        if let Some(tray) = &self.tray {
+            while let Ok(ev) = MenuEvent::receiver().try_recv() {
+                if ev.id == *tray.show.id() {
+                    tray_cmd = Some(TrayCmd::Show);
+                } else if ev.id == *tray.start.id() {
+                    tray_cmd = Some(TrayCmd::Start);
+                } else if ev.id == *tray.stop.id() {
+                    tray_cmd = Some(TrayCmd::Stop);
+                } else if ev.id == *tray.restart.id() {
+                    tray_cmd = Some(TrayCmd::Restart);
+                } else if ev.id == *tray.quit.id() {
+                    tray_cmd = Some(TrayCmd::Quit);
+                }
+            }
+        }
+        match tray_cmd {
+            Some(TrayCmd::Show) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            Some(TrayCmd::Quit) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Some(TrayCmd::Start) => self.start_action("start"),
+            Some(TrayCmd::Stop) => self.start_action("stop"),
+            Some(TrayCmd::Restart) => self.start_action("restart"),
+            None => {}
+        }
+
+        // Closing the window parks the panel in the tray; Quit is a tray menu
+        // item. Without a tray there is nothing to park into, so close normally.
+        if self.tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.push_log("hidden to tray — quit from the tray menu".to_string());
+        }
+
+        self.header(ui, &p);
+        self.footer(ui, &p);
+        self.console(ui, &p);
+        self.settings_panel(ui, &p);
+        self.body(ui, &p);
+
+        // The watch stream arrives on a thread, which cannot wake egui.
+        ctx.request_repaint_after(Duration::from_millis(400));
+    }
+}
+
+// ----------------------------------------------------------------- helpers
+
+fn section_label(ui: &mut egui::Ui, p: &Palette, text: &str) {
+    ui.label(RichText::new(text).size(10.5).color(p.muted).strong());
+    ui.add_space(2.0);
+}
+
+fn pill(ui: &mut egui::Ui, p: &Palette, text: &str, colour: Color32) {
+    Frame::group(ui.style())
+        .fill(p.surface_2)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(20))
+        .inner_margin(Margin::symmetric(10, 5))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(9.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 3.5, colour);
+                ui.label(RichText::new(text).size(11.5).color(p.text));
+            });
+        });
+}
+
+enum PortKind {
+    Web,
+    Db,
+    None,
+}
+
+fn card(ui: &mut egui::Ui, p: &Palette, title: &str, comp: &Component, kind: PortKind) {
+    Frame::group(ui.style())
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(14))
+        .inner_margin(Margin::same(14))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(title).size(13.5).strong().color(p.text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let (text, colour) = match comp.running {
+                        Some(true) => ("running", p.ok),
+                        Some(false) => ("stopped", p.err),
+                        None if comp.installed => ("ready", p.muted),
+                        None => ("not installed", p.muted),
+                    };
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(9.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 3.5, colour);
+                    ui.label(RichText::new(text).size(11.0).color(colour));
+                });
+            });
+
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(comp.version.clone().unwrap_or_else(|| "—".to_string()))
+                    .size(12.0)
+                    .color(p.muted),
+            );
+
+            let mut detail: Vec<String> = Vec::new();
+            if !comp.pids.is_empty() {
+                let pids: Vec<String> = comp.pids.iter().take(3).map(|v| v.to_string()).collect();
+                detail.push(format!("PID {}", pids.join(", ")));
+            }
+            match kind {
+                PortKind::Web | PortKind::Db => {
+                    if !comp.ports.is_empty() {
+                        let ports: Vec<String> =
+                            comp.ports.iter().map(|v| format!(":{v}")).collect();
+                        detail.push(ports.join(" "));
+                    }
+                }
+                PortKind::None => {}
+            }
+            if let Some(sapi) = &comp.sapi {
+                detail.push(format!("sapi {sapi}"));
+            }
+            if comp.cli_on_path {
+                detail.push("cli on PATH".to_string());
+            }
+            if let Some(url) = &comp.url {
+                detail.push(url.clone());
+            }
+            if let Some(service) = &comp.service {
+                detail.push(service.clone());
+            }
+            if !detail.is_empty() {
+                ui.add_space(1.0);
+                ui.label(RichText::new(detail.join("  ·  ")).size(11.0).color(p.muted));
+            }
+        });
+}
