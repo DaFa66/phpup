@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
-use std::time::Duration;
 
 // ---------------------------------------------------------------- payload
 
@@ -26,6 +25,9 @@ where
 pub struct Pkg {
     #[serde(default)]
     pub version: Option<String>,
+    /// Present in the payload for completeness; the panel runs the script it
+    /// resolved itself, so this is informational only.
+    #[allow(dead_code)]
     #[serde(default)]
     pub script: Option<String>,
 }
@@ -183,10 +185,6 @@ impl Status {
         self.install.state.as_deref().unwrap_or("unknown")
     }
 
-    pub fn complete(&self) -> bool {
-        self.stack_state() == "complete"
-    }
-
     pub fn any_running(&self) -> bool {
         self.components.apache.running()
             || self.components.mariadb.running()
@@ -199,6 +197,7 @@ impl Status {
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[allow(dead_code)] // mirrors the contract; the panel reads exit codes instead
 pub struct ActionResult {
     #[serde(default)]
     pub ok: bool,
@@ -284,6 +283,158 @@ fn build_command(script: &Path, verb: &str, extra: &[String]) -> Command {
         c.arg(e);
     }
     c
+}
+
+/// Where the panel gets phpup from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Source {
+    /// Published script from the phpup repo, cached locally. The default.
+    Github,
+    /// A checkout on disk, for phpup development.
+    Local,
+}
+
+impl Source {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Source::Github => "github",
+            Source::Local => "local",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("local") {
+            Source::Local
+        } else {
+            Source::Github
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Source::Github => "GitHub",
+            Source::Local => "Local file",
+        }
+    }
+}
+
+const REMOTE_PS1: &str = "https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.ps1";
+const REMOTE_SH: &str = "https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh";
+
+pub fn remote_url() -> &'static str {
+    if cfg!(windows) {
+        REMOTE_PS1
+    } else {
+        REMOTE_SH
+    }
+}
+
+pub fn cache_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|h| h.join(".cache")));
+    base.map(|b| b.join("phpup").join("panel"))
+}
+
+pub fn cached_script() -> Option<PathBuf> {
+    cache_dir().map(|d| d.join(script_name()))
+}
+
+/// Download the published script into the panel cache. Uses the platform's own
+/// downloader: one less dependency, and it inherits whatever proxy the user
+/// already has configured.
+pub fn fetch_remote() -> Result<PathBuf, String> {
+    let dir = cache_dir().ok_or("no cache directory available")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dest = dir.join(script_name());
+    let part = dir.join(format!("{}.part", script_name()));
+    let url = remote_url();
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let ps = format!(
+            "try {{ Invoke-WebRequest -UseBasicParsing -Uri '{url}' -OutFile '{}' -TimeoutSec 30; exit 0 }} \
+             catch {{ Write-Error $_.Exception.Message; exit 1 }}",
+            part.display()
+        );
+        let mut c = Command::new("powershell.exe");
+        c.arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-Command")
+            .arg(ps);
+        c.creation_flags(CREATE_NO_WINDOW);
+        let out = c.output().map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(if msg.is_empty() {
+                "download failed".to_string()
+            } else {
+                msg
+            });
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let out = Command::new("curl")
+            .args(["-fsSL", "--max-time", "30", "-o"])
+            .arg(&part)
+            .arg(url)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        }
+    }
+
+    std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
+    Ok(dest)
+}
+
+/// Ask the script to identify itself in JSON.
+///
+/// This is how the panel distinguishes a CLI-capable phpup build from an older
+/// published one, instead of discovering it through parse errors later.
+pub fn probe_cli(script: &Path) -> Result<String, String> {
+    let mut cmd = build_command(script, "version", &["--json".to_string()]);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!("exit {}", out.status.code().unwrap_or(-1)));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .ok_or("no JSON on stdout")?;
+    let value: serde_json::Value = serde_json::from_str(line.trim()).map_err(|e| e.to_string())?;
+    value
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string())
+        .ok_or_else(|| "no version field".to_string())
+}
+
+/// The script to run for the chosen source.
+pub fn resolve_script(source: Source, saved: Option<&String>) -> Result<PathBuf, String> {
+    match source {
+        Source::Github => {
+            let cached = cached_script().ok_or("no cache directory available")?;
+            if cached.is_file() {
+                Ok(cached)
+            } else {
+                fetch_remote()
+            }
+        }
+        Source::Local => {
+            discover_script(saved).ok_or_else(|| "no local phpup script found".to_string())
+        }
+    }
 }
 
 fn script_name() -> &'static str {
@@ -487,29 +638,43 @@ pub fn channel_pair() -> (Sender<Event>, Receiver<Event>) {
     channel()
 }
 
-/// Relaunch the panel elevated so actions that need Administrator can run.
+/// Run one lifecycle verb elevated, without spawning a second panel.
+///
+/// Elevating the whole application was wrong: it left a console window behind
+/// and created a duplicate tray icon. Elevate just the verb instead, let it
+/// finish, and the watch stream reports the resulting state a second later.
 #[cfg(windows)]
-pub fn relaunch_elevated() -> std::io::Result<()> {
+pub fn run_elevated(script: &Path, verb: &str) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let exe = std::env::current_exe()?;
+    let script_arg = script.display().to_string().replace('\'', "''");
+    let inner = format!(
+        "Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden \
+         -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File','{script_arg}','{verb}'"
+    );
     let mut c = Command::new("powershell.exe");
     c.arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-WindowStyle")
+        .arg("Hidden")
         .arg("-Command")
-        .arg(format!(
-            "Start-Process -FilePath '{}' -Verb RunAs",
-            exe.display()
-        ));
+        .arg(inner);
     c.creation_flags(CREATE_NO_WINDOW);
-    c.spawn()?;
-    Ok(())
+    let status = c.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("elevation was declined"))
+    }
 }
 
 #[cfg(not(windows))]
-pub fn relaunch_elevated() -> std::io::Result<()> {
+pub fn run_elevated(script: &Path, verb: &str) -> std::io::Result<()> {
+    // The Unix scripts sudo internally, so there is nothing to elevate here.
+    let _ = (script, verb);
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "not supported on this platform",
+        "not needed on this platform",
     ))
 }
 
@@ -532,6 +697,3 @@ pub fn open_in_default_app(target: &str) {
         let _ = Command::new("xdg-open").arg(target).spawn();
     }
 }
-
-/// Small pause used when a watch stream has to be restarted.
-pub const RESTART_PAUSE: Duration = Duration::from_millis(300);

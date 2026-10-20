@@ -125,7 +125,9 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
     v.widgets.active.bg_fill = p.indigo;
     v.widgets.active.weak_bg_fill = p.indigo;
     v.widgets.active.bg_stroke = Stroke::new(1.0, p.indigo);
-    v.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    // Note: egui resolves RichText::strong() through this colour, so it must be
+    // readable body text. Buttons that need white-on-accent ask for it.
+    v.widgets.active.fg_stroke = Stroke::new(1.0, p.text);
 
     v.selection.bg_fill = p.indigo.gamma_multiply(0.45);
     v.selection.stroke = Stroke::new(1.0, p.text);
