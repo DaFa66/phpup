@@ -224,6 +224,9 @@ struct App {
     admin_verb: Option<String>,
     toast: Option<Toast>,
     settings_open: bool,
+    /// Last drawn rect of the slide-out, so a click outside it can dismiss.
+    settings_rect: Option<egui::Rect>,
+    settings_toggle_rect: Option<egui::Rect>,
     brand: Option<assets::Brand>,
     about_open: bool,
     quitting: bool,
@@ -270,6 +273,8 @@ impl App {
             // First run opens Settings: the source choice is the first thing a
             // new user needs to see.
             settings_open: !Settings::path().map(|p| p.is_file()).unwrap_or(false),
+            settings_rect: None,
+            settings_toggle_rect: None,
             about_open: false,
             quitting: false,
             elevated: backend::is_elevated(),
@@ -554,10 +559,12 @@ impl App {
                     );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if filled_nav(ui, p, "Settings") {
+                        let settings_btn = filled_nav(ui, p, "Settings");
+                        self.settings_toggle_rect = Some(settings_btn.rect);
+                        if settings_btn.clicked() {
                             toggle_settings = true;
                         }
-                        if filled_nav(ui, p, "Output") {
+                        if filled_nav(ui, p, "Output").clicked() {
                             toggle_console = true;
                         }
                         if plain_nav(ui, p, "About") {
@@ -808,7 +815,7 @@ impl App {
         let mut open = self.settings_open;
         let mut want_close = false;
 
-        egui::Panel::right("settings")
+        let resp = egui::Panel::right("settings")
             .resizable(false)
             .exact_size(340.0)
             .frame(
@@ -1136,6 +1143,8 @@ impl App {
                         }
                     });
             });
+
+        self.settings_rect = resp.map(|r| r.response.rect);
 
         if want_close {
             open = false;
@@ -1615,6 +1624,23 @@ impl eframe::App for App {
         self.body(ui, &p);
         self.about_window(ui, &p);
 
+        // Escape or a click anywhere outside closes the settings slide-out.
+        if self.about_open {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.about_open = false;
+            }
+        } else if self.settings_open {
+            let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+            let clicked_out = ctx.input(|i| i.pointer.any_pressed())
+                && ctx.input(|i| i.pointer.interact_pos()).map_or(false, |pos| {
+                    !self.settings_rect.map_or(false, |r| r.contains(pos))
+                        && !self.settings_toggle_rect.map_or(false, |r| r.contains(pos))
+                });
+            if escape || clicked_out {
+                self.settings_open = false;
+            }
+        }
+
         // The watch stream arrives on a thread, which cannot wake egui.
         ctx.request_repaint_after(Duration::from_millis(400));
     }
@@ -1652,13 +1678,12 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-fn filled_nav(ui: &mut egui::Ui, p: &Palette, label: &str) -> bool {
+fn filled_nav(ui: &mut egui::Ui, p: &Palette, label: &str) -> egui::Response {
     ui.add(
         egui::Button::new(RichText::new(label).size(12.5).color(p.text))
             .fill(p.surface_2)
             .corner_radius(CornerRadius::same(9)),
     )
-    .clicked()
 }
 
 fn plain_nav(ui: &mut egui::Ui, p: &Palette, label: &str) -> bool {
