@@ -105,6 +105,61 @@ The dashboard shows installed versions, running services, useful paths, and avai
 | **D**  | Delete the stack (preserves `www/` and databases)                                               |
 | **Q**  | Quit                                                                                            |
 
+## Control panel (Windows)
+
+A desktop control surface for phpup — Rust + egui, one static binary, no webview and no Node
+toolchain. It reads the CLI contract below and drives the same verbs, so the scripts stay the
+single source of truth for installation, updates and version switching.
+
+- Live component cards: versions, running state, PIDs, ports, SAPI, service names
+- Start / Restart / Stop with exit-code handling instead of parsed text
+- Terminal-style output pane fed by phpup's stderr, with copy and follow/pause
+- Tray icon, close-to-tray, quick links, System/Light/Dark theme, zoom
+- Optional administrator mode: per action, or an always-elevated panel (no repeated UAC
+  prompts) with `phpup - as administrator` in the title bar
+
+```
+cd panel
+cargo build --release
+copy target\release\phpup-panel.exe C:\phpup\bin\
+```
+
+To start it at logon, either drop a shortcut to the exe in `shell:startup`, or register a
+scheduled task with `/RL HIGHEST` if you want it elevated from the start:
+
+```
+schtasks /Create /TN "phpup panel" /TR "\"C:\phpup\bin\phpup-panel.exe\"" /SC ONLOGON /RL HIGHEST /F
+```
+
+The panel is at **0.1.0** and not yet released as a download. Full build notes, settings and
+troubleshooting: [`panel/README.md`](panel/README.md).
+
+## Scripted use (CLI)
+
+Every verb accepts flags, so a GUI, tray app or CI job can drive phpup without the dashboard:
+
+```
+phpup status [--json] [--fast] [--watch N] [--quiet]
+phpup start|stop|restart [--json] [--quiet]
+phpup version
+phpup help
+```
+
+- **Stream discipline** — stdout carries only the machine payload; all human-readable output
+  goes to stderr. `--json` is therefore safe to pipe.
+- **`--fast`** skips the expensive probes (service manager, ownership checks) for a status
+  that is cheap enough to poll: ~250ms against ~2s for the full one.
+- **`--watch N`** stays resident and emits one JSON object per line every N seconds, instead
+  of paying PowerShell start-up on each tick.
+- **Exit codes** are part of the contract: `0` ok · `1` failed · `2` usage · `3` not
+  installed · `4` elevation required · `5` port conflict.
+- The status schema is versioned (`schema: 1`), always fully populated — unknown values are
+  `null`, never omitted — and additive only.
+
+`install`, `update`, `delete`, `switch` and `doctor` are reserved for v2, once they have
+non-interactive modes. The full contract — schema, stream rules, semantics — is in
+[`docs/CLI.md`](docs/CLI.md).
+
 ## How Version Resolution Works
 
 phpup doesn't hardcode version numbers. Every install and update dynamically resolves the latest stable release of each component:

@@ -18,8 +18,25 @@ overview of every release.
 ### Windows (phpup.ps1 → 2.5.0) and macOS/Linux (phpup.sh → 1.3.0)
 
 Feature release adding a machine-readable CLI, so a GUI, tray app or CI job can drive phpup
-without the interactive dashboard. Contract: `.junk/cli-contract.md`, to be promoted to
-`docs/CLI.md` on release.
+without the interactive dashboard. Contract: [`docs/CLI.md`](docs/CLI.md).
+
+### Added
+- **Desktop control panel (`panel/`, version 0.1.0, unreleased)** — a Rust + egui control
+  surface that drives the same CLI verbs, with no webview and no Node toolchain:
+  - live component cards (version, state, PIDs, ports, SAPI, service names) fed by
+    `status --watch --fast`;
+  - Start / Restart / Stop, repainting from each verb's own JSON;
+  - terminal-style output pane carrying phpup's stderr, with copy, clear and follow/pause
+    that releases when you scroll up;
+  - tray icon from the favicon, menu of Show / Start / Stop / Restart / Quit, close-to-tray;
+  - Settings slide-out (Status, Appearance, Zoom, Privileges, Source, Services) that closes
+    on Escape, the Close button or a click outside, plus an About popup;
+  - administrator modes: per-action elevation, or an always-elevated panel whose title bar
+    reads `phpup - as administrator`;
+  - Trongate's own palette for active controls (`--primary #4682b4`, white text), System /
+    Light / Dark themes, zoom Auto / 85% / 100% / 115% / 130%;
+  - window sized to 90% of the monitor on first frame, so high-DPI scaling cannot push it
+    off the screen.
 
 ### Fixed
 - **Windows reported as "Windows 10" on Windows 11** — the registry still stores
