@@ -1,4 +1,4 @@
-# =======================================================================
+﻿# =======================================================================
 #  phpup — Windows 11 x64 a bare-metal PHP local development environment
 #  Inspired by the simplicity of getphp.org - this script is so much more
 #  Github: https://github.com/DaFa66/phpup
@@ -9,7 +9,17 @@
 # =======================================================================
 
 param(
-    [switch]$Offline  # Skip URL resolution — use pre-downloaded zips
+    [switch]$Offline,          # Skip URL resolution — use pre-downloaded zips
+
+    # ---- CLI mode (see .junk/cli-contract.md) ----
+    # No $Command = today's interactive dashboard, unchanged.
+    [Parameter(Position=0)]
+    [string]$Command,
+    [switch]$Json,             # payload on stdout
+    [switch]$Fast,             # status: skip prerequisites + OS caption
+    [switch]$Quiet,            # suppress human output
+    [switch]$NoColor,          # no-op: CLI output is never coloured
+    [int]$Watch = 0            # status: repeat every N seconds (NDJSON)
 )
 
 # ---- Config -----------------------------------------------------------
@@ -20,7 +30,9 @@ $DOWNLOAD_CACHE  = "$BASE\downloads"
 # ---- Shared constants --------------------------------------------------
 $UA_STRING        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 $VC_MIN_VERSION   = [version]"14.51.36231"   # required by Apache Lounge VS18 + MariaDB 12.x
-$OS_CAPTION       = (Get-CimInstance Win32_OperatingSystem).Caption
+# OS caption is resolved lazily (Get-PlatformCaption): the CIM query measured
+# at ~1.1s and CLI status is polled. See the CLI section below.
+$script:OS_CAPTION_CACHE = $null
 
 # ---- Banner -----------------------------------------------------------
 $BANNER_ART = @'
@@ -62,10 +74,10 @@ function Write-Warn($msg)  { Write-Host $msg -ForegroundColor Yellow }
 function Write-Bold($msg)  { Write-Host $msg -ForegroundColor White }
 
 # ---- Detection Helpers -------------------------------------
-function Test-ApacheInstalled  { return Test-Path "$APACHE_PATH\bin\httpd.exe" }
-function Test-PhpInstalled     { return Test-Path "$PHP_PATH\php.exe" }
-function Test-MariaDbInstalled { return (Test-Path "$MARIADB_PATH\bin\mysqld.exe") -or (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") }
-function Test-PhpMyAdminInstalled { return Test-Path "$PHPMYADMIN_PATH\index.php" }
+function Test-ApacheInstalled  { return [System.IO.File]::Exists("$APACHE_PATH\bin\httpd.exe") }
+function Test-PhpInstalled     { return [System.IO.File]::Exists("$PHP_PATH\php.exe") }
+function Test-MariaDbInstalled { return [System.IO.File]::Exists("$MARIADB_PATH\bin\mysqld.exe") -or [System.IO.File]::Exists("$MARIADB_PATH\bin\mariadbd.exe") }
+function Test-PhpMyAdminInstalled { return [System.IO.File]::Exists("$PHPMYADMIN_PATH\index.php") }
 
 function Get-ApacheVersion {
     if (Test-ApacheInstalled) {
@@ -1544,11 +1556,20 @@ function Get-PmaStorageConfig {
 
 function Test-TcpPortListening {
     param([int]$Port)
-    $c = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-    if ($c) { return $true }
-    # Fallback for older systems: parse netstat -ano output
-    $n = netstat -ano 2>$null | Select-String ":$Port\s" | Select-String "LISTENING"
-    return [bool]$n
+    # Enumerate listeners via .NET (~60ms measured) instead of
+    # Get-NetTCPConnection (~3.8s measured: the NetTCPIP module autoloads on
+    # every fresh process, and every CLI invocation is a fresh process).
+    try {
+        foreach ($ep in [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()) {
+            if ([int]$ep.Port -eq $Port) { return $true }
+        }
+        return $false
+    }
+    catch {
+        # Fallback for older systems: parse netstat -ano output
+        $n = netstat -ano 2>$null | Select-String ":$Port\s" | Select-String "LISTENING"
+        return [bool]$n
+    }
 }
 
 function Get-PortHolderName {
@@ -3060,6 +3081,539 @@ function Invoke-DeleteWebStack {
 #  DASHBOARD
 # ============================================================
 
+# ============================================================
+#  CLI — machine-readable status + non-interactive control
+# ============================================================
+# Contract: .junk/cli-contract.md (promotes to docs/CLI.md when shipped).
+# Rules: stdout carries the payload only, nothing prompts, nothing writes.
+# Write-Host lands on the information stream, so callers suppress it with
+# `6>$null` and the piped payload stays clean (verified behaviour).
+# This file MUST keep its UTF-8 BOM: PowerShell 5.1 decodes it as ANSI
+# without one and the em dashes above break string literals.
+
+$script:STATUS_SCHEMA  = 1
+$script:VERSION_CACHE  = $null
+
+function Get-ScriptVersion {
+    # The header comment is the single source of truth for the version, so
+    # there is no second place to keep in sync.
+    if ($script:VERSION_CACHE) { return $script:VERSION_CACHE }
+    $script:VERSION_CACHE = '0.0.0'
+    $head = Get-Content $PSCommandPath -TotalCount 12 -ErrorAction SilentlyContinue
+    foreach ($line in $head) {
+        if ($line -match '^#\s*Version:\s*(\S+)') { $script:VERSION_CACHE = $matches[1]; break }
+    }
+    return $script:VERSION_CACHE
+}
+
+function Get-PlatformCaption {
+    # Registry first (~2ms), CIM only as a fallback (~530ms measured). The
+    # dashboard pays this too, so it matters beyond CLI polling.
+    if ($null -eq $script:OS_CAPTION_CACHE) {
+        $caption = $null
+        try {
+            $key = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+            if ($key.ProductName) {
+                $caption = [string]$key.ProductName
+                if ($key.DisplayVersion) { $caption = "$caption $($key.DisplayVersion)" }
+            }
+        }
+        catch { }
+        if (-not $caption) {
+            $caption = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Caption
+        }
+        $script:OS_CAPTION_CACHE = $caption
+    }
+    return $script:OS_CAPTION_CACHE
+}
+
+function Initialize-Paths {
+    # Single source of truth for every derived path, shared by the dashboard
+    # flow and by CLI verbs. $BASE must already be resolved via Get-Config.
+    $script:APACHE_PATH     = "$BASE\apache"
+    $script:PHP_PATH        = "$BASE\php"
+    $script:MARIADB_PATH    = "$BASE\mariadb"
+    $script:WWW_PATH        = "$BASE\www"
+    $script:LOGS_PATH       = "$BASE\logs"
+    $script:PHPMYADMIN_PATH = "$BASE\phpmyadmin"
+    # Re-derived from the resolved $BASE: the line-18 default pointed at
+    # C:\phpup\downloads even when the stack lived elsewhere.
+    $script:DOWNLOAD_CACHE  = "$BASE\downloads"
+}
+
+function Get-ListeningPorts {
+    # One managed enumeration (~60ms) for every port we care about.
+    $set = @{}
+    try {
+        foreach ($ep in [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()) {
+            $set[[int]$ep.Port] = $true
+        }
+    }
+    catch { }
+    return $set
+}
+
+function Get-PortOwner {
+    # netstat is consulted ONLY when a port is held by something that is not
+    # us, so the happy path never pays its ~220ms.
+    param([int]$Port)
+    $line = netstat -ano 2>$null | Select-String ":$Port\s" | Select-String "LISTENING" | Select-Object -First 1
+    if (-not $line) { return $null }
+    $ownerPid = ($line.ToString().Trim() -split '\s+')[-1]
+    $proc = Get-Process -Id ([int]$ownerPid) -ErrorAction SilentlyContinue
+    if ($proc) { return "$($proc.ProcessName) (PID $ownerPid)" }
+    return "PID $ownerPid"
+}
+
+function Get-ServicePid {
+    # sc.exe queryex reports the service PID without elevation, WMI or CIM
+    # (measured ~20ms vs ~1.1s for the equivalent CIM query).
+    param([string]$ServiceName)
+    if (-not $ServiceName) { return $null }
+    try {
+        foreach ($line in (& sc.exe queryex "$ServiceName" 2>$null)) {
+            if ($line -match 'PID\s*:\s*(\d+)') { return [int]$matches[1] }
+        }
+    }
+    catch { }
+    return $null
+}
+
+function Get-ComponentPids {
+    # PIDs are filtered by install path so a foreign Apache/MariaDB (XAMPP,
+    # another phpup checkout) is never reported as ours. ExecutablePath is
+    # only readable for our own processes, so service PIDs come from
+    # Get-ServicePid instead — never "no PIDs" just because we are unelevated.
+    param([string[]]$Names)
+    $found = @()
+    foreach ($proc in (Get-Process -Name $Names -ErrorAction SilentlyContinue)) {
+        $exe = $null
+        try { $exe = $proc.ExecutablePath } catch { }
+        if ($exe -and ($exe -like "$BASE\*")) { $found += [int]$proc.Id }
+    }
+    return $found
+}
+
+function Resolve-ComponentPids {
+    # Fast path: process table only (~25ms). Full path: exact PID from the
+    # SCM when the component runs as a service, else a path-filtered scan.
+    # sc queryex costs ~70ms per call, which is 40% of a poll tick.
+    param([string[]]$Names, [string]$ServiceName, [bool]$ServiceRunning, [switch]$Fast)
+
+    $pids = @()
+    if ($Fast) {
+        foreach ($proc in @(Get-Process -Name $Names -ErrorAction SilentlyContinue)) {
+            if ($proc) { $pids += [int]$proc.Id }
+        }
+        return ,@($pids | Sort-Object -Unique)
+    }
+    if ($ServiceRunning) {
+        $svcPid = Get-ServicePid $ServiceName
+        if ($svcPid) { $pids += [int]$svcPid }
+    }
+    if ($pids.Count -eq 0) {
+        foreach ($item in @(Get-ComponentPids -Names $Names)) {
+            if ($null -ne $item) { $pids += [int]$item }
+        }
+    }
+    return ,@($pids | Sort-Object -Unique)
+}
+
+function Test-CliIsAdmin {
+    return ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
+}
+
+function Get-CliStatus {
+    param([switch]$Fast)
+
+    $config = Get-Config
+    Initialize-Paths
+
+    $apacheInstalled = Test-ApacheInstalled
+    $phpInstalled    = Test-PhpInstalled
+    $mariaInstalled  = Test-MariaDbInstalled
+    $pmaInstalled    = Test-PhpMyAdminInstalled
+    $complete        = $apacheInstalled -and $phpInstalled -and $mariaInstalled -and $pmaInstalled
+
+    $state = 'absent'
+    if ($apacheInstalled -or $phpInstalled -or $mariaInstalled -or $pmaInstalled) {
+        $state = if ($complete) { 'complete' } else { 'partial' }
+    }
+
+    $apacheRunning = Test-ApacheRunning
+    $mariaRunning  = Test-MariaDbRunning
+
+    # Versions come from config.json, which install/update and
+    # Save-PostUpdateConfig write from the live filesystem. Probing the
+    # binaries costs ~900ms (httpd -v alone is 579ms), so it is a fallback
+    # for a component whose config entry is missing, never the default.
+    $cfgVersions = if ($config) { $config.versions } else { $null }
+    $vApache  = if ($cfgVersions -and $cfgVersions.apache)     { [string]$cfgVersions.apache }     else { $null }
+    $phpLabel = if ($cfgVersions -and $cfgVersions.php)        { [string]$cfgVersions.php }        else { $null }
+    $vMaria   = if ($cfgVersions -and $cfgVersions.mariadb)    { [string]$cfgVersions.mariadb }    else { $null }
+    $vPma     = if ($cfgVersions -and $cfgVersions.phpmyadmin) { [string]$cfgVersions.phpmyadmin } else { $null }
+    $probed   = $false
+    if (-not $Fast) {
+        if (-not $vApache)  { $vApache  = Get-ApacheVersion;     $probed = $true }
+        if (-not $phpLabel) { $phpLabel = Get-PhpVersionLabel;   $probed = $true }
+        if (-not $vMaria)   { $vMaria   = Get-MariaDbVersion;    $probed = $true }
+        if (-not $vPma)     { $vPma     = Get-PhpMyAdminVersion; $probed = $true }
+    }
+    $versionSource = if ($probed) { 'mixed' } else { 'config' }
+    $vPhp  = if ($phpLabel) { ([string]$phpLabel -split ' ')[0] } else { $null }
+    $phpPre = Test-PhpIsPreRelease ([string]$phpLabel)
+
+    # ---- Services ----
+    $apacheSvc = Get-Service -Name $SERVICE_APACHE  -ErrorAction SilentlyContinue
+    $mariaSvc  = Get-Service -Name $SERVICE_MARIADB -ErrorAction SilentlyContinue
+    $svcItems  = @()
+    $autostart = $true
+    foreach ($pair in @(@{ Name = $SERVICE_APACHE; Svc = $apacheSvc }, @{ Name = $SERVICE_MARIADB; Svc = $mariaSvc })) {
+        $isReg   = $null -ne $pair.Svc
+        $enabled = $false
+        if ($isReg) {
+            try { $enabled = ($pair.Svc.StartType -eq 'Automatic') } catch { $enabled = $false }
+            if (-not $enabled) { $autostart = $false }
+        }
+        $svcItems += [ordered]@{ name = $pair.Name; registered = $isReg; enabled = $enabled }
+    }
+    $registered   = ($null -ne $apacheSvc) -and ($null -ne $mariaSvc)
+    if (-not $registered) { $autostart = $false }
+
+    $apacheSvcRunning = ($null -ne $apacheSvc) -and ($apacheSvc.Status -eq 'Running')
+    $mariaSvcRunning  = ($null -ne $mariaSvc)  -and ($mariaSvc.Status  -eq 'Running')
+    $mode = 'none'
+    if ($apacheRunning -or $mariaRunning) {
+        if ($apacheSvcRunning -and $mariaSvcRunning) { $mode = 'service' }
+        elseif ($apacheSvcRunning -or $mariaSvcRunning) { $mode = 'mixed' }
+        else { $mode = 'process' }
+    }
+
+    # ---- PIDs and ports ----
+    $apachePids = if ($apacheRunning) { @(Resolve-ComponentPids -Names @('httpd') -ServiceName $SERVICE_APACHE -ServiceRunning $apacheSvcRunning -Fast:$Fast) } else { @() }
+    $mariaPids  = if ($mariaRunning)  { @(Resolve-ComponentPids -Names @('mysqld', 'mariadbd') -ServiceName $SERVICE_MARIADB -ServiceRunning $mariaSvcRunning -Fast:$Fast) } else { @() }
+
+    $listening = Get-ListeningPorts
+    $portRows  = @()
+    foreach ($p in @(80, 3306)) {
+        $isUp = [bool]$listening[$p]
+        $ours = $false
+        if ($isUp) { $ours = if ($p -eq 80) { $apacheRunning } else { $mariaRunning } }
+        $owner = $null
+        if ($isUp -and $ours) {
+            $firstPid = if ($p -eq 80) { $apachePids | Select-Object -First 1 } else { $mariaPids | Select-Object -First 1 }
+            $owner = if ($firstPid) { "$(if ($p -eq 80) { 'httpd' } else { 'mariadbd' }) (PID $firstPid)" }
+                     else { "phpup (PID unknown)" }
+        }
+        elseif ($isUp) {
+            $owner = Get-PortOwner -Port $p
+        }
+        $portRows += [ordered]@{ port = $p; listening = $isUp; ours = $ours; owner = $owner }
+    }
+    $apachePorts = [array]@()
+    $mariaPorts  = [array]@()
+    foreach ($row in $portRows) {
+        if (-not $row.ours) { continue }
+        if ($row.port -eq 80) { $apachePorts = [array]@(80) } else { $mariaPorts = [array]@(3306) }
+    }
+
+    # ---- Prerequisites (full status only) ----
+    $prereq = $null
+    if (-not $Fast) {
+        # One registry pass, not two: Get-VcRedistVersion already enumerates
+        # the same Uninstall keys Test-VcRedistInstalled scans (~400ms each).
+        $vcVersionObj = Get-VcRedistVersion
+        $vcOk = [bool]($vcVersionObj -and ($vcVersionObj -ge $VC_MIN_VERSION))
+        $prereq = [ordered]@{
+            vc_redist = [ordered]@{
+                ok      = $vcOk
+                version = if ($vcVersionObj) { [string]$vcVersionObj } else { $null }
+                minimum = [string]$VC_MIN_VERSION
+            }
+        }
+    }
+
+    # ---- Platform ----
+    $arch = $env:PROCESSOR_ARCHITECTURE
+    if ($arch -eq 'AMD64') { $arch = 'x86_64' }
+    $distro = $null
+    if (-not $Fast) {
+        $caption = Get-PlatformCaption
+        if ($caption -match 'Microsoft Windows (.*)') { $caption = $matches[1] }
+        $distro = $caption
+    }
+
+    $sapi = $null
+    $cliOnPath = $false
+    if ($phpInstalled) {
+        $sapi = if (Test-PhpApacheModuleWired) { 'apache2handler' } else { 'cli' }
+        # PATH membership without spawning Get-Command (~20ms per poll).
+        $cliOnPath = @($env:PATH -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $PHP_PATH) }).Count -gt 0
+    }
+
+    $urlRoot = 'http://localhost/'
+    $urlPma  = 'http://localhost/phpmyadmin'
+
+    # ---- Warnings ----
+    $warnings = @()
+    foreach ($row in $portRows) {
+        if ($row.listening -and -not $row.ours) {
+            $warnings += [ordered]@{
+                code      = 'port_conflict'
+                component = if ($row.port -eq 80) { 'apache' } else { 'mariadb' }
+                message   = "Port $($row.port) is held by $($row.owner) — phpup cannot start this component"
+            }
+        }
+    }
+    if ($state -eq 'partial') {
+        $warnings += [ordered]@{ code = 'stack_partial'; component = $null; message = 'The stack is partially installed' }
+    }
+    if (($apacheRunning -or $mariaRunning) -and -not $registered) {
+        $warnings += [ordered]@{ code = 'services_not_registered'; component = $null; message = 'Running as processes, not Windows services (no auto-start on boot)' }
+    }
+    if ($phpPre) {
+        $warnings += [ordered]@{ code = 'php_prerelease'; component = 'php'; message = "PHP $phpLabel is a pre-release build" }
+    }
+    if ($prereq -and -not $prereq.vc_redist.ok) {
+        $warnings += [ordered]@{ code = 'vc_redist_missing'; component = $null; message = "VC++ Redistributable $VC_MIN_VERSION or newer is required" }
+    }
+    if ($phpInstalled -and -not $cliOnPath) {
+        $warnings += [ordered]@{ code = 'php_not_on_path'; component = 'php'; message = 'php.exe is not on PATH' }
+    }
+
+    return [ordered]@{
+        schema       = $script:STATUS_SCHEMA
+        generated_at = (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz')
+        phpup        = [ordered]@{ version = (Get-ScriptVersion); script = 'ps1' }
+        platform     = [ordered]@{ os = 'windows'; arch = $arch; backend = 'direct'; distro = $distro }
+        install      = [ordered]@{ path = $BASE; state = $state; config_file = (Get-ConfigFilePath) }
+        services     = [ordered]@{ mode = $mode; registered = $registered; autostart = $autostart; items = [array]$svcItems }
+        components   = [ordered]@{
+            apache     = [ordered]@{
+                installed = $apacheInstalled; version = $vApache; running = $apacheRunning;
+                pids = $apachePids; ports = $apachePorts; service = $SERVICE_APACHE;
+                owned_by_phpup = $apacheRunning; notes = $null
+            }
+            php        = [ordered]@{
+                installed = $phpInstalled; version = $vPhp; label = $phpLabel; prerelease = $phpPre;
+                running = $null; pids = [array]@(); ports = [array]@();
+                sapi = $sapi; cli_on_path = $cliOnPath;
+                series_floor = if ($config -and $config.php_min_series) { [string]$config.php_min_series } else { '8.2' };
+                notes = $null; version_source = $versionSource
+            }
+            mariadb    = [ordered]@{
+                installed = $mariaInstalled; version = $vMaria; running = $mariaRunning;
+                pids = $mariaPids; ports = $mariaPorts; service = $SERVICE_MARIADB;
+                owned_by_phpup = $mariaRunning; notes = $null
+            }
+            phpmyadmin = [ordered]@{
+                installed = $pmaInstalled; version = $vPma; running = $null;
+                pids = [array]@(); ports = [array]@(); url = $urlPma; notes = $null
+            }
+        }
+        urls         = [ordered]@{ root = $urlRoot; phpmyadmin = $urlPma; phpinfo = 'http://localhost/phpinfo.php' }
+        paths        = [ordered]@{ www = $WWW_PATH; logs = $LOGS_PATH; downloads = $DOWNLOAD_CACHE }
+        logs         = [ordered]@{
+            apache_error  = "$LOGS_PATH\apache_error.log"
+            apache_access = "$LOGS_PATH\apache_access.log"
+            php_errors    = "$LOGS_PATH\php_errors.log"
+            mariadb_error = "$LOGS_PATH\mariadb_error.log"
+        }
+        prerequisites = $prereq
+        ports         = [array]$portRows
+        warnings      = [array]$warnings
+        errors        = [array]@()
+    }
+}
+
+function Get-CliPortConflict {
+    # Returns a human description of the first foreign-held stack port, or $null.
+    $listening = Get-ListeningPorts
+    foreach ($pair in @(@{ Port = 80; Running = (Test-ApacheRunning) }, @{ Port = 3306; Running = (Test-MariaDbRunning) })) {
+        if ($listening[$pair.Port] -and -not $pair.Running) {
+            $owner = Get-PortOwner -Port $pair.Port
+            return "Port $($pair.Port) is held by $owner"
+        }
+    }
+    return $null
+}
+
+function Write-CliHumanStatus {
+    param($Status)
+    $comp = $Status.components
+    Write-Output "phpup $($Status.phpup.version) | $($Status.platform.os) $($Status.platform.arch) | $($Status.install.state) | $($Status.install.path)"
+    Write-Output "Services: $($Status.services.mode) | registered: $($Status.services.registered) | autostart: $($Status.services.autostart)"
+    Write-Output ""
+    foreach ($name in @('apache', 'php', 'mariadb', 'phpmyadmin')) {
+        $c = $comp.$name
+        $bits = @($name.PadRight(11), ([string]$c.version).PadRight(10))
+        if ($c.installed) {
+            if ($c.running -eq $true) {
+                $bits += 'running'
+                if ($c.pids.Count -gt 0) { $bits += "PID $($c.pids -join ',')" }
+                if ($c.ports.Count -gt 0) { $bits += ":$($c.ports -join ',')" }
+            }
+            elseif ($c.installed -and $c.running -eq $false) { $bits += 'stopped' }
+            elseif ($name -eq 'php') { $bits += "sapi: $($c.sapi)"; $bits += "cli: $($c.cli_on_path)" }
+            elseif ($c.url) { $bits += $c.url }
+        }
+        else { $bits += 'not installed' }
+        Write-Output ($bits -join '  ')
+    }
+    if ($Status.warnings.Count -gt 0) {
+        Write-Output ""
+        foreach ($w in $Status.warnings) { Write-Output "  ! $($w.code): $($w.message)" }
+    }
+}
+
+function Write-CliJson {
+    param($Payload)
+    Write-Output ($Payload | ConvertTo-Json -Depth 6 -Compress)
+}
+
+function Write-CliUsage {
+    Write-Output @'
+phpup — Power tools for local PHP development
+
+Usage:
+  phpup.ps1                          interactive dashboard
+  phpup.ps1 status [-Fast] [-Json]   report stack state
+  phpup.ps1 start|stop|restart       control services (idempotent)
+  phpup.ps1 version                  print version
+  phpup.ps1 help                     this text
+
+Flags:
+  -Json    payload on stdout (stderr/host output suppressed)
+  -Fast    status only: skip prerequisites and OS caption (polling)
+  -Watch N status only: repeat every N seconds as NDJSON
+  -Quiet   suppress human output
+
+Exit codes: 0 ok, 1 failed, 2 usage, 3 not installed, 4 elevation required, 5 port conflict
+'@
+}
+
+function Invoke-CliLifecycle {
+    param([string]$Action, [switch]$Json, [switch]$Quiet)
+
+    # Resolve config and derived paths first: Test-StackComplete reads
+    # $APACHE_PATH and friends, which are only set by Initialize-Paths.
+    $null = Get-Config
+    Initialize-Paths
+
+    if (-not (Test-StackComplete)) {
+        return @{ code = 3; payload = [ordered]@{ schema = $script:STATUS_SCHEMA; ok = $false; code = 'not_installed'; action = $Action; changed = $false; components = [ordered]@{}; warnings = [array]@(); errors = [array]@( 'The web stack is not installed.' ) } }
+    }
+    if ((Test-ServicesInstalled) -and -not (Test-CliIsAdmin)) {
+        return @{ code = 4; payload = [ordered]@{ schema = $script:STATUS_SCHEMA; ok = $false; code = 'elevation_required'; action = $Action; changed = $false; components = [ordered]@{}; warnings = [array]@(); errors = [array]@( 'phpup services are registered — Administrator rights are required to control them.' ) } }
+    }
+
+    if ($Action -eq 'start' -or $Action -eq 'restart') {
+        $conflict = Get-CliPortConflict
+        if ($conflict) {
+            return @{ code = 5; payload = [ordered]@{ schema = $script:STATUS_SCHEMA; ok = $false; code = 'port_conflict'; action = $Action; changed = $false; components = [ordered]@{}; warnings = [array]@( $conflict ); errors = [array]@() } }
+        }
+    }
+
+    $before = Get-CliStatus -Fast 6>$null
+
+    # $null = keeps anything the start/stop helpers emit on the success stream
+    # out of the captured result; Write-Host output still reaches the user.
+    if ($Json) {
+        switch ($Action) {
+            'start'   { $null = Start-WebStackServices 6>$null }
+            'stop'    { $null = Stop-WebStackServices  6>$null }
+            'restart' { $null = Stop-WebStackServices  6>$null; Start-Sleep -Seconds 2; $null = Start-WebStackServices 6>$null }
+        }
+    }
+    else {
+        switch ($Action) {
+            'start'   { $null = Start-WebStackServices }
+            'stop'    { $null = Stop-WebStackServices }
+            'restart' { $null = Stop-WebStackServices; Start-Sleep -Seconds 2; $null = Start-WebStackServices }
+        }
+    }
+
+    $after = Get-CliStatus -Fast 6>$null
+    $changed = ($before.components.apache.running -ne $after.components.apache.running) -or
+               ($before.components.mariadb.running -ne $after.components.mariadb.running)
+
+    $ok = if ($Action -eq 'stop') {
+        (-not $after.components.apache.running) -and (-not $after.components.mariadb.running)
+    }
+    else {
+        $after.components.apache.running -and $after.components.mariadb.running
+    }
+
+    return @{
+        code    = if ($ok) { 0 } else { 1 }
+        payload = [ordered]@{
+            schema     = $script:STATUS_SCHEMA
+            ok         = $ok
+            code       = if ($ok) { $null } else { 'action_failed' }
+            action     = $Action
+            changed    = $changed
+            components = $after.components
+            warnings   = $after.warnings
+            errors     = [array]@()
+        }
+    }
+}
+
+function Invoke-CliVerb {
+    param([string]$Verb, [switch]$Json, [switch]$Fast, [switch]$Quiet, [int]$Watch)
+
+    # The exit code travels in a script variable, not the return value: the
+    # payload goes out on the success stream and capturing both in one
+    # assignment would swallow the payload.
+    $script:CliExitCode = 0
+    $verb = $Verb.ToLower()
+
+    switch ($verb) {
+        'status' {
+            if ($Watch -gt 0) {
+                # One long-lived process, one NDJSON line per interval: process
+                # startup (~450ms) would otherwise dominate every poll.
+                while ($true) {
+                    $payload = Get-CliStatus -Fast 6>$null
+                    [Console]::Out.WriteLine(($payload | ConvertTo-Json -Depth 6 -Compress))
+                    [Console]::Out.Flush()
+                    Start-Sleep -Seconds $Watch
+                }
+            }
+            $payload = Get-CliStatus -Fast:$Fast 6>$null
+            if ($Json) { Write-CliJson $payload }
+            elseif (-not $Quiet) { Write-CliHumanStatus $payload }
+            return
+        }
+        'version' {
+            if ($Json) { Write-CliJson ([ordered]@{ schema = $script:STATUS_SCHEMA; version = (Get-ScriptVersion); script = 'ps1' }) }
+            elseif (-not $Quiet) { Write-Output "phpup $(Get-ScriptVersion) (phpup.ps1)" }
+            return
+        }
+        'help' {
+            if (-not $Quiet) { Write-CliUsage }
+            return
+        }
+        { $_ -in 'start', 'stop', 'restart' } {
+            $result = Invoke-CliLifecycle -Action $verb -Json:$Json -Quiet:$Quiet
+            if ($Json) { Write-CliJson $result.payload }
+            elseif (-not $Quiet) {
+                $p = $result.payload
+                $state = if ($p.ok) { 'ok' } else { "failed: $(if ($p.code) { $p.code } else { 'unknown' })" }
+                Write-Output ("{0}: {1} (changed: {2})" -f $p.action, $state, $p.changed)
+            }
+            $script:CliExitCode = $result.code
+            return
+        }
+        default {
+            [Console]::Error.WriteLine("Unknown command: $Verb")
+            if (-not $Quiet) { [Console]::Error.WriteLine("Run 'phpup.ps1 help' for usage.") }
+            $script:CliExitCode = 2
+            return
+        }
+    }
+}
+
 function Show-Dashboard {
     Clear-Host
 
@@ -3092,8 +3646,8 @@ function Show-Dashboard {
     # ---- Architecture / OS line ----
     $arch = $env:PROCESSOR_ARCHITECTURE
     if ($arch -eq "AMD64") { $arch = "x86_64" }
-    $osCaption = $OS_CAPTION
-    if ($osCaption -match "Microsoft Windows (.*)") { $osCaption = $matches[1] }
+    $osCaption = Get-PlatformCaption
+    if ($osCaption -match '(?:Microsoft )?Windows (.*)') { $osCaption = $matches[1] }
     Write-Host "Architecture: " -NoNewline
     Write-Host "$arch" -ForegroundColor Cyan -NoNewline
     Write-Host " | Windows: " -NoNewline
@@ -3273,6 +3827,17 @@ function Show-Dashboard {
 #  MAIN LOOP
 # ============================================================
 
+# ---- CLI dispatch ----------------------------------------------------
+# Runs before the admin gate, the VC++ preflight and the dashboard, so verbs
+# stay fast, prompt-free and elevation-agnostic. No $Command = unchanged.
+if (-not [string]::IsNullOrWhiteSpace($Command)) {
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $script:CliExitCode = 0
+    Invoke-CliVerb -Verb $Command -Json:$Json -Fast:$Fast -Quiet:$Quiet -Watch $Watch
+    exit $script:CliExitCode
+}
+
 # Ensure we're running as Admin
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
 
@@ -3416,12 +3981,7 @@ else {
 }
 
 # Derive all paths from $BASE
-$APACHE_PATH     = "$BASE\apache"
-$PHP_PATH        = "$BASE\php"
-$MARIADB_PATH    = "$BASE\mariadb"
-$WWW_PATH        = "$BASE\www"
-$LOGS_PATH       = "$BASE\logs"
-$PHPMYADMIN_PATH = "$BASE\phpmyadmin"
+Initialize-Paths
 
 if (-not $config) {
     Write-Info "  Websites:  $WWW_PATH"

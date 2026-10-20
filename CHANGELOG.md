@@ -13,6 +13,86 @@ overview of every release.
 
 ---
 
+## [Unreleased]
+
+### Windows (phpup.ps1 → 2.5.0) and macOS/Linux (phpup.sh → 1.3.0)
+
+Feature release adding a machine-readable CLI, so a GUI, tray app or CI job can drive phpup
+without the interactive dashboard. Contract: `.junk/cli-contract.md`, to be promoted to
+`docs/CLI.md` on release.
+
+### Added
+- **`status`, `start`, `stop`, `restart`, `version`, `help` verbs** on both scripts, with
+  `--json` (PowerShell `-Json`) emitting a stable schema on stdout. No arguments behaves
+  exactly as before: the dashboard is untouched.
+- **`--fast`** for polling: skips prerequisites and the OS caption on Windows, and on
+  macOS/Linux is effectively a no-op because there is no local prerequisite to check.
+- **`--watch N`**: one long-lived process emitting one NDJSON status line every N seconds.
+  Measured reason: a fresh PowerShell process costs ~0.85s, so per-tick process spawning
+  would hold ~40% of a core at a 2s interval. One process with lazy probes costs ~237ms a
+  tick on Windows and ~340ms per invocation on Linux.
+- **`--quiet`**, plus documented exit codes: 0 ok, 1 failed, 2 usage, 3 not installed,
+  4 elevation required, 5 port conflict. Codes 4 and 5 exist so a caller can relaunch
+  elevated or name the foreign process instead of parsing English.
+- **`services.items[]`** in the payload: per-service `{name, registered, enabled}`, so the
+  registered services are visible on every platform, not just as Windows service names.
+- Single source of truth for derived paths (`Initialize-Paths` on Windows, globals on unix),
+  and the header comment is now the only place a version is written: both `--version` paths
+  read it rather than duplicating it.
+
+### Fixed
+- **Windows `status` and `start` could take 4-8s before doing anything** — `Test-TcpPortListening`
+  called `Get-NetTCPConnection`, which measured **3.8s cold** on every fresh process (the
+  NetTCPIP module autoloads per process, and every CLI call is a fresh process). It now
+  enumerates listeners through `System.Net.NetworkInformation` (~60ms), with the old netstat
+  parse kept as a fallback. `Assert-StackPortsFree` calls it twice, so `start` and `restart`
+  were paying that cost on the interactive path too.
+- **Linux paid ~420ms for `brew --version` on every run** — the Homebrew probe at the top of
+  `phpup.sh` ran unconditionally, including on apt systems where brew is irrelevant. Now
+  gated on `USE_APT == 0`. Interactive `status` on the Ubuntu test box went from 0.74s to
+  0.34s.
+- **The OS caption cost ~530-1100ms per dashboard render and per full status** — resolved via
+  the registry (`CurrentVersion` `ProductName` + `DisplayVersion`, ~2ms) with the CIM query
+  kept only as a fallback. The dashboard line reads `Windows: 11 Pro` either way.
+- **Full status scanned the Uninstall registry twice** (~400ms each) for the VC++ version.
+  One pass now: `Get-VcRedistVersion` result is compared against the minimum.
+- **Version detection spawned three binaries per status call** (`httpd -v` alone is 579ms).
+  Config values are used first, which install/update already write from the live filesystem,
+  and probing is a per-component fallback. `version_source` reports `config` or `mixed`.
+- **`$DOWNLOAD_CACHE` never followed a custom install path** — it was derived from the
+  default `C:\phpup` at line 18 and never re-derived, so a moved stack pointed at the wrong
+  cache. Now derived with the other paths.
+- **PIDs vanished from the payload when running unelevated** — `ExecutablePath` is unreadable
+  for other users' processes, so the path filter silently dropped service PIDs. Service mode
+  now asks the SCM (`sc queryex`, ~70ms, full status only), and the fast path uses the process
+  table, which needs no elevation.
+- **`phpup.ps1` could not run under Windows PowerShell 5.1 at all** — the file was UTF-8
+  without a BOM, so 5.1 decoded it as Windows-1252, every em dash inside a double-quoted
+  string became a stray `"` that terminated the string early, and the parser reported ~58
+  errors. Adding a UTF-8 BOM fixes it: 5.1 now parses and runs the script, `pwsh` behaviour is
+  unchanged, and the non-ASCII banner and em dashes decode correctly (verified: the em dash
+  reports as char 8212 under 5.1 rather than as three mojibake bytes).
+
+### Verified
+- `bash -n` clean. Windows: `pwsh` parse clean; `status --json` validated as JSON on a live
+  stack (Apache 2.4.69, PHP 8.5.11, MariaDB 13.0.2, phpMyAdmin 5.2.3) with correct PIDs, port
+  ownership and `services.mode: service`; `start` correctly returned exit 4 unelevated with
+  registered services; unknown verb returned 2; interactive run still hits the unchanged admin
+  gate.
+- Linux (WSL Ubuntu 24.04, apt backend): `status --json` validated, PIDs resolved for
+  `apache2`/`mariadbd`/`php-fpm`, `services.items` reporting the systemd units and their
+  enabled state, `start --json` returned exit 4 without cached sudo, `--watch 1` produced
+  valid NDJSON lines.
+- **Windows PowerShell 5.1 now fully supported** (was: parse failure on the whole script).
+  Verified under 5.1: `version`, `version -Json`, `status`, `status -Json` (valid JSON, correct
+  PIDs and port ownership), `bogus` → exit 2, `start` unelevated → exit 4, `status -Watch 1`
+  producing valid NDJSON, and the interactive run still hitting the unchanged admin gate.
+  `pwsh` 7 verified identically. 5.1 is ~0.1s slower per invocation than 7 (1.24s vs 1.15s for
+  `status --fast` on this machine), which is startup, not script work.
+- Note for the GUI: launch with `powershell.exe` (5.1, present everywhere) or `pwsh` (7); both
+  work now. Keep the BOM in the file, or 5.1 support silently reappears as a parse failure.
+
+
 ## [1.2.7-nix] — 2026-09-13
 
 ### macOS & Linux (phpup.sh v1.2.7)

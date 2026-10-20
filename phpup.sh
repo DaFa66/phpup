@@ -76,7 +76,10 @@ fi
 # ---- Homebrew Detection -------------------------------------
 HOMEBREW=0
 BREW_PREFIX=""
-if brew --version &>/dev/null; then
+# Skip the probe on Linux: apt is the backend there, brew is irrelevant, and
+# `brew --version` measured ~420ms per invocation in WSL — paid by the
+# dashboard and by every CLI poll.
+if [[ $USE_APT == 0 ]] && brew --version &>/dev/null; then
     HOMEBREW=1
     BREW_PREFIX=$(brew --prefix)
 fi
@@ -3829,11 +3832,538 @@ detect_backend() {
 }
 
 # ---- Main Entry Point ---------------------------------------
-main() {
-    # Reconnect stdin to terminal (needed when piped via curl | bash)
-    exec < /dev/tty
+# ============================================================
+#  CLI — machine-readable status + non-interactive control
+# ============================================================
+# Contract: .junk/cli-contract.md. In CLI mode fd3 keeps the real stdout for
+# the payload; everything else (all print_* helpers, sudo chatter) goes to
+# stderr, so nothing extra needs silencing.
 
-    # Homebrew detection (macOS and legacy Linux only)
+CLI_MODE=0
+CLI_JSON=0
+CLI_FAST=0
+CLI_QUIET=0
+CLI_WATCH=0
+CLI_VERB=""
+CLI_EXIT=0
+CLI_WARNINGS=""
+
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+jstr() {
+    if [[ -n "$1" ]]; then
+        printf '"%s"' "$(json_escape "$1")"
+    else
+        printf 'null'
+    fi
+}
+
+jbool() {
+    [[ "$1" == "1" ]] && printf 'true' || printf 'false'
+}
+
+iso_now() {
+    local d base off
+    d=$(date "+%Y-%m-%dT%H:%M:%S%z")
+    base="${d%?????}"
+    off="${d: -5}"
+    printf '%s%s:%s' "$base" "${off:0:3}" "${off:3:2}"
+}
+
+script_version() {
+    sed -n 's/^#[[:space:]]*Version:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$0" 2>/dev/null | head -1
+}
+
+stack_pids() {
+    # Echo the PIDs matching the pattern(s) that belong to the ACTIVE backend.
+    # apt services are ours by definition (no prefix to match); brew/MacPorts
+    # pin to the active prefix so a coexisting stack is never claimed.
+    local flag="$1"; shift
+    local prefix="$PORT_PREFIX"
+    [[ $USE_PORTS == 1 ]] || prefix="$BREW_PREFIX"
+    local pat pid
+    for pat in "$@"; do
+        for pid in $(pgrep "$flag" "$pat" 2>/dev/null); do
+            if [[ $USE_APT == 1 ]]; then
+                printf '%s\n' "$pid"
+                continue
+            fi
+            [[ -n "$prefix" ]] || continue
+            ps -o command= -p "$pid" 2>/dev/null | grep -qF "$prefix" && printf '%s\n' "$pid"
+        done
+    done | sort -u
+}
+
+pids_json() {
+    local out
+    out=$(tr '\n' ' ' | sed 's/ *$//; s/  */,/g')
+    printf '[%s]' "$out"
+}
+
+svc_running_flag() {
+    if is_service_running "$1"; then printf '1'; else printf '0'; fi
+}
+
+apache_proc_name() {
+    # Debian/Ubuntu ship the binary as apache2; brew and MacPorts use httpd.
+    if [[ $USE_APT == 1 ]]; then printf 'apache2'; else printf 'httpd'; fi
+}
+
+service_names() {
+    if [[ $USE_APT == 1 ]]; then
+        printf 'apache2 mariadb'
+    elif [[ $USE_PORTS == 1 ]]; then
+        printf 'apache2 %s' "$MARIADB_PORT"
+    else
+        printf 'httpd mariadb'
+    fi
+}
+
+services_registered_state() {
+    # Sets SVC_APACHE_REG, SVC_MARIADB_REG, SVC_AUTOSTART (1/0).
+    SVC_APACHE_REG=0
+    SVC_MARIADB_REG=0
+    SVC_AUTOSTART=0
+    if [[ $USE_APT == 1 ]]; then
+        systemctl list-unit-files --no-legend apache2.service 2>/dev/null | grep -q . && SVC_APACHE_REG=1
+        systemctl list-unit-files --no-legend mariadb.service 2>/dev/null | grep -q . && SVC_MARIADB_REG=1
+        if [[ $SVC_APACHE_REG == 1 && $SVC_MARIADB_REG == 1 ]]; then
+            if [[ "$(systemctl is-enabled apache2 2>/dev/null)" == "enabled" ]] \
+               && [[ "$(systemctl is-enabled mariadb 2>/dev/null)" == "enabled" ]]; then
+                SVC_AUTOSTART=1
+            fi
+        fi
+    elif [[ $USE_PORTS == 1 ]]; then
+        [[ -f "/Library/LaunchDaemons/org.macports.apache2.plist" ]] && SVC_APACHE_REG=1
+        [[ -f "/Library/LaunchDaemons/org.macports.${MARIADB_PORT}-server.plist" ]] && SVC_MARIADB_REG=1
+        [[ $SVC_APACHE_REG == 1 && $SVC_MARIADB_REG == 1 ]] && SVC_AUTOSTART=1
+    else
+        [[ -f "$HOME/Library/LaunchAgents/homebrew.mxcl.httpd.plist" ]] && SVC_APACHE_REG=1
+        [[ -f "$HOME/Library/LaunchAgents/homebrew.mxcl.mariadb.plist" ]] && SVC_MARIADB_REG=1
+        [[ $SVC_APACHE_REG == 1 && $SVC_MARIADB_REG == 1 ]] && SVC_AUTOSTART=1
+    fi
+    SVC_REGISTERED=0
+    [[ $SVC_APACHE_REG == 1 && $SVC_MARIADB_REG == 1 ]] && SVC_REGISTERED=1
+}
+
+pma_path() {
+    if [[ $USE_APT == 1 ]]; then
+        printf '/usr/share/phpmyadmin'
+    elif [[ $USE_PORTS == 1 ]]; then
+        printf '%s' "$PMA_DIR"
+    else
+        printf '%s/share/phpmyadmin' "$BREW_PREFIX"
+    fi
+}
+
+maria_log_path() {
+    if [[ $USE_PORTS == 1 ]]; then
+        printf '%s/var/log/%s/mariadb_error.log' "$PORT_PREFIX" "$MARIADB_PORT"
+    else
+        printf '%s/mariadb_error.log' "$LOGS_DIR"
+    fi
+}
+
+add_warning() {
+    local entry
+    entry=$(printf '{"code":%s,"component":%s,"message":%s}' "$(jstr "$1")" "$(jstr "$2")" "$(jstr "$3")")
+    if [[ -z "$CLI_WARNINGS" ]]; then
+        CLI_WARNINGS="$entry"
+    else
+        CLI_WARNINGS="$CLI_WARNINGS,$entry"
+    fi
+}
+
+build_cli_status_json() {
+    # Prints the status payload on stdout. Also leaves the summary values in
+    # CLI_* globals so the human renderer does not have to re-parse JSON
+    # (json_get is a flat, first-match parser and cannot walk components).
+    local os_name="linux"
+    [[ "$OSTYPE" == darwin* ]] && os_name="darwin"
+    local backend="brew"
+    [[ $USE_APT == 1 ]] && backend="apt"
+    [[ $USE_PORTS == 1 ]] && backend="ports"
+
+    # config.json first: install/update write versions from the live system,
+    # and probing on the MacPorts backend means httpd -v plus php -r spawns.
+    local install_path="$BASE_DIR"
+    local cfg_apache="" cfg_maria="" cfg_php="" cfg_pma=""
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local cfg ci
+        cfg=$(cat "$CONFIG_FILE" 2>/dev/null)
+        ci=$(json_get "$cfg" "install_path")
+        [[ -n "$ci" ]] && install_path="$ci"
+        cfg_apache=$(json_get "$cfg" "apache_version")
+        cfg_maria=$(json_get "$cfg" "mariadb_version")
+        cfg_php=$(json_get "$cfg" "php_version")
+        cfg_pma=$(json_get "$cfg" "phpmyadmin_version")
+    fi
+
+    local v_apache="${cfg_apache:-$APACHE_VERSION}"
+    local v_maria="${cfg_maria:-$MARIADB_VERSION}"
+    local v_php="${cfg_php:-$PHP_VERSION}"
+    local v_pma="${cfg_pma:-$PHPMYADMIN_VERSION}"
+
+    local state="absent"
+    if [[ $STACK == 1 ]]; then
+        state="complete"
+    elif [[ $APACHE == 1 || $MARIADB == 1 || $PHP == 1 || $PHPMYADMIN == 1 ]]; then
+        state="partial"
+    fi
+
+    local apache_run maria_run php_run php_run_null=0
+    apache_run=$(svc_running_flag apache)
+    maria_run=$(svc_running_flag mariadb)
+    php_run=0
+    if php_via_apache; then
+        php_run_null=1
+    else
+        php_run=$(svc_running_flag php)
+    fi
+
+    local mode="none"
+    if [[ $apache_run == 1 || $maria_run == 1 || $php_run == 1 ]]; then
+        mode="service"
+    fi
+
+    services_registered_state
+    local apache_svc_name maria_svc_name
+    read -r apache_svc_name maria_svc_name <<< "$(service_names)"
+
+    # ---- Ports ----
+    local ports_json="" port is_up ours owner apache_ports="" maria_ports=""
+    for port in 80 3306; do
+        is_up=0
+        ours=0
+        owner=""
+        if tcp_port_listening "$port"; then
+            is_up=1
+            if port_owner_active "$port"; then
+                ours=1
+                if [[ "$port" == "80" ]]; then
+                    owner="$(apache_proc_name) (phpup)"
+                    apache_ports="80"
+                else
+                    owner="mariadbd (phpup)"
+                    maria_ports="3306"
+                fi
+            else
+                owner=$(port_holder_label "$port" 2>/dev/null)
+            fi
+        fi
+        local entry
+        entry=$(printf '{"port":%s,"listening":%s,"ours":%s,"owner":%s}' \
+            "$port" "$(jbool "$is_up")" "$(jbool "$ours")" "$(jstr "$owner")")
+        ports_json="${ports_json:+$ports_json,}$entry"
+    done
+
+    # ---- Warnings ----
+    CLI_WARNINGS=""
+    local p
+    for p in 80 3306; do
+        if tcp_port_listening "$p" && ! port_owner_active "$p"; then
+            if [[ $p == 80 ]]; then
+                add_warning "port_conflict" "apache" "Port $p is held by $(port_holder_label "$p" 2>/dev/null) — phpup cannot start this component"
+            else
+                add_warning "port_conflict" "mariadb" "Port $p is held by $(port_holder_label "$p" 2>/dev/null) — phpup cannot start this component"
+            fi
+        fi
+    done
+    [[ $state == "partial" ]] && add_warning "stack_partial" "" "The stack is partially installed"
+    if [[ $apache_run == 1 || $maria_run == 1 ]] && [[ $SVC_REGISTERED == 0 ]]; then
+        add_warning "services_not_registered" "" "Not registered with the platform service manager (no auto-start on boot)"
+    fi
+    if [[ $PHP == 1 ]] && ! command -v php &>/dev/null; then
+        add_warning "php_not_on_path" "php" "php is not on PATH"
+    fi
+
+    local sapi="null"
+    if [[ $PHP == 1 ]]; then
+        if php_via_apache; then sapi='"apache2handler"'; else sapi='"fpm"'; fi
+    fi
+
+    local cli_on_path=0
+    command -v php &>/dev/null && cli_on_path=1
+
+    local php_running="null"
+    [[ $php_run_null == 0 ]] && php_running=$(jbool "$php_run")
+
+    local pma_url="http://localhost/phpmyadmin"
+    local distro="${OS_DISTRO:-} ${OS_VERSION:-}"
+    distro="${distro# }"
+    distro="${distro% }"
+
+    local apache_pids_json maria_pids_json php_pids_json
+    if [[ $apache_run == 1 ]]; then
+        apache_pids_json=$(stack_pids -x "$(apache_proc_name)" | pids_json)
+    else
+        apache_pids_json="[]"
+    fi
+    if [[ $maria_run == 1 ]]; then
+        maria_pids_json=$(stack_pids -x mariadbd mysqld | pids_json)
+    else
+        maria_pids_json="[]"
+    fi
+    if [[ $php_run == 1 ]]; then
+        php_pids_json=$(stack_pids -f '(^|/)php-fpm' | pids_json)
+    else
+        php_pids_json="[]"
+    fi
+
+    local apache_ports_json="[]" maria_ports_json="[]"
+    [[ -n "$apache_ports" ]] && apache_ports_json="[\"$apache_ports\"]"
+    [[ -n "$maria_ports" ]] && maria_ports_json="[\"$maria_ports\"]"
+
+    # Globals for the human renderer (this function runs in the caller's shell).
+    CLI_STATE="$state"
+    CLI_INSTALL_PATH="$install_path"
+    CLI_SVCMODE="$mode"
+    CLI_REGISTERED="$SVC_REGISTERED"
+    CLI_AUTOSTART="$SVC_AUTOSTART"
+    CLI_APACHE_VER="$v_apache"
+    CLI_MARIA_VER="$v_maria"
+    CLI_PHP_VER="$v_php"
+    CLI_PMA_VER="$v_pma"
+    CLI_APACHE_RUN="$apache_run"
+    CLI_MARIA_RUN="$maria_run"
+    CLI_PHP_RUN="$php_run"
+    CLI_PHP_RUN_NULL="$php_run_null"
+    CLI_PMA_URL="$pma_url"
+
+    printf '{"schema":1,"generated_at":%s,"phpup":{"version":%s,"script":"sh"},' \
+        "$(jstr "$(iso_now)")" "$(jstr "$(script_version)")"
+    printf '"platform":{"os":"%s","arch":%s,"backend":"%s","distro":%s},' \
+        "$os_name" "$(jstr "$ARCH")" "$backend" "$(jstr "$distro")"
+    printf '"install":{"path":%s,"state":"%s","config_file":%s},' \
+        "$(jstr "$install_path")" "$state" "$(jstr "$CONFIG_FILE")"
+    printf '"services":{"mode":"%s","registered":%s,"autostart":%s,"items":[' \
+        "$mode" "$(jbool "$SVC_REGISTERED")" "$(jbool "$SVC_AUTOSTART")"
+    printf '{"name":"%s","registered":%s,"enabled":%s},' \
+        "$apache_svc_name" "$(jbool "$SVC_APACHE_REG")" "$(jbool "$SVC_APACHE_REG")"
+    printf '{"name":"%s","registered":%s,"enabled":%s}]},' \
+        "$maria_svc_name" "$(jbool "$SVC_MARIADB_REG")" "$(jbool "$SVC_MARIADB_REG")"
+
+    printf '"components":{'
+    printf '"apache":{"installed":%s,"version":%s,"running":%s,"pids":%s,"ports":%s,"service":%s,"owned_by_phpup":%s,"notes":null},' \
+        "$(jbool "$APACHE")" "$(jstr "$v_apache")" "$(jbool "$apache_run")" "$apache_pids_json" \
+        "$apache_ports_json" "$(jstr "$apache_svc_name")" "$(jbool "$apache_run")"
+    printf '"php":{"installed":%s,"version":%s,"label":%s,"prerelease":false,"running":%s,"pids":%s,"ports":[],"sapi":%s,"cli_on_path":%s,"series_floor":%s,"notes":null,"version_source":"config"},' \
+        "$(jbool "$PHP")" "$(jstr "$v_php")" "$(jstr "$v_php")" "$php_running" "$php_pids_json" \
+        "$sapi" "$(jbool "$cli_on_path")" "$(jstr "$PHP_MIN_SERIES")"
+    printf '"mariadb":{"installed":%s,"version":%s,"running":%s,"pids":%s,"ports":%s,"service":%s,"owned_by_phpup":%s,"notes":null},' \
+        "$(jbool "$MARIADB")" "$(jstr "$v_maria")" "$(jbool "$maria_run")" "$maria_pids_json" \
+        "$maria_ports_json" "$(jstr "$maria_svc_name")" "$(jbool "$maria_run")"
+    printf '"phpmyadmin":{"installed":%s,"version":%s,"running":null,"pids":[],"ports":[],"url":%s,"notes":null}},' \
+        "$(jbool "$PHPMYADMIN")" "$(jstr "$v_pma")" "$(jstr "$pma_url")"
+
+    printf '"urls":{"root":"http://localhost/","phpmyadmin":%s,"phpinfo":"http://localhost/phpinfo.php"},' "$(jstr "$pma_url")"
+    printf '"paths":{"www":%s,"logs":%s,"downloads":%s},' \
+        "$(jstr "$DOC_ROOT")" "$(jstr "$LOGS_DIR")" "$(jstr "${BASE_DIR}/downloads")"
+    printf '"logs":{"apache_error":%s,"apache_access":%s,"php_errors":%s,"mariadb_error":%s},' \
+        "$(jstr "${LOGS_DIR}/apache_error.log")" "$(jstr "${LOGS_DIR}/apache_access.log")" \
+        "$(jstr "${LOGS_DIR}/php_errors.log")" "$(jstr "$(maria_log_path)")"
+    printf '"prerequisites":null,"ports":[%s],"warnings":[%s],"errors":[]}' \
+        "$ports_json" "$CLI_WARNINGS"
+    printf '\n'
+}
+
+cli_human_status() {
+    printf 'phpup %s | %s %s | %s | %s\n' \
+        "$(script_version)" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$ARCH" "$CLI_STATE" "$CLI_INSTALL_PATH" >&3
+    printf 'Services: %s | registered: %s | autostart: %s\n' \
+        "$CLI_SVCMODE" \
+        "$([[ $CLI_REGISTERED == 1 ]] && echo true || echo false)" \
+        "$([[ $CLI_AUTOSTART == 1 ]] && echo true || echo false)" >&3
+    printf '\n' >&3
+    printf 'apache      %-10s %s\n' "$CLI_APACHE_VER" "$([[ $CLI_APACHE_RUN == 1 ]] && echo running || echo stopped)" >&3
+    if [[ $CLI_PHP_RUN_NULL == 1 ]]; then
+        printf 'php         %-10s served by apache\n' "$CLI_PHP_VER" >&3
+    else
+        printf 'php         %-10s %s\n' "$CLI_PHP_VER" "$([[ $CLI_PHP_RUN == 1 ]] && echo running || echo stopped)" >&3
+    fi
+    printf 'mariadb     %-10s %s\n' "$CLI_MARIA_VER" "$([[ $CLI_MARIA_RUN == 1 ]] && echo running || echo stopped)" >&3
+    printf 'phpmyadmin  %-10s %s\n' "$CLI_PMA_VER" "$CLI_PMA_URL" >&3
+}
+
+cmd_cli_status() {
+    if [[ $CLI_WATCH -gt 0 ]]; then
+        # One process, one NDJSON line per interval: process startup would
+        # otherwise dominate every poll.
+        while true; do
+            build_cli_status_json >&3
+            sleep "$CLI_WATCH"
+        done
+    fi
+    if [[ $CLI_JSON == 1 ]]; then
+        build_cli_status_json >&3
+    elif [[ $CLI_QUIET == 0 ]]; then
+        build_cli_status_json >/dev/null
+        cli_human_status
+    fi
+    CLI_EXIT=0
+}
+
+cmd_cli_version() {
+    if [[ $CLI_JSON == 1 ]]; then
+        printf '{"schema":1,"version":%s,"script":"sh"}\n' "$(jstr "$(script_version)")" >&3
+    elif [[ $CLI_QUIET == 0 ]]; then
+        printf 'phpup %s (phpup.sh)\n' "$(script_version)" >&3
+    fi
+    CLI_EXIT=0
+}
+
+cmd_cli_usage() {
+    [[ $CLI_QUIET == 1 ]] && { CLI_EXIT=0; return; }
+    cat >&3 <<'USAGE'
+phpup — Power tools for local PHP development
+
+Usage:
+  phpup.sh                            interactive dashboard
+  phpup.sh status [--fast] [--json]   report stack state
+  phpup.sh start|stop|restart         control services (idempotent)
+  phpup.sh version                    print version
+  phpup.sh help                       this text
+
+Flags:
+  --json      payload on stdout (logs on stderr)
+  --fast      status only: skip prerequisite checks (polling)
+  --watch N   status only: repeat every N seconds as NDJSON
+  --quiet     suppress human output
+
+Exit codes: 0 ok, 1 failed, 2 usage, 3 not installed, 4 elevation required, 5 port conflict
+USAGE
+    CLI_EXIT=0
+}
+
+cli_lifecycle_payload() {
+    local action="$1" ok="$2" code="$3" changed="$4" message="$5" components="${6:-}"
+    [[ -z "$components" ]] && components='{}'
+    printf '{"schema":1,"ok":%s,"code":%s,"action":"%s","changed":%s,"components":%s,"warnings":[],"errors":[%s]}\n' \
+        "$(jbool "$ok")" "$(jstr "$code")" "$action" "$(jbool "$changed")" "$components" "$(jstr "$message")" >&3
+}
+
+cmd_cli_lifecycle() {
+    local action="$1"
+    detect_all
+
+    if [[ $STACK == 0 ]]; then
+        [[ $CLI_JSON == 1 ]] && cli_lifecycle_payload "$action" 0 not_installed 0 "The web stack is not installed."
+        [[ $CLI_JSON == 0 && $CLI_QUIET == 0 ]] && printf '%s: failed: not_installed\n' "$action" >&3
+        CLI_EXIT=3
+        return
+    fi
+
+    # JSON mode cannot answer a sudo password prompt, so require a cached
+    # credential and let the caller relaunch elevated.
+    if [[ $CLI_JSON == 1 && $EUID -ne 0 ]] && ! sudo -n true 2>/dev/null; then
+        cli_lifecycle_payload "$action" 0 elevation_required 0 \
+            "Controlling the stack needs root. Run once in a terminal, or grant NOPASSWD for the phpup commands."
+        CLI_EXIT=4
+        return
+    fi
+
+    local before_a before_m
+    before_a=$(svc_running_flag apache)
+    before_m=$(svc_running_flag mariadb)
+
+    if [[ "$action" == "start" || "$action" == "restart" ]]; then
+        local busy_port
+        for busy_port in 80 3306; do
+            if tcp_port_listening "$busy_port" && ! port_owner_active "$busy_port"; then
+                cli_lifecycle_payload "$action" 0 port_conflict 0 \
+                    "Port $busy_port is held by $(port_holder_label "$busy_port" 2>/dev/null)"
+                CLI_EXIT=5
+                return
+            fi
+        done
+    fi
+
+    case "$action" in
+        start)   [[ $before_a == 1 && $before_m == 1 ]] || start_services ;;
+        stop)    [[ $before_a == 1 || $before_m == 1 ]] && stop_services ;;
+        restart) stop_services; sleep 1; start_services ;;
+    esac
+
+    local after_a after_m changed ok
+    after_a=$(svc_running_flag apache)
+    after_m=$(svc_running_flag mariadb)
+    changed=0
+    [[ "$before_a" != "$after_a" || "$before_m" != "$after_m" ]] && changed=1
+    ok=0
+    if [[ "$action" == "stop" ]]; then
+        [[ $after_a == 0 && $after_m == 0 ]] && ok=1
+    else
+        [[ $after_a == 1 && $after_m == 1 ]] && ok=1
+    fi
+
+    if [[ $CLI_JSON == 1 ]]; then
+        local json comps
+        json=$(build_cli_status_json)
+        comps=$(printf '%s' "$json" | sed -n 's/.*"components":\({.*}\),"urls".*/\1/p')
+        [[ -z "$comps" ]] && comps='{}'
+        local code=""
+        [[ $ok == 0 ]] && code="action_failed"
+        cli_lifecycle_payload "$action" "$ok" "$code" "$changed" "" "$comps"
+    elif [[ $CLI_QUIET == 0 ]]; then
+        printf '%s: %s (changed: %s)\n' "$action" \
+            "$([[ $ok == 1 ]] && echo ok || echo failed)" \
+            "$([[ $changed == 1 ]] && echo true || echo false)" >&3
+    fi
+    [[ $ok == 1 ]] && CLI_EXIT=0 || CLI_EXIT=1
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            status|start|stop|restart|version|help)
+                CLI_VERB="$1"; CLI_MODE=1 ;;
+            --json|-Json|json) CLI_JSON=1 ;;
+            --fast|-Fast|fast) CLI_FAST=1 ;;
+            --quiet|-Quiet|quiet) CLI_QUIET=1 ;;
+            --no-color|-NoColor) : ;;
+            --watch|-Watch)
+                shift
+                CLI_WATCH="${1:-2}"
+                [[ "$CLI_WATCH" =~ ^[0-9]+$ ]] || CLI_WATCH=2
+                CLI_MODE=1; CLI_VERB="${CLI_VERB:-status}"; CLI_JSON=1 ;;
+            --watch=*)
+                CLI_WATCH="${1#*=}"
+                [[ "$CLI_WATCH" =~ ^[0-9]+$ ]] || CLI_WATCH=2
+                CLI_MODE=1; CLI_VERB="${CLI_VERB:-status}"; CLI_JSON=1 ;;
+            --help|-Help) CLI_VERB=help; CLI_MODE=1 ;;
+            --version) CLI_VERB=version; CLI_MODE=1 ;;
+            *)
+                printf 'Unknown argument: %s\n' "$1" >&2
+                CLI_MODE=1; CLI_VERB=""; CLI_EXIT=2 ;;
+        esac
+        shift
+    done
+}
+
+run_cli() {
+    case "$CLI_VERB" in
+        status)  cmd_cli_status ;;
+        version) cmd_cli_version ;;
+        help)    cmd_cli_usage ;;
+        start|stop|restart) cmd_cli_lifecycle "$CLI_VERB" ;;
+        *)
+            [[ $CLI_EXIT == 2 ]] || printf 'Unknown command: %s\n' "$CLI_VERB" >&2
+            [[ $CLI_QUIET == 0 ]] && printf "Run 'phpup.sh help' for usage.\n" >&2
+            CLI_EXIT=2 ;;
+    esac
+}
+
+init_stack_env() {
+    # Shared by the dashboard and CLI paths. The Intel notice writes a marker
+    # file, so it stays out of CLI mode (status must not write to disk).
     if [[ $USE_APT == 0 ]]; then
         check_brew_path
         if brew --version &>/dev/null; then
@@ -3841,20 +4371,33 @@ main() {
             BREW_PREFIX=$(brew --prefix)
         fi
     fi
-
-    # Backend selection (MacPorts vs Homebrew on Intel macOS)
     detect_backend
     if [[ $USE_PORTS == 1 ]]; then
         export PATH="${PORT_PREFIX}/bin:${PORT_PREFIX}/sbin:${PATH}"
     fi
-    intel_brew_notice
-
-    # Migrate pre-1.2.0 config, then load persisted state
+    [[ $CLI_MODE == 0 ]] && intel_brew_notice
     migrate_config
     load_config
-
-    # Detect installed components
     detect_all
+}
+
+main() {
+    parse_args "$@"
+
+    if [[ $CLI_MODE == 1 ]]; then
+        # fd3 = the real stdout, reserved for the payload. Everything else,
+        # including every print_* helper, lands on stderr from here on.
+        exec 3>&1 1>&2
+        init_stack_env
+        run_cli
+        exit "$CLI_EXIT"
+    fi
+
+    # Reconnect stdin to terminal (needed when piped via curl | bash)
+    exec < /dev/tty
+
+    init_stack_env
+
 
     # Main loop
     while true; do
@@ -3940,4 +4483,4 @@ main() {
 }
 
 # ---- Run ----------------------------------------------------
-main
+main "$@"
