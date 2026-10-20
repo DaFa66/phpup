@@ -32,9 +32,18 @@ fn main() -> eframe::Result<()> {
     }));
 
     let settings = Settings::load();
+    let elevated = backend::is_elevated();
+
+    // `--run <verb>`: set when this instance was started by an elevated
+    // relaunch, so the action the user asked for happens without a second click.
+    let mut pending_verb: Option<String> = None;
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(pos) = argv.iter().position(|a| a == "--run") {
+        pending_verb = argv.get(pos + 1).cloned();
+    }
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("phpup")
+        .with_title(if elevated { "phpup — as administrator" } else { "phpup" })
         .with_app_id("phpup-panel")
         .with_inner_size([980.0, 700.0])
         .with_min_inner_size([760.0, 520.0]);
@@ -50,7 +59,7 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "phpup",
         options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, settings)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, settings, pending_verb)))),
     )
 }
 
@@ -65,6 +74,8 @@ struct Settings {
     interval: u32,
     /// 0.0 follows the OS; anything else is a fixed zoom factor.
     zoom: f32,
+    /// Elevate the whole panel at launch instead of per action.
+    always_admin: bool,
 }
 
 impl Default for Settings {
@@ -75,6 +86,7 @@ impl Default for Settings {
             script: None,
             interval: 2,
             zoom: 0.0,
+            always_admin: false,
         }
     }
 }
@@ -98,6 +110,7 @@ impl Settings {
             script: Option<String>,
             interval: Option<u32>,
             zoom: Option<f32>,
+            always_admin: Option<bool>,
         }
         let Some(path) = Self::path() else {
             return Self::default();
@@ -112,6 +125,7 @@ impl Settings {
                 script: raw.script,
                 interval: raw.interval.unwrap_or(2).clamp(1, 10),
                 zoom: raw.zoom.unwrap_or(0.0),
+                always_admin: raw.always_admin.unwrap_or(false),
             },
             Err(_) => Self::default(),
         }
@@ -128,6 +142,7 @@ impl Settings {
             "script": self.script,
             "interval": self.interval,
             "zoom": self.zoom,
+            "always_admin": self.always_admin,
         });
         let _ = std::fs::write(path, serde_json::to_string_pretty(&body).unwrap_or_default());
     }
@@ -212,6 +227,15 @@ struct App {
     brand: Option<assets::Brand>,
     about_open: bool,
     quitting: bool,
+    /// This process is running with an elevated token.
+    elevated: bool,
+    /// Verb to run once an elevated relaunch completes.
+    pending_verb: Option<String>,
+    title_applied: bool,
+    /// The elevated instance started; shut this one down.
+    relaunch_ok: bool,
+    /// One-shot: the startup elevation attempt has been made.
+    startup_elevation_done: bool,
     applied_zoom: Option<f32>,
     script_input: String,
     applied_dark: Option<bool>,
@@ -223,7 +247,7 @@ struct App {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, settings: Settings) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, settings: Settings, pending_verb: Option<String>) -> Self {
         let (tx, rx) = backend::channel_pair();
         let brand = assets::load(&cc.egui_ctx);
 
@@ -248,6 +272,11 @@ impl App {
             settings_open: !Settings::path().map(|p| p.is_file()).unwrap_or(false),
             about_open: false,
             quitting: false,
+            elevated: backend::is_elevated(),
+            pending_verb,
+            title_applied: false,
+            relaunch_ok: false,
+            startup_elevation_done: false,
             applied_zoom: None,
             brand,
             script_input: String::new(),
@@ -260,6 +289,27 @@ impl App {
         };
         app.push_log("panel ready".to_string());
         app.attach();
+        if app.backend.is_some() {
+            if let Some(verb) = app.pending_verb.take() {
+                // start_action takes a &'static str: the panel only ever runs
+                // these three verbs, so map the argument onto one of them.
+                let known = match verb.as_str() {
+                    "start" => Some("start"),
+                    "stop" => Some("stop"),
+                    "restart" => Some("restart"),
+                    _ => None,
+                };
+                match known {
+                    Some(v) => {
+                        app.push_log(format!(
+                            "running {v} as requested by the elevated relaunch"
+                        ));
+                        app.start_action(v);
+                    }
+                    None => app.push_log(format!("ignoring unknown --run verb: {verb}")),
+                }
+            }
+        }
         if app.tray.is_none() {
             app.push_log("tray icon unavailable on this desktop".to_string());
         }
@@ -460,6 +510,13 @@ impl App {
                         },
                     });
                 }
+                Event::Relaunched(res) => match res {
+                    Ok(()) => {
+                        self.push_log("elevated instance is starting; closing this one".to_string());
+                        self.relaunch_ok = true;
+                    }
+                    Err(e) => self.push_log(format!("elevation failed: {e}")),
+                },
                 Event::Log(line) => self.push_log(line),
                 Event::Failed(msg) => {
                     self.action = None;
@@ -747,6 +804,7 @@ impl App {
         let mut dirty = false;
         let mut do_attach = false;
         let mut refresh = false;
+        let mut elevate_now = false;
         let mut open = self.settings_open;
         let mut want_close = false;
 
@@ -781,6 +839,9 @@ impl App {
                         match &self.status {
                             Some(s) => {
                                 let mut facts = vec![s.stack_state().to_string()];
+                                if self.elevated {
+                                    facts.push("administrator".to_string());
+                                }
                                 if let Some(mode) = &s.services.mode {
                                     facts.push(format!("{mode} mode"));
                                 }
@@ -907,6 +968,61 @@ impl App {
                         );
 
                         ui.add_space(16.0);
+                        section_label(ui, p, "PRIVILEGES");
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(if self.elevated {
+                                    "Running as administrator. Actions that touch the services will not prompt."
+                                } else {
+                                    "Not elevated. Actions that touch the services will ask for Administrator."
+                                })
+                                .size(11.0)
+                                .color(p.muted),
+                            )
+                            .wrap(),
+                        );
+                        ui.add_space(6.0);
+                        let mut always = self.settings.always_admin;
+                        if ui
+                            .checkbox(
+                                &mut always,
+                                RichText::new("Always run as administrator").size(12.0).color(p.text),
+                            )
+                            .changed()
+                        {
+                            self.settings.always_admin = always;
+                            dirty = true;
+                            self.push_log(
+                                if always {
+                                    "administrator mode on: the panel elevates itself at launch"
+                                } else {
+                                    "administrator mode off: actions ask only when they need it"
+                                }
+                                .to_string(),
+                            );
+                        }
+                        ui.add(egui::Label::new(
+                            RichText::new("One prompt at launch, then no interruptions.")
+                                .size(10.5)
+                                .color(p.muted),
+                        ));
+                        if !self.elevated {
+                            ui.add_space(6.0);
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Run as administrator now").color(p.accent_text),
+                                    )
+                                    .fill(p.accent)
+                                    .corner_radius(CornerRadius::same(8)),
+                                )
+                                .clicked()
+                            {
+                                elevate_now = true;
+                            }
+                        }
+
+                        ui.add_space(14.0);
                         section_label(ui, p, "SOURCE");
                         ui.horizontal(|ui| {
                             for src in [Source::Github, Source::Local] {
@@ -1034,6 +1150,18 @@ impl App {
                 }
             }
         }
+        if elevate_now {
+            let tx = self.tx.clone();
+            self.push_log("raising the panel to administrator".to_string());
+            std::thread::spawn(move || match backend::relaunch_panel(None) {
+                Ok(()) => {
+                    let _ = tx.send(Event::Relaunched(Ok(())));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Log(format!("  elevation failed: {e}")));
+                }
+            });
+        }
         if do_attach {
             self.attach();
         }
@@ -1073,7 +1201,7 @@ impl App {
                                         if ui
                                             .add(
                                                 egui::Button::new(
-                                                    RichText::new("Run elevated")
+                                                    RichText::new("Run as administrator")
                                                         .color(ON_ACCENT)
                                                         .strong(),
                                                 )
@@ -1121,20 +1249,51 @@ impl App {
         if open_settings {
             self.settings_open = true;
         }
-        // Elevate the verb, not the panel: no second instance, no stray console.
+        // Elevate the panel itself: one UAC prompt, then every later action runs
+        // without asking again. The verb is handed to the new instance.
         if let Some(verb) = elevated {
             if let Some(be) = &self.backend {
                 let script = be.script.clone();
                 let tx = self.tx.clone();
                 self.push_log(format!("> {verb} (elevated)"));
-                std::thread::spawn(move || match backend::run_elevated(&script, &verb) {
-                    Ok(()) => {
-                        let _ = tx.send(Event::Log(
-                            "  UAC accepted; the live view follows in a moment".to_string(),
-                        ));
+                let always = self.settings.always_admin;
+                std::thread::spawn(move || {
+                    // Administrator mode elevates the panel and hands it the verb;
+                    // otherwise only this one action is elevated.
+                    if always {
+                        match backend::relaunch_panel(Some(&verb)) {
+                            Ok(()) => {
+                                let _ = tx.send(Event::Relaunched(Ok(())));
+                                return;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Event::Log(format!("  panel elevation declined: {e}")));
+                            }
+                        }
+                    } else {
+                        match backend::run_elevated(&script, &verb) {
+                            Ok(()) => {
+                                let _ = tx.send(Event::Log(
+                                    "  ran the action elevated; panel stays unelevated".to_string(),
+                                ));
+                                return;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Event::Log(format!("  elevation failed: {e}")));
+                                return;
+                            }
+                        }
                     }
-                    Err(e) => {
-                        let _ = tx.send(Event::Log(format!("  elevation failed: {e}")));
+                    // Administrator mode failed: fall back to a one-off elevation.
+                    match backend::run_elevated(&script, &verb) {
+                        Ok(()) => {
+                            let _ = tx.send(Event::Log(
+                                "  ran the action elevated instead; panel stays unelevated".to_string(),
+                            ));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Event::Log(format!("  elevation failed: {e}")));
+                        }
                     }
                 });
                 self.admin_verb = None;
@@ -1336,6 +1495,41 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.drain();
+
+        // Windows does not decorate the title bar for elevated processes the way
+        // it does for the UAC prompt, so say it plainly.
+        if !self.title_applied {
+            let title = if self.elevated { "phpup — as administrator" } else { "phpup" };
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_string()));
+            self.title_applied = true;
+        }
+
+        // Administrator mode: raise the panel once, at launch, so the user is
+        // not prompted mid-session every time a service action runs.
+        if !self.startup_elevation_done {
+            self.startup_elevation_done = true;
+            if self.settings.always_admin && !self.elevated {
+                self.push_log("administrator mode is on: asking for elevation".to_string());
+                let tx = self.tx.clone();
+                std::thread::spawn(move || match backend::relaunch_panel(None) {
+                    Ok(()) => {
+                        let _ = tx.send(Event::Relaunched(Ok(())));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Event::Log(format!(
+                            "  elevation declined ({e}); continuing without it"
+                        )));
+                    }
+                });
+            }
+        }
+
+        if self.relaunch_ok {
+            self.relaunch_ok = false;
+            self.quitting = true;
+            self.tray = None;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
 
         // egui owns "follow the system": ThemePreference::System is resolved by
         // winit's OS preference, so nothing platform-specific lives here.

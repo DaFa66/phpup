@@ -227,6 +227,8 @@ pub enum Event {
     Status(Box<Status>),
     /// One line of human output from phpup (its stderr channel).
     Log(String),
+    /// The elevated instance is starting, so this one should shut down.
+    Relaunched(Result<(), String>),
     ActionFinished {
         verb: String,
         exit: i32,
@@ -705,5 +707,74 @@ pub fn open_in_default_app(target: &str) {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = Command::new("xdg-open").arg(target).spawn();
+    }
+}
+
+/// True when this process already holds an elevated token.
+///
+/// `whoami /groups` costs ~20ms and, unlike spawning PowerShell, does not make
+/// the panel feel like it is starting twice.
+pub fn is_elevated() -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut c = Command::new("whoami.exe");
+        c.arg("/groups");
+        c.creation_flags(CREATE_NO_WINDOW);
+        match c.output() {
+            // S-1-16-12288 is High mandatory level, S-1-16-16384 is System.
+            Ok(out) => {
+                let groups = String::from_utf8_lossy(&out.stdout);
+                groups.contains("S-1-16-12288") || groups.contains("S-1-16-16384")
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new("id")
+            .arg("-u")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+            .unwrap_or(false)
+    }
+}
+
+/// Relaunch the panel elevated, optionally running a verb once it starts.
+///
+/// Blocks until the user answers UAC: `Ok` means the elevated instance is on its
+/// way, so the caller should drop its tray icon and exit. `Err` means the prompt
+/// was declined or could not be shown.
+pub fn relaunch_panel(pending: Option<&str>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe = exe.display().to_string().replace('\'', "''");
+        let args = match pending {
+            Some(verb) => format!("--run {verb}"),
+            None => String::new(),
+        };
+        let inner = if args.is_empty() {
+            format!("Start-Process -FilePath '{exe}' -Verb RunAs")
+        } else {
+            format!("Start-Process -FilePath '{exe}' -Verb RunAs -ArgumentList '{args}'")
+        };
+        let mut c = Command::new("powershell.exe");
+        c.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &inner]);
+        c.creation_flags(CREATE_NO_WINDOW);
+        let status = c.status().map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("UAC declined".to_string())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pending;
+        Err("not supported on this platform".to_string())
     }
 }
