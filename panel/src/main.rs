@@ -814,7 +814,14 @@ impl App {
             .frame(
                 Frame::group(ui.style())
                     .fill(p.surface)
-                    .inner_margin(Margin::same(18))
+                    // Extra right margin: the auto scrollbar otherwise sits on
+                    // top of the last column of text and clips it.
+                    .inner_margin(Margin {
+                        left: 18,
+                        right: 26,
+                        top: 18,
+                        bottom: 18,
+                    })
                     .stroke(Stroke::new(1.0, p.border)),
             )
             .show_collapsible(ui, &mut open, |ui| {
