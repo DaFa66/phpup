@@ -151,7 +151,7 @@ The dashboard's **Process Status** section groups the web server with its PHP en
 
 If one or more components are missing (a failed `fu` apply, a manually deleted folder, an interrupted install), the dashboard shows a **partial stack detected** notice and offers **I** Install as the recovery path. Install skips components already at or above the latest version (Apache, PHP, MariaDB, and phpMyAdmin are all checked) and installs only what's missing — websites, databases, and settings are preserved.
 
-MariaDB upgrades are data-safe: the install path stops the services, backs up the data directory to `data_backup_update\`, extracts the new version, and restores the data before restarting. This applies to both online installs and `-Offline` cached-zip installs.
+Upgrades are safe by construction on Windows. MariaDB keeps its data: the install path stops the services, backs up the data directory to `data_backup_update\`, extracts the new version, and restores the data before restarting. Apache and PHP are stop-then-replace as well: the stack is stopped and the destination folder is cleared before extracting, because a running `httpd` memory-maps `php8ts.dll` and the loaded extension DLLs, and overwriting a mapped file fails without an error. After extraction PHP is verified (`php.exe -v`, with no extension load failures) and every dependency DLL copied into `Apache\bin` is size-checked, so a bad install is reported at that point instead of surfacing later as Apache refusing to start. This applies to both online installs and `-Offline` cached-zip installs.
 
 ## Service Registration
 

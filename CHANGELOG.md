@@ -13,9 +13,9 @@ overview of every release.
 
 ---
 
-## [Unreleased]
+## [2.5.0-win] / [1.3.0-nix] — 2026-10-22
 
-### Windows (phpup.ps1 → 2.5.0) and macOS/Linux (phpup.sh → 1.3.0)
+### Windows (phpup.ps1 v2.5.0) and macOS/Linux (phpup.sh v1.3.0)
 
 Feature release adding a machine-readable CLI, so a GUI, tray app or CI job can drive phpup
 without the interactive dashboard. Contract: [`docs/CLI.md`](docs/CLI.md).
@@ -102,6 +102,31 @@ without the interactive dashboard. Contract: [`docs/CLI.md`](docs/CLI.md).
   errors. Adding a UTF-8 BOM fixes it: 5.1 now parses and runs the script, `pwsh` behaviour is
   unchanged, and the non-ASCII banner and em dashes decode correctly (verified: the em dash
   reports as char 8212 under 5.1 rather than as three mojibake bytes).
+- **A PHP upgrade could leave the install unloadable and still report success** — the `I`/`U`
+  path extracted Apache and PHP straight over a live stack. httpd maps `php8ts.dll`, the
+  loaded extension DLLs and their dependencies, so `Expand-Archive`'s overwrite failed
+  NON-terminating, `Invoke-ExtractZip` still printed `[ OK ] PHP extracted`, and
+  `Invoke-CopyPhpDlls`' `Copy-Item -Force` into `Apache\bin` failed the same way. The result
+  was six extensions (openssl, curl, fileinfo, gd, intl, mbstring) failing with
+  `The specified procedure could not be found`, and Apache refusing to serve. The install
+  path now stops the stack and clears the destination before extracting Apache/PHP, exactly
+  as the MariaDB branch already did.
+- **Extraction failures were reported as successes** — `Expand-Archive` is now
+  `-ErrorAction Stop` in `Invoke-ExtractZip` and `Invoke-DownloadAndExtract`, an empty
+  destination throws, and nothing prints `[ OK ] extracted` unless it really extracted.
+  `Invoke-CopyPhpDlls` size-verifies every copy, so a DLL locked by a running service is
+  reported instead of being claimed as `Copied`.
+- **PHP is verified after extraction** — new `Test-PhpRuntimeHealthy` runs `php.exe -v` and
+  rejects a tree whose extensions fail to load, matching both PHP wordings
+  (`Unable to load dynamic library` and `Unable to initialize module`). It runs in the
+  install path and on the `fu` apply path, so a bad PHP tree is named at extraction time
+  instead of being blamed on Apache later.
+- **A service set to `Disabled` only ever reported "check Windows Event Viewer"** —
+  `Start-WebStackServices` swallowed `Start-Service`'s error with `-ErrorAction
+  SilentlyContinue` and sampled the status once after a fixed sleep. New `Start-PhpupService`
+  reads the start type first (a `Disabled` service can never start, so it is set back to
+  Automatic), surfaces the real exception, and polls for `Running`. Used for Apache and
+  MariaDB.
 
 ### Verified
 - `bash -n` clean. Windows: `pwsh` parse clean; `status --json` validated as JSON on a live
@@ -121,6 +146,19 @@ without the interactive dashboard. Contract: [`docs/CLI.md`](docs/CLI.md).
   `status --fast` on this machine), which is startup, not script work.
 - Note for the GUI: launch with `powershell.exe` (5.1, present everywhere) or `pwsh` (7); both
   work now. Keep the BOM in the file, or 5.1 support silently reappears as a parse failure.
+- **Windows upgrade round trip verified live** (2026-10-22, Apache 2.4.69, MariaDB 13.0.2,
+  phpMyAdmin 5.2.3): `fu` moved PHP 8.5.12 → 8.4.27 and back to 8.5.12 through the real
+  interactive menu. Each hop stopped the services, cleared and re-extracted PHP, copied the
+  dependency DLLs (`[ OK ] Copied` for all seven), printed
+  `[ OK ] PHP <version> verified - core and extensions load`, and restarted both services.
+  After the return trip the tree matched the 8.5.12 manifest exactly (79 files plus `php.ini`,
+  no stale or missing entries) and all ten enabled extensions reported LOADED through
+  `mod_php` (`apache2handler`).
+- **Upgrade-path sandbox tests against the real zips**: extraction into a destination holding
+  a locked file returns false and never prints `[ OK ] extracted`; a locked dependency DLL
+  copy is reported as `Could not copy ...` rather than `Copied`; cross-minor extension drift
+  (8.4 extensions in an 8.5 tree) is rejected by `Test-PhpRuntimeHealthy`; patch-level drift
+  was disproved as a cause, because 8.5.11 extension DLLs over an 8.5.12 core load cleanly.
 
 
 ## [1.2.7-nix] — 2026-09-13
@@ -1027,6 +1065,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**2.5.0-win**](#250-win--130-nix--2026-10-22) | 2026-10-22 | Machine-readable CLI (`status`/`start`/`stop`/`restart`, `--json`, `--watch`) + Rust control panel; upgrades stop the stack before re-extracting PHP and verify the extensions load |
 | [**2.4.5-win**](#245-win--2026-09-06) | 2026-09-06 | Refuses to start into another stack's ports; names the holder |
 | [**2.4.4-win**](#244-win--2026-08-30) | 2026-08-30 | Download progress bars restored, delete/extract progress silenced, %APPDATA% pointer default-path only |
 | [**2.4.3-win**](#243-win--2026-08-30) | 2026-08-30 | fu download `True` path fix, Listen dedupe, partial-stack recovery notice, MariaDB data backup before upgrade, PMA skip |
@@ -1053,6 +1092,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**1.3.0-nix**](#250-win--130-nix--2026-10-22) | 2026-10-22 | Machine-readable CLI (`status`/`start`/`stop`/`restart`), `--json`, `--watch`, documented exit codes |
 | [**1.2.7-nix**](#127-nix--2026-09-13) | 2026-09-13 | `fu` version-switch menu: stderr stream contract, 1-based selection, unlink guard |
 | [**1.2.6-nix**](#126-nix--2026-09-12) | 2026-09-12 | Stack-aware service status, Apache PHP module follows the active formula, dashboard reports the served PHP |
 | [**1.2.5-nix**](#125-nix--2026-09-06) | 2026-09-06 | Update flow PMA control-user password drift fixed (configure after start, stable pass) |
