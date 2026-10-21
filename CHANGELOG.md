@@ -127,6 +127,20 @@ without the interactive dashboard. Contract: [`docs/CLI.md`](docs/CLI.md).
   reads the start type first (a `Disabled` service can never start, so it is set back to
   Automatic), surfaces the real exception, and polls for `Running`. Used for Apache and
   MariaDB.
+- **`start_services` claimed success on Linux even when a unit had failed** — the apt branch
+  ran `systemctl start ... 2>/dev/null` for Apache, MariaDB and the active PHP-FPM unit with
+  no verification, then printed `Services started` unconditionally. Each unit is now checked
+  with `systemctl is-active`, a failure is named (with the matching `journalctl` command) and
+  the function returns 1, so the existing `start_services || print_warn ...` call sites fire.
+  The brew and ports branches set the same failure flag, so no branch can fall through to a
+  success message.
+- **A failed phpMyAdmin unpack was recorded as an installed version** — `install_pma_tarball`
+  ignored `tar`'s exit status (and the first `mv`'s), then wrote `phpup-version.txt` and
+  returned 0. A bad tarball or an unpack that produced nothing now fails loudly, and the
+  version is only stamped once `index.php` is present.
+- **`switch_php_apt` reported the meta-package sync as successful** — the `apt-get
+  --only-upgrade` call ended in `|| true` followed by an unconditional `print_ok`. A failed
+  sync now warns and continues with what is installed instead of claiming success.
 
 ### Verified
 - `bash -n` clean. Windows: `pwsh` parse clean; `status --json` validated as JSON on a live
@@ -159,6 +173,12 @@ without the interactive dashboard. Contract: [`docs/CLI.md`](docs/CLI.md).
   copy is reported as `Could not copy ...` rather than `Copied`; cross-minor extension drift
   (8.4 extensions in an 8.5 tree) is rejected by `Test-PhpRuntimeHealthy`; patch-level drift
   was disproved as a cause, because 8.5.11 extension DLLs over an 8.5.12 core load cleanly.
+- **Nix failure paths verified on Ubuntu 24.04.4 LTS (bash 5.2.21)** using AST-style function
+  extraction with stubbed `systemctl`/`stack_proc`: all services up returns 0 and prints
+  `Services started`; Apache, MariaDB and PHP-FPM failures each return 1, name the failing
+  unit and never print `Services started`. `install_pma_tarball`: a good tarball installs and
+  stamps the version, while a corrupt tarball and an unpack missing `index.php` both return 1
+  and leave no version stamp. 19 assertions, 19 passed.
 
 
 ## [1.2.7-nix] — 2026-09-13
