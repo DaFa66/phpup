@@ -1250,14 +1250,38 @@ start_services() {
         return 1
     fi
     print_info "Starting services..."
+    # A branch that fails to bring a service up must not fall through to
+    # "Services started". That is what the Windows side used to do, and it is how
+    # a dead Apache got reported as healthy.
+    local start_failed=0
     if [[ $USE_APT == 1 ]]; then
-        [[ $APACHE == 1 ]] && sudo systemctl start apache2 2>/dev/null
-        [[ $MARIADB == 1 ]] && sudo systemctl start mariadb 2>/dev/null
+        # systemctl's failure used to be discarded with 2>/dev/null and the
+        # function still printed "Services started". Verify each unit instead.
+        if [[ $APACHE == 1 ]]; then
+            sudo systemctl start apache2 2>/dev/null || true
+            if ! systemctl is-active --quiet apache2; then
+                print_err "Apache failed to start — check: journalctl -u apache2 -n 30"
+                start_failed=1
+            fi
+        fi
+        if [[ $MARIADB == 1 ]]; then
+            sudo systemctl start mariadb 2>/dev/null || true
+            if ! systemctl is-active --quiet mariadb; then
+                print_err "MariaDB failed to start — check: journalctl -u mariadb -n 30"
+                start_failed=1
+            fi
+        fi
         # Start only the ACTIVE FPM version — others stay stopped
         if [[ $PHP == 1 ]]; then
             local fpm_ver
             fpm_ver=$(fpm_active_version || true)
-            [[ -n "$fpm_ver" ]] && sudo systemctl start "php${fpm_ver}-fpm" 2>/dev/null
+            if [[ -n "$fpm_ver" ]]; then
+                sudo systemctl start "php${fpm_ver}-fpm" 2>/dev/null || true
+                if ! systemctl is-active --quiet "php${fpm_ver}-fpm"; then
+                    print_err "PHP ${fpm_ver}-fpm failed to start — check: journalctl -u php${fpm_ver}-fpm -n 30"
+                    start_failed=1
+                fi
+            fi
         fi
     elif [[ $USE_PORTS == 1 ]]; then
         if [[ $APACHE == 1 ]]; then
@@ -1270,6 +1294,7 @@ start_services() {
             if [[ $apache_started == 0 ]]; then
                 print_err "Apache may have failed to start — check ${LOGS_DIR}/apache_error.log"
                 sudo "${PORT_PREFIX}/sbin/apachectl" configtest 2>&1 | tail -3
+                start_failed=1
             fi
         fi
         if [[ $MARIADB == 1 ]]; then
@@ -1281,6 +1306,7 @@ start_services() {
             done
             if [[ $mariadb_started == 0 ]]; then
                 print_err "MariaDB failed to start — check ${PORT_PREFIX}/var/log/${MARIADB_PORT}/mariadb_error.log"
+                start_failed=1
                 tail -50 "${PORT_PREFIX}/var/log/${MARIADB_PORT}/mariadb_error.log" 2>/dev/null || \
                     tail -50 "${PORT_PREFIX}/var/db/${MARIADB_PORT}/"*.err 2>/dev/null || true
             fi
@@ -1295,6 +1321,7 @@ start_services() {
             else
                 print_err "Apache may have failed to start — check ${LOGS_DIR}/apache_error.log"
                 sudo "${BREW_PREFIX}/bin/apachectl" configtest 2>&1 | tail -3
+                start_failed=1
             fi
         fi
 
@@ -1307,6 +1334,7 @@ start_services() {
             done
             if [[ $mariadb_started == 0 ]]; then
                 print_err "MariaDB failed to start — check ${LOGS_DIR}/mariadb_error.log"
+                start_failed=1
                 tail -50 "${LOGS_DIR}/mariadb_error.log" 2>/dev/null || true
             fi
         fi
@@ -1322,10 +1350,17 @@ start_services() {
                 stack_proc -f "(^|/)php-fpm" &>/dev/null && { print_ok "PHP-FPM started"; break; }
                 sleep 1
             done
-            stack_proc -f "(^|/)php-fpm" &>/dev/null || print_err "PHP-FPM failed to start — check ${LOGS_DIR}/php_errors.log"
+            if ! stack_proc -f "(^|/)php-fpm" &>/dev/null; then
+                print_err "PHP-FPM failed to start — check ${LOGS_DIR}/php_errors.log"
+                start_failed=1
+            fi
         fi
     fi
     sleep 2
+    if [[ $start_failed -eq 1 ]]; then
+        print_err "One or more services did not start — see the messages above."
+        return 1
+    fi
     print_ok "Services started"
 }
 
@@ -3283,12 +3318,29 @@ install_pma_tarball() {
     # Remove old install
     sudo rm -rf "$pma_dir"
 
-    # Extract
+    # Extract. Check the result: a failed extract must not be recorded as an
+    # installed phpMyAdmin. (The Windows side had exactly this bug — a failed
+    # Expand-Archive still printed "[ OK ] extracted".)
     print_info "Extracting phpMyAdmin..."
     sudo mkdir -p "$pma_dir"
-    sudo tar -xzf "${tmp_dir}/phpmyadmin.tar.gz" -C "$tmp_dir"
-    sudo mv "${tmp_dir}/phpMyAdmin-${version}-all-languages"/* "$pma_dir/"
+    if ! sudo tar -xzf "${tmp_dir}/phpmyadmin.tar.gz" -C "$tmp_dir"; then
+        print_err "phpMyAdmin extraction failed — the tarball may be truncated."
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    if ! sudo mv "${tmp_dir}/phpMyAdmin-${version}-all-languages"/* "$pma_dir/" 2>/dev/null; then
+        print_err "phpMyAdmin extraction produced no files for ${version}."
+        rm -rf "$tmp_dir"
+        return 1
+    fi
     sudo mv "${tmp_dir}/phpMyAdmin-${version}-all-languages"/.* "$pma_dir/" 2>/dev/null || true
+
+    # Only stamp the version once something actually landed.
+    if [[ ! -f "$pma_dir/index.php" ]]; then
+        print_err "phpMyAdmin install is incomplete — ${pma_dir}/index.php is missing."
+        rm -rf "$tmp_dir"
+        return 1
+    fi
 
     # Write version file for detection
     echo "$version" | sudo tee "$pma_dir/phpup-version.txt" > /dev/null
@@ -3347,10 +3399,13 @@ switch_php_apt() {
     # Sync php meta packages to the repo's versions so U doesn't list them
     # (metas are pointers only — active versioned FPM is untouched)
     print_info "Syncing PHP meta packages..."
-    sudo apt-get install --only-upgrade -y \
+    if ! sudo apt-get install --only-upgrade -y \
         php php-curl php-gd php-intl php-mbstring php-mysql php-sqlite3 \
-        php-xml php-zip php-bcmath php-bz2 php-fpm &>/dev/null || true
-    print_ok "PHP meta packages up to date"
+        php-xml php-zip php-bcmath php-bz2 php-fpm &>/dev/null; then
+        print_warn "PHP meta packages could not be synced — continuing with what is installed."
+    else
+        print_ok "PHP meta packages up to date"
+    fi
 
     # Current active version
     local current
