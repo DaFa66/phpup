@@ -945,7 +945,13 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
         # flashes over the dashboard; downloads keep theirs.
         $prevProgress = $ProgressPreference
         $ProgressPreference = 'SilentlyContinue'
-        Expand-Archive -Path $zipPath -DestinationPath $dest -Force
+        try {
+            Expand-Archive -Path $zipPath -DestinationPath $dest -Force -ErrorAction Stop
+        }
+        catch {
+            $ProgressPreference = $prevProgress
+            throw "$label extraction failed (files locked by a running service?): $($_.Exception.Message)"
+        }
         $ProgressPreference = $prevProgress
     } else {
         try {
@@ -963,7 +969,13 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
         Write-Info "Extracting to $dest..."
         $prevProgress = $ProgressPreference
         $ProgressPreference = 'SilentlyContinue'
-        Expand-Archive -Path $zipPath -DestinationPath $dest -Force
+        try {
+            Expand-Archive -Path $zipPath -DestinationPath $dest -Force -ErrorAction Stop
+        }
+        catch {
+            $ProgressPreference = $prevProgress
+            throw "$label extraction failed (files locked by a running service?): $($_.Exception.Message)"
+        }
         $ProgressPreference = $prevProgress
     }
 
@@ -1000,6 +1012,10 @@ function Invoke-DownloadAndExtract($url, $dest, $label) {
         }
     }
 
+    if (-not (Get-ChildItem $dest -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        throw "$label extraction produced no files in $dest"
+    }
+
     Write-Ok "$label extracted"
 }
 
@@ -1010,7 +1026,26 @@ function Invoke-ExtractZip($zipPath, $dest, $label) {
 
     Write-Host ""
     Write-Info "Extracting $label from $zipPath..."
-    Expand-Archive -Path $zipPath -DestinationPath $dest -Force
+    # -ErrorAction Stop matters: Expand-Archive's failure is NON-terminating by
+    # default, so a locked file (a running httpd holding php8ts.dll and the
+    # loaded extension DLLs) used to sail straight through to "[ OK ] extracted"
+    # and leave a half-old/half-new tree behind.
+    try {
+        Expand-Archive -Path $zipPath -DestinationPath $dest -Force -ErrorAction Stop
+    }
+    catch {
+        $ProgressPreference = $prevProgress
+        Write-Err "$label extraction FAILED: $($_.Exception.Message)"
+        Write-Info "  A partial extract usually means files were locked by a running service."
+        Write-Info "  Stop the stack, then re-run the install."
+        return $false
+    }
+
+    if (-not (Get-ChildItem $dest -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        $ProgressPreference = $prevProgress
+        Write-Err "$label extraction produced no files in $dest"
+        return $false
+    }
 
     # Flatten wrapper folder if present
     $allItems = @(Get-ChildItem $dest -Force)
@@ -1044,6 +1079,7 @@ function Invoke-ExtractZip($zipPath, $dest, $label) {
 
     $ProgressPreference = $prevProgress
     Write-Ok "$label extracted"
+    return $true
 }
 
 # ============================================================
@@ -1367,10 +1403,102 @@ function Invoke-CopyPhpDlls {
         $src = "$PHP_PATH\$dll"
         $dst = "$APACHE_PATH\bin\$dll"
         if (Test-Path $src) {
-            Copy-Item $src $dst -Force
+            # A running httpd maps these DLLs, and Copy-Item's failure is
+            # NON-terminating: the stale file stays in apache\bin and PHP's
+            # extensions then load against a mismatched dependency, which surfaces
+            # as "The specified procedure could not be found". Verify instead of
+            # assuming the copy landed.
+            try {
+                Copy-Item $src $dst -Force -ErrorAction Stop
+            }
+            catch {
+                Write-Err "Could not copy $dll into Apache bin: $($_.Exception.Message)"
+                Write-Info "  Stop the stack first - httpd holds these DLLs open."
+                continue
+            }
+            if ((Get-Item $src).Length -ne (Get-Item $dst).Length) {
+                Write-Err "$dll did not copy cleanly (size mismatch) - Apache bin still has a stale copy"
+                continue
+            }
             Write-Ok "Copied $dll"
         }
     }
+}
+
+function Test-PhpRuntimeHealthy {
+# Post-extract sanity check for PHP. A version-mismatched ext/ folder loads the
+# core happily but fails on the extensions that depend on external DLLs
+# (openssl, curl, fileinfo, gd, intl, mbstring) - which is exactly how an 8.5.12
+# update broke this stack in Oct 2026. Returns @{ Ok = $bool; Detail = '...' }.
+    $exe = "$PHP_PATH\php.exe"
+    if (-not (Test-Path $exe)) {
+        return @{ Ok = $false; Detail = "php.exe is missing from $PHP_PATH" }
+    }
+
+    $out = (& $exe -v 2>&1 | Out-String)
+    # Two distinct wordings both mean a mismatched tree:
+    #   "Unable to load dynamic library 'x' ... The specified procedure could not
+    #    be found" — same module API, different build (8.5.11 ext over 8.5.12 core)
+    #   "x: Unable to initialize module ... compiled with module API=N" — different
+    #    minor (e.g. 8.4 extension files left behind by 8.5)
+    if ($out -match 'Unable to load dynamic library|Unable to initialize module|compiled with module API') {
+        $bad = @()
+        $bad += @([regex]::Matches($out, "dynamic library '([^']+)'") | ForEach-Object { $_.Groups[1].Value })
+        $bad += @([regex]::Matches($out, 'PHP Startup:\s+([A-Za-z0-9_]+): Unable to initialize module') | ForEach-Object { $_.Groups[1].Value })
+        $bad = @($bad | Select-Object -Unique)
+        $detail = if ($bad.Count -gt 0) { $bad -join ', ' } else { 'see PHP startup warnings' }
+        return @{ Ok = $false; Detail = "extensions failed to load: $detail" }
+    }
+
+    if ($out -notmatch 'PHP\s+(\d+\.\d+\.\d+)') {
+        return @{ Ok = $false; Detail = "php.exe did not report a version: $($out.Trim())" }
+    }
+
+    return @{ Ok = $true; Detail = $matches[1] }
+}
+
+function Start-PhpupService($Name) {
+# Start one phpup Windows service and say WHY it failed.
+# Start-Service's own message is unhelpful ("Cannot start service 'X' on computer
+# '.'") and callers used to swallow it with -ErrorAction SilentlyContinue. The two
+# things that actually happen: the start type is Disabled (so it can never start),
+# or the start is slow and the service is still StartPending when we sample it.
+# Handle both, and poll instead of trusting a fixed sleep.
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $svc) { Write-Err "$Name service is not registered"; return $false }
+
+    if ($svc.StartType -eq 'Disabled') {
+        Write-Warn "$Name is set to Disabled - setting it back to Automatic"
+        Set-Service -Name $Name -StartupType Automatic -ErrorAction SilentlyContinue
+        $svc.Refresh()
+        if ($svc.StartType -eq 'Disabled') {
+            Write-Err "$Name is still Disabled. Fix it in services.msc, or run: sc.exe config $Name start= auto"
+            return $false
+        }
+    }
+
+    if ($svc.Status -eq 'Running') { return $true }
+
+    try {
+        Start-Service -Name $Name -ErrorAction Stop
+    }
+    catch {
+        Write-Err "$Name could not be started: $($_.Exception.Message)"
+        return $false
+    }
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt 15) {
+        $svc.Refresh()
+        if ($svc.Status -eq 'Running') { return $true }
+        if ($svc.Status -eq 'Stopped') { break }
+        Start-Sleep -Milliseconds 250
+    }
+
+    $svc.Refresh()
+    if ($svc.Status -eq 'Running') { return $true }
+    Write-Err "$Name did not reach Running (current status: $($svc.Status))"
+    return $false
 }
 
 function Invoke-ConfigureMariaDb {
@@ -1630,14 +1758,11 @@ function Start-WebStackServices {
     }
     elseif ($apacheAsService) {
         # Registered as a Windows service — use service control
-        Start-Service $SERVICE_APACHE -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
-        $apacheAsService.Refresh()
-        if ($apacheAsService.Status -eq "Running") {
+        if (Start-PhpupService $SERVICE_APACHE) {
             Write-Ok "Apache started (Windows service)"
         }
         else {
-            Write-Err "Apache service failed to start — check Windows Event Viewer"
+            Write-Err "Apache service failed to start — see the message above"
         }
     }
     else {
@@ -1672,14 +1797,11 @@ function Start-WebStackServices {
         Write-Info "MariaDB is already running"
     }
     elseif ($mariadbAsService) {
-        Start-Service $SERVICE_MARIADB -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 3
-        $mariadbAsService.Refresh()
-        if ($mariadbAsService.Status -eq "Running") {
+        if (Start-PhpupService $SERVICE_MARIADB) {
             Write-Ok "MariaDB started (Windows service, root password is blank)"
         }
         else {
-            Write-Err "MariaDB service failed to start — check Windows Event Viewer"
+            Write-Err "MariaDB service failed to start — see the message above"
         }
     }
     else {
@@ -1932,9 +2054,16 @@ function Invoke-InstallWebStack {
             }
         }
 
-        # Extract directly
-        if ($apacheZip)   { Invoke-ExtractZip $apacheZip   $APACHE_PATH      "Apache" }
-        if ($phpZip)      { Invoke-ExtractZip $phpZip      $PHP_PATH         "PHP" }
+        # Extract directly. Stop the stack and clear each destination first, for
+        # the same reason the online path does (see the replaceApache/replacePhp
+        # note below): a live httpd holds php8ts.dll and the loaded extension
+        # DLLs, so the overwrite is skipped without an error.
+        if ($apacheZip -or $phpZip) {
+            Stop-WebStackServices
+            Start-Sleep -Seconds 1
+        }
+        if ($apacheZip)   { Remove-Tree $APACHE_PATH; Invoke-ExtractZip $apacheZip   $APACHE_PATH      "Apache" }
+        if ($phpZip)      { Remove-Tree $PHP_PATH;    Invoke-ExtractZip $phpZip      $PHP_PATH         "PHP" }
         if ($mariadbZip)  {
             # Same protection as the online upgrade path: if an existing
             # install is being overwritten, stop + back up data first.
@@ -1979,10 +2108,28 @@ function Invoke-InstallWebStack {
         $installedPhpVer     = Get-PhpVersion
         $installedMariadbVer = Get-MariaDbVersion
 
+        # Replacing a component that a running service has memory-mapped fails on
+        # Windows with a NON-terminating error: the write is skipped, the extract
+        # is still reported as "[ OK ] extracted", and the directory is left
+        # half-old/half-new. That is what happened in Oct 2026: six extensions
+        # (openssl, curl, fileinfo, gd, intl, mbstring) failed with "The specified
+        # procedure could not be found" - the DLL was present but an imported
+        # symbol was missing, i.e. the extension files and the libraries they were
+        # built against came from different builds. Apache then refused to serve
+        # and the update looked like an Apache failure.
+        # MariaDB already stops and wipes for this exact reason; Apache and PHP must too.
+        $replaceApache = -not ($installedApacheVer -and $resolvedApacheVer -and ([version]$resolvedApacheVer -le [version]$installedApacheVer))
+        $replacePhp    = -not ($installedPhpVer    -and $resolvedPhpVer    -and ([version]$resolvedPhpVer    -le [version]$installedPhpVer))
+        if ($replaceApache -or $replacePhp) {
+            Stop-WebStackServices
+            Start-Sleep -Seconds 1
+        }
+
         if ($installedApacheVer -and $resolvedApacheVer -and ([version]$resolvedApacheVer -le [version]$installedApacheVer)) {
             Write-Ok "Apache $installedApacheVer already installed — skipping download"
         } else {
             if ($installedApacheVer) { Write-Info "Apache $installedApacheVer -> $resolvedApacheVer" }
+            Remove-Tree $APACHE_PATH
             Invoke-DownloadAndExtract $apacheUrl  $APACHE_PATH  "Apache"
         }
 
@@ -1990,6 +2137,7 @@ function Invoke-InstallWebStack {
             Write-Ok "PHP $installedPhpVer already installed — skipping download"
         } else {
             if ($installedPhpVer) { Write-Info "PHP $installedPhpVer -> $resolvedPhpVer" }
+            Remove-Tree $PHP_PATH
             Invoke-DownloadAndExtract $phpUrl     $PHP_PATH     "PHP"
         }
 
@@ -2018,7 +2166,20 @@ function Invoke-InstallWebStack {
     # Configure
     Invoke-ConfigureApache
     Invoke-ConfigurePhp
+
     Invoke-FixSqliteDll
+
+    # Verify the extracted PHP actually runs AND can load every extension php.ini
+    # enables, before anything tries to serve with it.
+    $phpHealth = Test-PhpRuntimeHealthy
+    if ($phpHealth.Ok) {
+        Write-Ok "PHP $($phpHealth.Detail) verified - core and extensions load"
+    }
+    else {
+        Write-Err "PHP verification FAILED: $($phpHealth.Detail)"
+        Write-Info "  That is a mismatched PHP tree, not an Apache problem."
+        Write-Info "  Stop the stack and re-run the install so PHP extracts cleanly."
+    }
 
     # Check for orphaned database backup from a previous install
     $backupDir = "$BASE\data_backup"
@@ -2953,6 +3114,16 @@ function Invoke-ForcedUpdate {
         # PHP major may have changed (e.g. 8.x → 7.x): the Apache module DLL
         # name follows the major version, so re-point httpd.conf at it.
         Invoke-ConfigureApache
+
+        # Fail loudly here rather than letting Apache take the blame later.
+        $phpHealth = Test-PhpRuntimeHealthy
+        if ($phpHealth.Ok) {
+            Write-Ok "PHP $($phpHealth.Detail) verified - core and extensions load"
+        }
+        else {
+            Write-Err "PHP verification FAILED: $($phpHealth.Detail)"
+            Write-Info "  That is a mismatched PHP tree, not an Apache problem."
+        }
         Write-Host ""
     }
     if ($needsMariadb) {
