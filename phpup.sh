@@ -2732,6 +2732,11 @@ cmd_update() {
         return
     fi
 
+    # Track whether the stack actually came back up. Reporting success here
+    # regardless of start_services was how a failed start still ended in
+    # "[ OK ] UPDATE COMPLETE!".
+    local update_ok=1
+
     printf "\n${BOLD}phpup — Update Web Stack${RESET}\n\n"
 
     # Check for updates
@@ -2816,7 +2821,10 @@ cmd_update() {
             configure_php_apt
             switch_fpm_apt "$php_latest"
         fi
-        sudo apt upgrade -y apache2 mariadb-server $(php_active_pkgs)
+        # Noninteractive for the same reason the install and remove paths are: a
+        # dpkg conffile prompt on php.ini or httpd.conf blocks an unattended run
+        # and swallows whatever is queued on stdin.
+        sudo DEBIAN_FRONTEND=noninteractive apt upgrade -y apache2 mariadb-server $(php_active_pkgs)
 
         # Check for newer phpMyAdmin tarball
         local pma_latest
@@ -2832,7 +2840,7 @@ cmd_update() {
 
         configure_apache
         configure_php
-        start_services
+        start_services || update_ok=0
         # PMA config touches MariaDB (pma control user) — run it once the DB is
         # up so password alignment can't fail silently.
         configure_phpmyadmin
@@ -2879,7 +2887,7 @@ cmd_update() {
             [[ "$pma_upgrade" != "n" && "$pma_upgrade" != "N" ]] && install_pma_tarball "$pma_latest" "$PMA_DIR" || print_warn "phpMyAdmin upgrade failed"
         fi
         configure_apache; configure_php
-        start_services
+        start_services || update_ok=0
         configure_phpmyadmin
     else
         brew update &>/dev/null
@@ -2978,7 +2986,7 @@ cmd_update() {
         detect_all
         configure_apache
         configure_php
-        start_services
+        start_services || update_ok=0
         configure_phpmyadmin
     fi
 
@@ -2990,7 +2998,11 @@ cmd_update() {
     local stale_backup="${BASE_DIR}/data_backup_pre_upgrade"
     [[ -d "$stale_backup" ]] && sudo rm -rf "$stale_backup" 2>/dev/null || true
 
-    print_ok "UPDATE COMPLETE!"
+    if [[ ${update_ok:-1} -eq 1 ]]; then
+        print_ok "UPDATE COMPLETE!"
+    else
+        print_warn "Packages updated, but the stack did not come up — see the messages above."
+    fi
     printf "\n"
     read -r -p "Press Enter to return to the dashboard..."
 }

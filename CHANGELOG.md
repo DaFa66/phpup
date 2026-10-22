@@ -13,6 +13,21 @@ overview of every release.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **`u` claimed "[ OK ] UPDATE COMPLETE!" even when the stack did not come up** — `cmd_update`
+  printed that line unconditionally after all three backend branches. Each `start_services`
+  call now sets `update_ok=0` on failure, and the closing message distinguishes "packages
+  updated and stack up" from "packages updated, stack did not come up". Found on the Debian
+  box, where ports 80 and 3306 were held by the Ubuntu stack in the same WSL2 network
+  namespace.
+- **The apt update path could block on a dpkg conffile prompt** — `cmd_update`'s `apt upgrade`
+  was the only apt call in the script without `DEBIAN_FRONTEND=noninteractive`, so a `php.ini`
+  or `httpd.conf` conffile question could stall an unattended run and swallow whatever was
+  queued on stdin. Observed on Debian: the prompt consumed the remaining scripted answers.
+
 ## [2.5.0-win] / [1.3.0-nix] — 2026-10-22
 
 ### Windows (phpup.ps1 v2.5.0) and macOS/Linux (phpup.sh v1.3.0)
