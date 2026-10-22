@@ -15,7 +15,7 @@ source of truth for installation, updates and version switching.
 ## Install from a release
 
 Download `phpup-panel-0.1.0-beta-win-x64.zip` from
-[Releases](https://github.com/DaFa66/phpup/releases), extract it, then run:
+[Releases](https://github.com/DaFa66/phpup/releases/tag/panel-v0.1.0-beta-win), extract it, then run:
 
 ```
 .\install.ps1              # installs into <install_path>\bin, default C:\phpup\bin

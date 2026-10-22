@@ -111,6 +111,11 @@ A desktop control surface for phpup — Rust + egui, one static binary, no webvi
 toolchain. It reads the CLI contract below and drives the same verbs, so the scripts stay the
 single source of truth for installation, updates and version switching.
 
+**Download:** Windows x64 zip with `install.ps1`:
+[phpup panel 0.1.0 beta](https://github.com/DaFa66/phpup/releases/tag/panel-v0.1.0-beta-win).
+It is a pre-release, so GitHub keeps it out of the *Latest* slot; that link, or
+**Releases -> show more**, is the way in.
+
 - Live component cards: versions, running state, PIDs, ports, SAPI, service names
 - Start / Restart / Stop with exit-code handling instead of parsed text
 - Terminal-style output pane fed by phpup's stderr, with copy and follow/pause
