@@ -568,6 +568,22 @@ impl App {
                             .color(p.muted),
                     );
 
+                    // Script version, so the header answers "which phpup is this" without
+                    // opening About. The panel's own version stays in About.
+                    if let Some(v) = self
+                        .status
+                        .as_ref()
+                        .and_then(|s| s.phpup.version.as_deref())
+                    {
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new(format!("v{v}"))
+                                .size(11.5)
+                                .monospace()
+                                .color(p.muted),
+                        );
+                    }
+
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let settings_btn = filled_nav(ui, p, "Settings");
                         self.settings_toggle_rect = Some(settings_btn.rect);

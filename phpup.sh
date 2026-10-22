@@ -1018,16 +1018,16 @@ show_dashboard() {
 
     # Architecture line
     if [[ $USE_APT == 1 ]]; then
-        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}apt${RESET}\n" \
-            "$ARCH" "$OS_DISTRO" "$OS_VERSION"
+        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}apt${RESET} | phpup: ${CYAN}%s${RESET}\n" \
+            "$ARCH" "$OS_DISTRO" "$OS_VERSION" "$(script_version)"
     elif [[ $USE_PORTS == 1 ]]; then
-        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}port${RESET}\n" \
-            "$ARCH" "$OS_NAME" "$OS_VERSION"
+        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}port${RESET} | phpup: ${CYAN}%s${RESET}\n" \
+            "$ARCH" "$OS_NAME" "$OS_VERSION" "$(script_version)"
     else
         local brew_note=""
         [[ $INTEL_BREW_NO_BOTTLES == 1 ]] && brew_note=" (Intel — PHP builds from source)"
-        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Homebrew: ${CYAN}%s${RESET}%s\n" \
-            "$ARCH" "$OS_NAME" "$OS_VERSION" "$BREW_PREFIX" "$brew_note"
+        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Homebrew: ${CYAN}%s${RESET}%s | phpup: ${CYAN}%s${RESET}\n" \
+            "$ARCH" "$OS_NAME" "$OS_VERSION" "$BREW_PREFIX" "$brew_note" "$(script_version)"
     fi
     printf "\n"
 

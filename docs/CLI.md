@@ -44,6 +44,20 @@ No arguments = today's interactive dashboard, byte-for-byte unchanged.
 
 Reserved for v2, do not alias these names: `install`, `update`, `delete`, `switch`, `doctor`.
 
+### `version` output
+
+Both scripts answer `version`, and with `--json` they emit a single object and nothing else:
+
+```json
+{ "schema": 1, "version": "2.5.0", "script": "ps1" }
+```
+
+`script` is `ps1` on Windows and `sh` on macOS/Linux, so a caller can tell which
+implementation answered. The same pair appears as `phpup.version` and `phpup.script` in
+the `status` payload (section 6), and it is required on both scripts — consumers must not
+infer the running version from the components. Each interactive dashboard prints it on the
+architecture line, and the desktop panel shows it in the header and in About.
+
 ## 3. Flags
 
 | Flag | PowerShell | Meaning |

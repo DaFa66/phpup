@@ -3843,7 +3843,9 @@ function Show-Dashboard {
     Write-Host "Architecture: " -NoNewline
     Write-Host "$arch" -ForegroundColor Cyan -NoNewline
     Write-Host " | Windows: " -NoNewline
-    Write-Host "$osCaption" -ForegroundColor Cyan
+    Write-Host "$osCaption" -ForegroundColor Cyan -NoNewline
+    Write-Host " | phpup: " -NoNewline
+    Write-Host "$(Get-ScriptVersion)" -ForegroundColor Cyan
     Write-Host ""
 
     # ---- System Prerequisites ----
