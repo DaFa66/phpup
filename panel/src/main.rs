@@ -843,6 +843,8 @@ impl App {
         // Set when a service start type chip is clicked; applied after the status
         // borrow is released.
         let mut service_change: Option<(String, String)> = None;
+        // Set when a Start/Stop chip is clicked.
+        let mut service_run: Option<(String, String)> = None;
 
         let resp = egui::Panel::right("settings")
             .resizable(false)
@@ -938,6 +940,14 @@ impl App {
                                         } else {
                                             ("absent", p.muted)
                                         };
+                                        // Running state is per component, keyed by
+                                        // service name. Start type says nothing about
+                                        // what is up right now.
+                                        let running = [&s.components.apache, &s.components.mariadb]
+                                            .into_iter()
+                                            .find(|c| c.service.as_deref() == Some(name.as_str()))
+                                            .and_then(|c| c.running)
+                                            .unwrap_or(false);
                                         ui.horizontal(|ui| {
                                             ui.label(
                                                 RichText::new(name.clone())
@@ -945,6 +955,18 @@ impl App {
                                                     .monospace()
                                                     .color(p.text),
                                             );
+                                            if item.registered {
+                                                ui.add_space(8.0);
+                                                ui.label(
+                                                    RichText::new(if running {
+                                                        "running"
+                                                    } else {
+                                                        "stopped"
+                                                    })
+                                                    .size(10.5)
+                                                    .color(if running { p.ok } else { p.muted }),
+                                                );
+                                            }
                                             ui.with_layout(
                                                 Layout::right_to_left(Align::Center),
                                                 |ui| {
@@ -969,6 +991,18 @@ impl App {
                                                                 "auto".to_string(),
                                                             ));
                                                         }
+                                                        ui.add_space(12.0);
+                                                        let (run_chip, run_action) = if running {
+                                                            ("Stop", "stop")
+                                                        } else {
+                                                            ("Start", "start")
+                                                        };
+                                                        if chip(ui, p, run_chip, false) {
+                                                            service_run = Some((
+                                                                name.clone(),
+                                                                run_action.to_string(),
+                                                            ));
+                                                        }
                                                     } else {
                                                         ui.label(
                                                             RichText::new(state)
@@ -991,12 +1025,30 @@ impl App {
 
                         if let Some((name, mode)) = service_change.take() {
                             match backend::set_service_start(&name, &mode) {
-                                Ok(()) => self.push_log(format!(
-                                    "{name}: start type set to {mode}"
-                                )),
+                                Ok(()) => {
+                                    self.push_log(format!("{name}: start type set to {mode}"));
+                                    // Disabling means off now and off at boot, so
+                                    // stop it too. Auto only re-enables autostart.
+                                    if mode == "disabled" {
+                                        match backend::set_service_state(&name, "stop") {
+                                            Ok(()) => self.push_log(format!("{name}: stopped")),
+                                            Err(e) => self.push_log(format!(
+                                                "{name}: disabled, but stop failed: {e}"
+                                            )),
+                                        }
+                                    }
+                                }
                                 Err(e) => self.push_log(format!(
                                     "{name}: could not set start type to {mode}: {e}"
                                 )),
+                            }
+                        }
+                        if let Some((name, action)) = service_run.take() {
+                            match backend::set_service_state(&name, &action) {
+                                Ok(()) => self.push_log(format!("{name}: {action} sent")),
+                                Err(e) => {
+                                    self.push_log(format!("{name}: could not {action}: {e}"))
+                                }
                             }
                         }
 

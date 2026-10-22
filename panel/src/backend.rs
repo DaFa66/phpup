@@ -690,51 +690,87 @@ pub fn run_elevated(script: &Path, verb: &str) -> std::io::Result<()> {
     ))
 }
 
-/// Set a phpup service's start type: "auto" or "disabled".
-///
-/// Start type is machine configuration, so this has to run elevated. The panel
-/// itself stays unelevated and the prompt covers only sc.exe; the watch stream
-/// reports the resulting state on its next tick, so nothing is assumed locally.
+/// Run sc.exe elevated and wait. Start type and service control both need this.
 #[cfg(windows)]
-pub fn set_service_start(name: &str, mode: &str) -> std::io::Result<()> {
+fn run_elevated_sc(args: &[&str], what: &str) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let list = args
+        .iter()
+        .map(|a| format!("'{a}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let inner = format!(
+        "$p = Start-Process -FilePath 'sc.exe' -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList {list}; exit $p.ExitCode"
+    );
+    let status = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &inner,
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "{what}: sc.exe exited with {status} (declined or denied)"
+        )))
+    }
+}
+
+#[cfg(windows)]
+fn check_phpup_service(name: &str) -> std::io::Result<()> {
+    if name.starts_with("phpup_") {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "refusing to touch a service that is not phpup's",
+        ))
+    }
+}
+
+/// Set a phpup service's start type: "auto" or "disabled".
+#[cfg(windows)]
+pub fn set_service_start(name: &str, mode: &str) -> std::io::Result<()> {
     if mode != "auto" && mode != "disabled" {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "mode must be auto or disabled",
         ));
     }
-    if !name.starts_with("phpup_") {
+    check_phpup_service(name)?;
+    run_elevated_sc(&["config", name, "start=", mode], "set start type")
+}
+
+/// Start or stop a phpup service: "start" or "stop".
+#[cfg(windows)]
+pub fn set_service_state(name: &str, action: &str) -> std::io::Result<()> {
+    if action != "start" && action != "stop" {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "refusing to change a service that is not phpup's",
+            "action must be start or stop",
         ));
     }
-    let inner = format!(
-        "$p = Start-Process -FilePath 'sc.exe' -Verb RunAs -WindowStyle Hidden \
-         -Wait -PassThru -ArgumentList 'config','{name}','start=','{mode}'; exit $p.ExitCode"
-    );
-    let mut c = Command::new("powershell.exe");
-    c.arg("-NoProfile")
-        .arg("-NonInteractive")
-        .arg("-WindowStyle")
-        .arg("Hidden")
-        .arg("-Command")
-        .arg(inner);
-    c.creation_flags(CREATE_NO_WINDOW);
-    let status = c.status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "sc.exe exited with {status} (declined or denied)"
-        )))
-    }
+    check_phpup_service(name)?;
+    run_elevated_sc(&[action, name], action)
 }
 
 #[cfg(not(windows))]
 pub fn set_service_start(_name: &str, _mode: &str) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Windows services only",
+    ))
+}
+
+#[cfg(not(windows))]
+pub fn set_service_state(_name: &str, _action: &str) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "Windows services only",
