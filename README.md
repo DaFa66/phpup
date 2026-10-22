@@ -212,6 +212,12 @@ For prerequisites, directory layouts, component configuration, offline mode, ser
 | **macOS (older Intel)** | [docs/INSTALL-OLDER-MAC.md](docs/INSTALL-OLDER-MAC.md) |
 | **Linux**               | [docs/LINUX.md](docs/LINUX.md)                         |
 
+## Roadmap
+
+[**docs/PANEL-PLATFORMS.md**](docs/PANEL-PLATFORMS.md): the plan for porting the desktop panel
+to macOS (Intel and Apple silicon), Linux (x86_64 and arm64) and Windows on ARM.
+Proposed, not yet started.
+
 ## Support
 
 Open an [issue](https://github.com/DaFa66/phpup/issues) or submit a [pull request](https://github.com/DaFa66/phpup/pulls).
