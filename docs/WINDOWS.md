@@ -198,7 +198,9 @@ Config is cleared when you delete the stack. The next run prompts for a fresh in
 
 A Windows desktop control surface (Rust + egui, panel 0.1.0, unreleased) drives the same CLI
 verbs as the dashboard: live component cards, start/restart/stop, stderr in a terminal-style
-pane, tray icon and an optional always-elevated mode. Build, install and autostart notes:
+pane, tray icon and an optional always-elevated mode. Settings can also set each service's
+startup type (`Auto` / `Disabled`), start the panel hidden in the tray with no taskbar button,
+and register it to start with Windows. Build, install and autostart notes:
 [`panel/README.md`](../panel/README.md).
 
 ## After Installation

@@ -32,12 +32,22 @@ source of truth for installation, updates and version switching.
   clear, resizable split.
 - **Administrator mode** — per-action by default; optional always-elevated panel with
   `phpup - as administrator` in the title bar. See below.
-- **Settings slide-out** — Status, Appearance, Zoom, Privileges, Source, Services. Closes
-  with Escape, the Close button, or a click outside.
+- **Settings slide-out** — Status, Services, Appearance, Zoom, Window, Startup, Privileges,
+  Source, Refresh. Closes with Escape, the Close button, or a click outside.
+- **Service startup type** — per registered service, `Auto` or `Disabled`, applied with
+  `sc.exe config <name> start=`. Settings owns boot behaviour only; `Start` / `Restart` /
+  `Stop` above the cards are the process controls.
+- **Start in the tray** — optional launch with no window and no taskbar button, tray icon
+  only. Off by default, in which case the window opens.
+- **Start with Windows** — optional per-user `Run` entry written with `reg.exe`, so it never
+  needs elevation. Off by default.
 - **About popup** — panel version, live phpup version, GitHub link, one-paragraph summary.
 - **Tray** — favicon icon, menu of Show panel / Start / Stop / Restart / Quit. Closing the
   window hides to the tray; Quit drops the icon and exits.
-- **Quick links** — localhost, phpinfo, phpMyAdmin, logs, www folder.
+- **Quick links** — localhost, phpinfo, phpMyAdmin, logs, www folder, on their own row
+  beneath the component cards so the settings slide-out cannot push them into the buttons.
+- **Hover states** — buttons lighten, take an accent edge and grow a fraction on hover. The
+  effect lives in `theme.rs`, so it applies to every button rather than per call site.
 - **Theme and zoom** — System / Light / Dark, and Auto / 85% / 100% / 115% / 130%. Auto
   follows the monitor's DPI. Accent colours are Trongate's own: `--primary #4682b4`,
   `--primary-dark #38678f`, white text.
@@ -100,18 +110,17 @@ button and Ctrl+C silently do nothing (that was a real bug, not a UI glitch).
 
 ## Run at startup
 
-Two options, both per user.
+**Settings → Startup → Start with Windows** is the built-in option. It writes a per-user
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry pointing at the panel binary,
+so it needs no elevation and no scheduled task. The checkbox reads the registry rather than a
+stored copy, so it always shows what Windows will actually do at sign-in.
 
-**Startup folder** — simplest, no elevation:
+Pair it with **Settings → Window → Start hidden in the tray** to log in to a clean taskbar:
+the panel launches with no window and no taskbar button, and the tray icon brings it up when
+you want it. With that toggle off, the panel opens its window at logon.
 
-```
-explorer shell:startup
-```
-
-Drop a shortcut to `C:\phpup\bin\phpup-panel.exe` in the folder that opens. The panel starts
-unelevated, so service actions prompt (or use per-action elevation).
-
-**Task Scheduler** — better if you want administrator mode without ever seeing a UAC prompt:
+**Task Scheduler** is still the way to start the panel *elevated* at logon, which the Run
+entry cannot do:
 
 ```
 schtasks /Create /TN "phpup panel" /TR "\"C:\phpup\bin\phpup-panel.exe\"" /SC ONLOGON /RL HIGHEST /F
@@ -119,11 +128,9 @@ schtasks /Query  /TN "phpup panel" /V /FO LIST
 schtasks /Delete /TN "phpup panel" /F
 ```
 
-`/RL HIGHEST` starts the panel elevated at logon, so the title bar reads
-`phpup - as administrator` and start/stop/restart never prompt. Remove it the same way —
-`schtasks /Delete`.
-
-Either way the panel opens its window at logon; closing it hides to the tray.
+`/RL HIGHEST` starts the panel elevated, so the title bar reads `phpup - as administrator`
+and start/stop/restart never prompt. Do not use both: the Run entry and the task would each
+launch a panel.
 
 ## Settings
 
@@ -136,7 +143,8 @@ Either way the panel opens its window at logon; closing it hides to the tray.
   "script": "D:\\dev\\phpup\\phpup.ps1",
   "interval": 2,
   "zoom": 0.0,
-  "always_admin": false
+  "always_admin": false,
+  "start_in_tray": false
 }
 ```
 
@@ -148,6 +156,7 @@ Either way the panel opens its window at logon; closing it hides to the tray.
 | `interval` | Seconds between `status --watch` ticks |
 | `zoom` | `0.0` = Auto (follow monitor DPI), otherwise 0.85 / 1.0 / 1.15 / 1.3 |
 | `always_admin` | Start elevated (Settings → Privileges) |
+| `start_in_tray` | Launch with no window and no taskbar button, tray icon only |
 
 ## Troubleshooting
 

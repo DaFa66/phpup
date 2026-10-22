@@ -15,6 +15,37 @@ overview of every release.
 
 ## [Unreleased]
 
+### Added
+
+- **Panel: start in the tray at launch** - Settings -> Window. On, the panel starts with no
+  window and no taskbar button, tray icon only, which is what an autostart launch wants. Off
+  by default, so the window opens. Uses the same `Visible(false)` path as the close button and
+  is applied a few frames after launch, because a viewport command issued before the window is
+  mapped is dropped. Verified against the real UI window via `EnumWindows`, since
+  `MainWindowHandle` points at a hidden helper window and reports the wrong state.
+- **Panel: Start with Windows** - per-user `HKCU\...\Run` entry written with `reg.exe`, so it
+  needs no elevation and no scheduled task. The checkbox mirrors the registry rather than
+  storing its own copy, so it cannot disagree with what Windows does at sign-in. Off by
+  default.
+- **Panel: per-service startup type** - `Auto` / `Disabled` on each registered service,
+  applied with `sc.exe config <name> start=`. Only `sc.exe` is elevated, through
+  `Start-Process -Verb RunAs`.
+- **Panel: hover states** - buttons lighten, take an accent edge and grow slightly on hover.
+  Applied in `theme.rs`: the panel's explicit button fills had been suppressing egui's hover
+  fill, which is why hover did nothing visible.
+
+### Changed
+
+- **Panel: Settings manages boot behaviour only** - the service rows no longer carry their own
+  Start/Stop. `Start` / `Restart` / `Stop` above the cards control the running processes;
+  `Auto` / `Disabled` control the service registration. Two meanings of "stop" on one screen
+  was confusing, and the process controls already existed.
+- **Panel: quick links moved beneath the component cards** - opening the Settings slide-out
+  narrows the content area and had been pushing localhost / phpinfo / phpMyAdmin / logs /
+  www folder into the Start-Restart-Stop buttons.
+- **Version shown in the dashboard banner wordmark** (`phpup v2.5.0`, `phpup v1.3.0`) instead
+  of on the architecture line, and in the panel's About popup only. `docs/CLI.md` updated.
+
 ### Fixed
 
 - **`u` claimed "[ OK ] UPDATE COMPLETE!" even when the stack did not come up** — `cmd_update`

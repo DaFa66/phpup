@@ -114,7 +114,11 @@ single source of truth for installation, updates and version switching.
 - Live component cards: versions, running state, PIDs, ports, SAPI, service names
 - Start / Restart / Stop with exit-code handling instead of parsed text
 - Terminal-style output pane fed by phpup's stderr, with copy and follow/pause
-- Tray icon, close-to-tray, quick links, System/Light/Dark theme, zoom
+- Tray icon, close-to-tray, quick links, System/Light/Dark theme, zoom, hover states
+- Service startup type per registered service (`Auto` / `Disabled`): boot behaviour only,
+  since Start / Restart / Stop already control the running processes
+- Optional start in the tray at launch (no window, no taskbar button) and a Start with
+  Windows toggle, both off by default
 - Optional administrator mode: per action, or an always-elevated panel (no repeated UAC
   prompts) with `phpup - as administrator` in the title bar
 
@@ -124,8 +128,10 @@ cargo build --release
 copy target\release\phpup-panel.exe C:\phpup\bin\
 ```
 
-To start it at logon, either drop a shortcut to the exe in `shell:startup`, or register a
-scheduled task with `/RL HIGHEST` if you want it elevated from the start:
+**Settings → Startup → Start with Windows** registers it at logon through a per-user `Run`
+entry, no elevation needed. Pair it with **Settings → Window → Start hidden in the tray** so
+login produces no taskbar entry, only the tray icon. For an *elevated* start, use a scheduled
+task with `/RL HIGHEST` instead, and use one or the other rather than both:
 
 ```
 schtasks /Create /TN "phpup panel" /TR "\"C:\phpup\bin\phpup-panel.exe\"" /SC ONLOGON /RL HIGHEST /F
