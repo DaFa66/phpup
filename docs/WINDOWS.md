@@ -14,8 +14,12 @@
 Right-click PowerShell → **Run as Administrator**, then:
 
 ```powershell
-irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.ps1 | iex
+(irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.ps1).TrimStart([char]0xFEFF) | iex
 ```
+
+> phpup ships with a UTF-8 BOM so Windows PowerShell 5.1 can read the file. Piped into `iex`,
+> that same BOM stops the first line parsing, and `.TrimStart([char]0xFEFF)` removes it.
+> It looks fussy; it is load-bearing.
 
 After launching, press **I** to install. On subsequent runs the script remembers your setup and goes straight to the dashboard.
 
@@ -25,7 +29,7 @@ Add this to your PowerShell profile for a quick `phpup` command:
 
 ```powershell
 function phpup {
-    $command = "irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.ps1 | iex"
+    $command = "(irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.ps1).TrimStart([char]0xFEFF) | iex"
     Start-Process pwsh `
         -Verb RunAs `
         -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $command
