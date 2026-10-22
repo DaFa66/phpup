@@ -955,18 +955,6 @@ impl App {
                                                     .monospace()
                                                     .color(p.text),
                                             );
-                                            if item.registered {
-                                                ui.add_space(8.0);
-                                                ui.label(
-                                                    RichText::new(if running {
-                                                        "running"
-                                                    } else {
-                                                        "stopped"
-                                                    })
-                                                    .size(10.5)
-                                                    .color(if running { p.ok } else { p.muted }),
-                                                );
-                                            }
                                             ui.with_layout(
                                                 Layout::right_to_left(Align::Center),
                                                 |ui| {
