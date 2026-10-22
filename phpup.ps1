@@ -50,9 +50,9 @@ $BANNER_ART = @'
 # Pinned fallback URLs — used when live scraping/API resolution fails.
 $FALLBACK_URLS = @{
     Redist     = "https://aka.ms/vc14/vc_redist.x64.exe"
-    Apache     = "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.68-260617-Win64-VS18.zip"
-    PHP        = "https://windows.php.net/downloads/releases/php-8.5.9-Win32-vs17-x64.zip"
-    MariaDB    = "https://archive.mariadb.org/mariadb-12.3.2/winx64-packages/mariadb-12.3.2-winx64.zip"
+    Apache     = "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.69-261002-Win64-VS18.zip"
+    PHP        = "https://windows.php.net/downloads/releases/php-8.5.12-Win32-vs17-x64.zip"
+    MariaDB    = "https://archive.mariadb.org/mariadb-13.0.2/winx64-packages/mariadb-13.0.2-winx64.zip"
     phpMyAdmin = "https://files.phpmyadmin.net/phpMyAdmin/5.2.3/phpMyAdmin-5.2.3-all-languages.zip"
 }
 

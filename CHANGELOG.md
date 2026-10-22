@@ -84,6 +84,13 @@ out to the script for every action, so the scripts stay the source of truth.
 
 ### Fixed
 
+- **Windows: pinned fallback URLs were stale, and the PHP one was dead** - these are the last
+  resort when live version resolution fails, and they pointed at PHP 8.5.9, which
+  `windows.php.net` has since removed (HTTP 404), plus Apache 2.4.68 and MariaDB 12.3.2 while
+  the installer ships 2.4.69 and 13.0.2. All three refreshed to the versions the script
+  installs, each verified by HEAD request before being written in. `phpMyAdmin` 5.2.3 and the
+  VC redist were already current.
+
 - **`u` claimed "[ OK ] UPDATE COMPLETE!" even when the stack did not come up** — `cmd_update`
   printed that line unconditionally after all three backend branches. Each `start_services`
   call now sets `update_ok=0` on failure, and the closing message distinguishes "packages
