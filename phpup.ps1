@@ -3826,9 +3826,10 @@ function Show-Dashboard {
         }
         elseif ($line -match 'phpup') {
             Write-Host "│         " -NoNewline -ForegroundColor White
-            Write-Host "phpup " -NoNewline -ForegroundColor Blue
+            # Default foreground: Blue maps to dark blue, which is unreadable on
+            # dark console themes, so the wordmark relies on weight, not hue.
             $verLabel = "v" + (Get-ScriptVersion)
-            Write-Host $verLabel -NoNewline -ForegroundColor Cyan
+            Write-Host ("phpup " + $verLabel) -NoNewline
             $pad = 29 - 9 - ("phpup " + $verLabel).Length
             if ($pad -lt 1) { $pad = 1 }
             Write-Host ((" " * $pad) + "│") -ForegroundColor White

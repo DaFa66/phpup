@@ -84,6 +84,7 @@ out to the script for every action, so the scripts stay the source of truth.
 
 ### Fixed
 
+- **Dashboards: the wordmark reads in dark and light terminals** - `phpup` was drawn in ANSI blue with the version in cyan, both dark variants, so on a dark terminal profile the wordmark was near invisible and the version hard to read. Both dashboards now use bold default foreground, inheriting the theme's own contrast (`phpup.ps1` used `-ForegroundColor Blue`, which maps to dark blue).
 - **Windows: pinned fallback URLs were stale, and the PHP one was dead** - these are the last
   resort when live version resolution fails, and they pointed at PHP 8.5.9, which
   `windows.php.net` has since removed (HTTP 404), plus Apache 2.4.68 and MariaDB 12.3.2 while

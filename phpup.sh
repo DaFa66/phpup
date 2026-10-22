@@ -1012,7 +1012,9 @@ show_banner() {
     printf "${YELLOW}▲${RESET} ${GREEN}▲${RESET} ${CYAN}▲${RESET}"
     printf "               │\n"
     printf "│         "
-    printf "${BLUE}phpup${RESET} ${CYAN}v%s${RESET}" "$(script_version)"
+    # Default foreground: ANSI blue/cyan are the dark variants and vanish on
+    # dark terminal themes, so the wordmark relies on weight, not hue.
+    printf "${BOLD}phpup v%s${RESET}" "$(script_version)"
     printf "%${pad}s│\n" ""
     printf "└─────────────────────────────┘\n"
     printf "\n"
