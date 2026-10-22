@@ -76,6 +76,8 @@ struct Settings {
     zoom: f32,
     /// Elevate the whole panel at launch instead of per action.
     always_admin: bool,
+    /// Start the window minimised, for a tray-first workflow.
+    minimize_on_open: bool,
 }
 
 impl Default for Settings {
@@ -87,6 +89,7 @@ impl Default for Settings {
             interval: 2,
             zoom: 0.0,
             always_admin: false,
+            minimize_on_open: false,
         }
     }
 }
@@ -111,6 +114,7 @@ impl Settings {
             interval: Option<u32>,
             zoom: Option<f32>,
             always_admin: Option<bool>,
+            minimize_on_open: Option<bool>,
         }
         let Some(path) = Self::path() else {
             return Self::default();
@@ -126,6 +130,7 @@ impl Settings {
                 interval: raw.interval.unwrap_or(2).clamp(1, 10),
                 zoom: raw.zoom.unwrap_or(0.0),
                 always_admin: raw.always_admin.unwrap_or(false),
+                minimize_on_open: raw.minimize_on_open.unwrap_or(false),
             },
             Err(_) => Self::default(),
         }
@@ -143,6 +148,7 @@ impl Settings {
             "interval": self.interval,
             "zoom": self.zoom,
             "always_admin": self.always_admin,
+            "minimize_on_open": self.minimize_on_open,
         });
         let _ = std::fs::write(path, serde_json::to_string_pretty(&body).unwrap_or_default());
     }
@@ -236,6 +242,11 @@ struct App {
     /// Verb to run once an elevated relaunch completes.
     pending_verb: Option<String>,
     title_applied: bool,
+    /// One-shot: honours Settings::minimize_on_open in the first few frames only.
+    minimize_applied: bool,
+    /// Frames drawn so far; the minimise request is deferred until the window is
+    /// actually mapped, because winit drops it on the first frame.
+    frames_seen: u32,
     /// The elevated instance started; shut this one down.
     relaunch_ok: bool,
     /// One-shot: the startup elevation attempt has been made.
@@ -284,6 +295,8 @@ impl App {
             elevated: backend::is_elevated(),
             pending_verb,
             title_applied: false,
+            minimize_applied: false,
+            frames_seen: 0,
             relaunch_ok: false,
             startup_elevation_done: false,
             applied_zoom: None,
@@ -824,6 +837,9 @@ impl App {
         let mut elevate_now = false;
         let mut open = self.settings_open;
         let mut want_close = false;
+        // Set when a service start type chip is clicked; applied after the status
+        // borrow is released.
+        let mut service_change: Option<(String, String)> = None;
 
         let resp = egui::Panel::right("settings")
             .resizable(false)
@@ -921,7 +937,7 @@ impl App {
                                         };
                                         ui.horizontal(|ui| {
                                             ui.label(
-                                                RichText::new(name)
+                                                RichText::new(name.clone())
                                                     .size(11.0)
                                                     .monospace()
                                                     .color(p.text),
@@ -929,13 +945,34 @@ impl App {
                                             ui.with_layout(
                                                 Layout::right_to_left(Align::Center),
                                                 |ui| {
-                                                    // Keep the state off the scrollbar.
+                                                    // Keep the controls off the scrollbar.
                                                     ui.add_space(10.0);
-                                                    ui.label(
-                                                        RichText::new(state)
-                                                            .size(10.5)
-                                                            .color(colour),
-                                                    );
+                                                    if item.registered {
+                                                        // right_to_left lays out rightmost
+                                                        // first, so this reads [Auto][Disabled].
+                                                        if chip(ui, p, "Disabled", !item.enabled)
+                                                            && item.enabled
+                                                        {
+                                                            service_change = Some((
+                                                                name.clone(),
+                                                                "disabled".to_string(),
+                                                            ));
+                                                        }
+                                                        if chip(ui, p, "Auto", item.enabled)
+                                                            && !item.enabled
+                                                        {
+                                                            service_change = Some((
+                                                                name.clone(),
+                                                                "auto".to_string(),
+                                                            ));
+                                                        }
+                                                    } else {
+                                                        ui.label(
+                                                            RichText::new(state)
+                                                                .size(10.5)
+                                                                .color(colour),
+                                                        );
+                                                    }
                                                 },
                                             );
                                         });
@@ -946,6 +983,17 @@ impl App {
                                 ui.label(
                                     RichText::new("no status yet").size(11.0).color(p.muted),
                                 );
+                            }
+                        }
+
+                        if let Some((name, mode)) = service_change.take() {
+                            match backend::set_service_start(&name, &mode) {
+                                Ok(()) => self.push_log(format!(
+                                    "{name}: start type set to {mode}"
+                                )),
+                                Err(e) => self.push_log(format!(
+                                    "{name}: could not set start type to {mode}: {e}"
+                                )),
                             }
                         }
 
@@ -996,6 +1044,33 @@ impl App {
                                 .size(10.5)
                                 .color(p.muted),
                         );
+
+                        ui.add_space(16.0);
+                        section_label(ui, p, "WINDOW");
+                        let mut minimized = self.settings.minimize_on_open;
+                        if ui
+                            .checkbox(
+                                &mut minimized,
+                                RichText::new("Open minimised").size(12.0).color(p.text),
+                            )
+                            .changed()
+                        {
+                            self.settings.minimize_on_open = minimized;
+                            dirty = true;
+                            self.push_log(
+                                if minimized {
+                                    "opens minimised: the window starts in the taskbar"
+                                } else {
+                                    "opens normally"
+                                }
+                                .to_string(),
+                            );
+                        }
+                        ui.add(egui::Label::new(
+                            RichText::new("For leaving the panel running behind the tray icon.")
+                                .size(10.5)
+                                .color(p.muted),
+                        ));
 
                         ui.add_space(16.0);
                         section_label(ui, p, "PRIVILEGES");
@@ -1654,6 +1729,16 @@ impl eframe::App for App {
             }
         }
 
+        // Tray-first workflow: honour "open minimised" once. Deferred a few frames
+        // because a minimise request made before the window is mapped is dropped.
+        self.frames_seen = self.frames_seen.saturating_add(1);
+        if !self.minimize_applied && self.frames_seen >= 3 {
+            self.minimize_applied = true;
+            if self.settings.minimize_on_open {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+        }
+
         // Escape or a click anywhere outside closes the settings slide-out.
         if self.about_open {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -1728,6 +1813,20 @@ fn plain_nav(ui: &mut egui::Ui, p: &Palette, label: &str) -> bool {
 fn section_label(ui: &mut egui::Ui, p: &Palette, text: &str) {
     ui.label(RichText::new(text).size(10.5).color(p.muted).strong());
     ui.add_space(2.0);
+}
+
+/// Small segmented control, used for a service's start type.
+fn chip(ui: &mut egui::Ui, p: &Palette, label: &str, selected: bool) -> bool {
+    let text = RichText::new(label)
+        .size(10.5)
+        .color(if selected { p.accent_text } else { p.text });
+    ui.add(
+        egui::Button::new(text)
+            .min_size(Vec2::new(0.0, 20.0))
+            .fill(if selected { p.accent } else { p.surface_2 })
+            .corner_radius(CornerRadius::same(7)),
+    )
+    .clicked()
 }
 
 
