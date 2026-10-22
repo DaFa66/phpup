@@ -748,29 +748,8 @@ pub fn set_service_start(name: &str, mode: &str) -> std::io::Result<()> {
     run_elevated_sc(&["config", name, "start=", mode], "set start type")
 }
 
-/// Start or stop a phpup service: "start" or "stop".
-#[cfg(windows)]
-pub fn set_service_state(name: &str, action: &str) -> std::io::Result<()> {
-    if action != "start" && action != "stop" {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "action must be start or stop",
-        ));
-    }
-    check_phpup_service(name)?;
-    run_elevated_sc(&[action, name], action)
-}
-
 #[cfg(not(windows))]
 pub fn set_service_start(_name: &str, _mode: &str) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Windows services only",
-    ))
-}
-
-#[cfg(not(windows))]
-pub fn set_service_state(_name: &str, _action: &str) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "Windows services only",

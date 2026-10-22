@@ -843,8 +843,6 @@ impl App {
         // Set when a service start type chip is clicked; applied after the status
         // borrow is released.
         let mut service_change: Option<(String, String)> = None;
-        // Set when a Start/Stop chip is clicked.
-        let mut service_run: Option<(String, String)> = None;
 
         let resp = egui::Panel::right("settings")
             .resizable(false)
@@ -940,14 +938,6 @@ impl App {
                                         } else {
                                             ("absent", p.muted)
                                         };
-                                        // Running state is per component, keyed by
-                                        // service name. Start type says nothing about
-                                        // what is up right now.
-                                        let running = [&s.components.apache, &s.components.mariadb]
-                                            .into_iter()
-                                            .find(|c| c.service.as_deref() == Some(name.as_str()))
-                                            .and_then(|c| c.running)
-                                            .unwrap_or(false);
                                         ui.horizontal(|ui| {
                                             ui.label(
                                                 RichText::new(name.clone())
@@ -979,18 +969,6 @@ impl App {
                                                                 "auto".to_string(),
                                                             ));
                                                         }
-                                                        ui.add_space(12.0);
-                                                        let (run_chip, run_action) = if running {
-                                                            ("Stop", "stop")
-                                                        } else {
-                                                            ("Start", "start")
-                                                        };
-                                                        if chip(ui, p, run_chip, false) {
-                                                            service_run = Some((
-                                                                name.clone(),
-                                                                run_action.to_string(),
-                                                            ));
-                                                        }
                                                     } else {
                                                         ui.label(
                                                             RichText::new(state)
@@ -1014,29 +992,11 @@ impl App {
                         if let Some((name, mode)) = service_change.take() {
                             match backend::set_service_start(&name, &mode) {
                                 Ok(()) => {
-                                    self.push_log(format!("{name}: start type set to {mode}"));
-                                    // Disabling means off now and off at boot, so
-                                    // stop it too. Auto only re-enables autostart.
-                                    if mode == "disabled" {
-                                        match backend::set_service_state(&name, "stop") {
-                                            Ok(()) => self.push_log(format!("{name}: stopped")),
-                                            Err(e) => self.push_log(format!(
-                                                "{name}: disabled, but stop failed: {e}"
-                                            )),
-                                        }
-                                    }
+                                    self.push_log(format!("{name}: startup type set to {mode}"))
                                 }
                                 Err(e) => self.push_log(format!(
-                                    "{name}: could not set start type to {mode}: {e}"
+                                    "{name}: could not set startup type to {mode}: {e}"
                                 )),
-                            }
-                        }
-                        if let Some((name, action)) = service_run.take() {
-                            match backend::set_service_state(&name, &action) {
-                                Ok(()) => self.push_log(format!("{name}: {action} sent")),
-                                Err(e) => {
-                                    self.push_log(format!("{name}: could not {action}: {e}"))
-                                }
                             }
                         }
 
@@ -1598,7 +1558,6 @@ impl App {
             let restart = egui::Button::new(
                 RichText::new("Restart").color(if idle { p.text } else { p.muted }),
             )
-            .fill(p.surface_2)
             .corner_radius(CornerRadius::same(10))
             .min_size(Vec2::new(92.0, 34.0));
             if ui.add_enabled(idle, restart).clicked() {
@@ -1610,7 +1569,6 @@ impl App {
             } else {
                 p.muted
             }))
-            .fill(p.surface_2)
             .corner_radius(CornerRadius::same(10))
             .min_size(Vec2::new(92.0, 34.0));
             if ui.add_enabled(stop_on, stop).clicked() {
@@ -1623,33 +1581,6 @@ impl App {
                 ui.label(RichText::new(format!("{verb}…")).size(12.0).color(p.muted));
             }
 
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if let Some(www) = &status.paths.www {
-                    if ui.link(RichText::new("www folder").size(12.0)).clicked() {
-                        *open_url = Some(www.clone());
-                    }
-                }
-                if let Some(logs) = &status.paths.logs {
-                    if ui.link(RichText::new("logs").size(12.0)).clicked() {
-                        *open_url = Some(logs.clone());
-                    }
-                }
-                if let Some(pma) = &status.urls.phpmyadmin {
-                    if ui.link(RichText::new("phpMyAdmin").size(12.0)).clicked() {
-                        *open_url = Some(pma.clone());
-                    }
-                }
-                if let Some(info) = &status.urls.phpinfo {
-                    if ui.link(RichText::new("phpinfo").size(12.0)).clicked() {
-                        *open_url = Some(info.clone());
-                    }
-                }
-                if let Some(root) = &status.urls.root {
-                    if ui.link(RichText::new("localhost").size(12.0)).clicked() {
-                        *open_url = Some(root.clone());
-                    }
-                }
-            });
         });
 
         ui.add_space(18.0);
@@ -1671,6 +1602,41 @@ impl App {
                 ui.add_space(gap);
                 card(ui, p, "phpMyAdmin", &status.components.phpmyadmin, PortKind::None);
             });
+        });
+
+        // Links sit under the cards: the settings slide-out narrows the content
+        // area, and on the action row they were pushed into the buttons.
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if let Some(root) = &status.urls.root {
+                if ui.link(RichText::new("localhost").size(12.0)).clicked() {
+                    *open_url = Some(root.clone());
+                }
+                ui.add_space(6.0);
+            }
+            if let Some(info) = &status.urls.phpinfo {
+                if ui.link(RichText::new("phpinfo").size(12.0)).clicked() {
+                    *open_url = Some(info.clone());
+                }
+                ui.add_space(6.0);
+            }
+            if let Some(pma) = &status.urls.phpmyadmin {
+                if ui.link(RichText::new("phpMyAdmin").size(12.0)).clicked() {
+                    *open_url = Some(pma.clone());
+                }
+                ui.add_space(6.0);
+            }
+            if let Some(logs) = &status.paths.logs {
+                if ui.link(RichText::new("logs").size(12.0)).clicked() {
+                    *open_url = Some(logs.clone());
+                }
+                ui.add_space(6.0);
+            }
+            if let Some(www) = &status.paths.www {
+                if ui.link(RichText::new("www folder").size(12.0)).clicked() {
+                    *open_url = Some(www.clone());
+                }
+            }
         });
 
         ui.add_space(18.0);
@@ -1901,13 +1867,12 @@ fn chip(ui: &mut egui::Ui, p: &Palette, label: &str, selected: bool) -> bool {
     let text = RichText::new(label)
         .size(10.5)
         .color(if selected { p.accent_text } else { p.text });
-    ui.add(
-        egui::Button::new(text)
-            .min_size(Vec2::new(0.0, 20.0))
-            .fill(if selected { p.accent } else { p.surface_2 })
-            .corner_radius(CornerRadius::same(7)),
-    )
-    .clicked()
+    let button = egui::Button::new(text)
+        .min_size(Vec2::new(0.0, 20.0))
+        .corner_radius(CornerRadius::same(7));
+    // Unselected chips keep the theme fill so the hover state can show through.
+    let button = if selected { button.fill(p.accent) } else { button };
+    ui.add(button).clicked()
 }
 
 

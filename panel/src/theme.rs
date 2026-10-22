@@ -125,7 +125,10 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
         Color32::from_rgb(0xe4, 0xe8, 0xef)
     };
     v.widgets.hovered.weak_bg_fill = v.widgets.hovered.bg_fill;
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, p.border);
+    // Buttons here pass their own fill, which suppresses the hover fill, so the
+    // hover reads through a slight growth plus an accent edge instead.
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, p.accent);
+    v.widgets.hovered.expansion = 1.0;
     v.widgets.hovered.fg_stroke = Stroke::new(1.0, p.text);
 
     v.widgets.active.bg_fill = p.indigo;
