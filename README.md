@@ -22,7 +22,7 @@ Originally inspired by getPHP, **phpup** has evolved into an independent project
 Right-click PowerShell → **Run as Administrator**, then:
 
 ```powershell
-(irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.ps1).TrimStart([char]0xFEFF) | iex
+irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup-boot.ps1 | iex
 ```
 
 ### macOS

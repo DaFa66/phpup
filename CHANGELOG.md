@@ -83,6 +83,12 @@ out to the script for every action, so the scripts stay the source of truth.
   of on the architecture line, and in the panel's About popup only. `docs/CLI.md` updated.
 
 ### Fixed
+- **Windows: the documented `irm ... | iex` command failed with a parse error** - `phpup.ps1` keeps a
+  UTF-8 BOM so Windows PowerShell 5.1 decodes its box characters, and piped into `iex` that BOM
+  attaches to the first comment, so the first line is read as a command (`The term '?' is not
+  recognized`) and the `param` block below it mis-binds (`Cannot convert "0" ... to SwitchParameter`).
+  Added `phpup-boot.ps1`, a BOM-free launcher that fetches the script, strips the marker and runs it;
+  the README and `docs/WINDOWS.md` now install through it. Verified under PowerShell 7 and 5.1.
 
 - **Version missing from the mac/Linux dashboard when streamed** - the banner read `phpup v`
   with nothing after it. `script_version()` grepped `$0`, which is the shell and not a file

@@ -14,12 +14,13 @@
 Right-click PowerShell → **Run as Administrator**, then:
 
 ```powershell
-(irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.ps1).TrimStart([char]0xFEFF) | iex
+irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup-boot.ps1 | iex
 ```
 
-> phpup ships with a UTF-8 BOM so Windows PowerShell 5.1 can read the file. Piped into `iex`,
-> that same BOM stops the first line parsing, and `.TrimStart([char]0xFEFF)` removes it.
-> It looks fussy; it is load-bearing.
+> `phpup-boot.ps1` is a small BOM-free launcher. `phpup.ps1` itself keeps a UTF-8 BOM so that
+> Windows PowerShell 5.1 decodes its box characters correctly, but that BOM breaks the first
+> line when the file is piped into `iex`. The launcher fetches the real script, strips the
+> marker, and runs it, so install through the launcher rather than the script itself.
 
 After launching, press **I** to install. On subsequent runs the script remembers your setup and goes straight to the dashboard.
 
@@ -29,7 +30,7 @@ Add this to your PowerShell profile for a quick `phpup` command:
 
 ```powershell
 function phpup {
-    $command = "(irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.ps1).TrimStart([char]0xFEFF) | iex"
+    $command = "irm https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup-boot.ps1 | iex"
     Start-Process pwsh `
         -Verb RunAs `
         -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $command
