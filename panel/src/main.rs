@@ -76,8 +76,8 @@ struct Settings {
     zoom: f32,
     /// Elevate the whole panel at launch instead of per action.
     always_admin: bool,
-    /// Start the window minimised, for a tray-first workflow.
-    minimize_on_open: bool,
+    /// Start hidden in the tray: no window, no taskbar button, tray icon only.
+    start_in_tray: bool,
 }
 
 impl Default for Settings {
@@ -89,7 +89,7 @@ impl Default for Settings {
             interval: 2,
             zoom: 0.0,
             always_admin: false,
-            minimize_on_open: false,
+            start_in_tray: false,
         }
     }
 }
@@ -114,7 +114,7 @@ impl Settings {
             interval: Option<u32>,
             zoom: Option<f32>,
             always_admin: Option<bool>,
-            minimize_on_open: Option<bool>,
+            start_in_tray: Option<bool>,
         }
         let Some(path) = Self::path() else {
             return Self::default();
@@ -130,7 +130,7 @@ impl Settings {
                 interval: raw.interval.unwrap_or(2).clamp(1, 10),
                 zoom: raw.zoom.unwrap_or(0.0),
                 always_admin: raw.always_admin.unwrap_or(false),
-                minimize_on_open: raw.minimize_on_open.unwrap_or(false),
+                start_in_tray: raw.start_in_tray.unwrap_or(false),
             },
             Err(_) => Self::default(),
         }
@@ -148,7 +148,7 @@ impl Settings {
             "interval": self.interval,
             "zoom": self.zoom,
             "always_admin": self.always_admin,
-            "minimize_on_open": self.minimize_on_open,
+            "start_in_tray": self.start_in_tray,
         });
         let _ = std::fs::write(path, serde_json::to_string_pretty(&body).unwrap_or_default());
     }
@@ -242,11 +242,13 @@ struct App {
     /// Verb to run once an elevated relaunch completes.
     pending_verb: Option<String>,
     title_applied: bool,
-    /// One-shot: honours Settings::minimize_on_open in the first few frames only.
-    minimize_applied: bool,
-    /// Frames drawn so far; the minimise request is deferred until the window is
-    /// actually mapped, because winit drops it on the first frame.
+    /// One-shot: honours Settings::start_in_tray in the first few frames only.
+    tray_start_applied: bool,
+    /// Frames drawn so far; the tray start is deferred until the window is
+    /// actually mapped, because winit drops commands on the first frame.
     frames_seen: u32,
+    /// Mirrors the per-user Run entry, which is the source of truth for autostart.
+    autostart: bool,
     /// The elevated instance started; shut this one down.
     relaunch_ok: bool,
     /// One-shot: the startup elevation attempt has been made.
@@ -295,8 +297,9 @@ impl App {
             elevated: backend::is_elevated(),
             pending_verb,
             title_applied: false,
-            minimize_applied: false,
+            tray_start_applied: false,
             frames_seen: 0,
+            autostart: backend::autostart_enabled(),
             relaunch_ok: false,
             startup_elevation_done: false,
             applied_zoom: None,
@@ -1047,27 +1050,64 @@ impl App {
 
                         ui.add_space(16.0);
                         section_label(ui, p, "WINDOW");
-                        let mut minimized = self.settings.minimize_on_open;
+                        let mut in_tray = self.settings.start_in_tray;
                         if ui
                             .checkbox(
-                                &mut minimized,
-                                RichText::new("Open minimised").size(12.0).color(p.text),
+                                &mut in_tray,
+                                RichText::new("Start hidden in the tray")
+                                    .size(12.0)
+                                    .color(p.text),
                             )
                             .changed()
                         {
-                            self.settings.minimize_on_open = minimized;
+                            self.settings.start_in_tray = in_tray;
                             dirty = true;
                             self.push_log(
-                                if minimized {
-                                    "opens minimised: the window starts in the taskbar"
+                                if in_tray {
+                                    "launches to the tray: no window, no taskbar button"
                                 } else {
-                                    "opens normally"
+                                    "launches with the window open"
                                 }
                                 .to_string(),
                             );
                         }
                         ui.add(egui::Label::new(
-                            RichText::new("For leaving the panel running behind the tray icon.")
+                            RichText::new("Tray icon only at launch; click it to show the window.")
+                                .size(10.5)
+                                .color(p.muted),
+                        ));
+
+                        ui.add_space(16.0);
+                        section_label(ui, p, "STARTUP");
+                        let mut autostart = self.autostart;
+                        if ui
+                            .checkbox(
+                                &mut autostart,
+                                RichText::new("Start with Windows").size(12.0).color(p.text),
+                            )
+                            .changed()
+                        {
+                            match backend::set_autostart(autostart) {
+                                Ok(()) => {
+                                    self.autostart = autostart;
+                                    self.push_log(
+                                        if autostart {
+                                            "panel will start when you sign in"
+                                        } else {
+                                            "panel will not start when you sign in"
+                                        }
+                                        .to_string(),
+                                    );
+                                }
+                                Err(e) => {
+                                    // Show what is actually registered, not what was asked for.
+                                    self.autostart = backend::autostart_enabled();
+                                    self.push_log(format!("could not change autostart: {e}"));
+                                }
+                            }
+                        }
+                        ui.add(egui::Label::new(
+                            RichText::new("Per-user Run entry; no administrator needed.")
                                 .size(10.5)
                                 .color(p.muted),
                         ));
@@ -1729,13 +1769,14 @@ impl eframe::App for App {
             }
         }
 
-        // Tray-first workflow: honour "open minimised" once. Deferred a few frames
-        // because a minimise request made before the window is mapped is dropped.
+        // Tray-first startup: when enabled, the panel never shows a window or a
+        // taskbar button, exactly like the close button. Deferred a few frames
+        // because a command issued before the window is mapped is dropped.
         self.frames_seen = self.frames_seen.saturating_add(1);
-        if !self.minimize_applied && self.frames_seen >= 3 {
-            self.minimize_applied = true;
-            if self.settings.minimize_on_open {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        if !self.tray_start_applied && self.frames_seen >= 3 {
+            self.tray_start_applied = true;
+            if self.settings.start_in_tray {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             }
         }
 

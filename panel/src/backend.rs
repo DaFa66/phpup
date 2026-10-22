@@ -741,6 +741,63 @@ pub fn set_service_start(_name: &str, _mode: &str) -> std::io::Result<()> {
     ))
 }
 
+/// Per-user Run key. Writing it needs no elevation, so this never prompts.
+#[cfg(windows)]
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+#[cfg(windows)]
+const AUTOSTART_VALUE: &str = "phpup-panel";
+
+/// True when the per-user Run entry exists. The registry is the source of truth,
+/// so the checkbox cannot drift from what Windows will actually do at sign-in.
+#[cfg(windows)]
+pub fn autostart_enabled() -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    Command::new("reg.exe")
+        .args(["query", RUN_KEY, "/v", AUTOSTART_VALUE])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Add or remove the per-user Run entry for this executable.
+#[cfg(windows)]
+pub fn set_autostart(enabled: bool) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut c = Command::new("reg.exe");
+    if enabled {
+        let exe = std::env::current_exe()?;
+        c.args(["add", RUN_KEY, "/v", AUTOSTART_VALUE, "/t", "REG_SZ", "/d"])
+            .arg(format!("\"{}\"", exe.display()))
+            .arg("/f");
+    } else {
+        c.args(["delete", RUN_KEY, "/v", AUTOSTART_VALUE, "/f"]);
+    }
+    c.creation_flags(CREATE_NO_WINDOW);
+    let status = c.status()?;
+    // Deleting an entry that is not there is a no-op, not a failure.
+    if status.success() || !enabled {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("reg.exe exited with {status}")))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn autostart_enabled() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+pub fn set_autostart(_enabled: bool) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "start with Windows is Windows only",
+    ))
+}
+
 pub fn open_in_default_app(target: &str) {
     #[cfg(windows)]
     {
