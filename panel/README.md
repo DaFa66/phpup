@@ -3,12 +3,30 @@
 A desktop control surface for phpup. Rust + egui (glow), one static binary, no webview and
 no Node toolchain.
 
-**Panel version 0.1.0** — unreleased. Not tagged, not shipped as a download yet.
+**Panel version 0.1.0, beta** — Windows x64. Tagged and downloadable as a pre-release.
+It is a beta: expect rough edges, and read the known limits in the release notes before
+trusting it with a stack you care about.
 
 It is a control surface, not a second implementation: everything it shows and does comes
 from the phpup CLI (`phpup.ps1 status --watch --fast`, `start|stop|restart --json`), whose
 contract is documented in [`../docs/CLI.md`](../docs/CLI.md). The scripts remain the single
 source of truth for installation, updates and version switching.
+
+## Install from a release
+
+Download `phpup-panel-0.1.0-beta-win-x64.zip` from
+[Releases](https://github.com/DaFa66/phpup/releases), extract it, then run:
+
+```
+.\install.ps1              # installs into <install_path>\bin, default C:\phpup\bin
+.\install.ps1 -NoStart     # install without launching it
+```
+
+`install.ps1` copies `phpup-panel.exe`, then prints the installed path and its SHA256. It
+needs no elevation and writes no registry keys. `-Destination <dir>` installs elsewhere.
+Compare the checksum with the release notes if you want to be sure the download is intact.
+
+To build it yourself instead, see Build below.
 
 ## Requirements
 
@@ -91,7 +109,7 @@ Do not enable eframe's `accesskit` feature: its `windows` crate dependency crash
 here. Do enable `clipboard` — without it egui has no clipboard at all and both the Copy
 button and Ctrl+C silently do nothing (that was a real bug, not a UI glitch).
 
-## Install
+## Install a local build
 
 1. Build the release binary (above).
 2. Create the target folder and copy it in:

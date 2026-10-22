@@ -122,10 +122,14 @@ single source of truth for installation, updates and version switching.
 - Optional administrator mode: per action, or an always-elevated panel (no repeated UAC
   prompts) with `phpup - as administrator` in the title bar
 
+Download the beta from [Releases](https://github.com/DaFa66/phpup/releases)
+(`phpup-panel-0.1.0-beta-win-x64.zip`), extract it and run `\.install.ps1`. That copies the exe into
+`<install_path>\bin` and needs no elevation. Or build it yourself:
+
 ```
 cd panel
 cargo build --release
-copy target\release\phpup-panel.exe C:\phpup\bin\
+copy target\release\phpup-panel.exe C:\phpup\bin
 ```
 
 **Settings → Startup → Start with Windows** registers it at logon through a per-user `Run`

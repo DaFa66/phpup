@@ -13,6 +13,42 @@ overview of every release.
 
 ---
 
+## [panel 0.1.0-beta-win] — 2026-10-22
+
+### Desktop panel (phpup-panel v0.1.0, beta)
+
+*First published build of the Windows panel. Separate product chain: the panel versions
+independently of `phpup.ps1` and `phpup.sh`, so this entry affects neither script version.*
+
+Rust + egui control surface for phpup. It reads the CLI's schema-1 status payload and shells
+out to the script for every action, so the scripts stay the source of truth.
+
+#### Added
+
+- Tray-first launch: Settings -> Window -> *Start hidden in the tray* starts the panel with
+  no window and no taskbar button, so an autostart leaves a clean taskbar. Off by default.
+- Start with Windows: per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry
+  written with `reg.exe`, no elevation. The checkbox mirrors the registry rather than a
+  stored copy, so it cannot disagree with what Windows will do at sign-in.
+- Per-service startup type (`Auto` / `Disabled`) through `sc.exe config <name> start=`,
+  with only `sc.exe` elevated per action.
+- Hover feedback on every button, applied in `theme.rs`.
+- Release zip with `install.ps1`: copies the exe into `<install_path>\bin`, prints the
+  installed SHA256, needs no elevation and touches no registry keys.
+
+#### Known limits in this beta
+
+- **Windows x64 only.** macOS and Linux are planned. `phpup.sh` already emits the same
+  schema-1 payload, so the data path is portable; the work is the action layer and builds.
+- **No embedded version metadata** in the binary yet: identify a build by the zip name or
+  the release checksum.
+- **Unsigned binary**, so SmartScreen warns on first run.
+- **Per-action elevation**: a UAC prompt for each service change unless the panel runs
+  elevated (Settings -> Privileges -> always admin), which then reads
+  `phpup - as administrator` in the title bar.
+- **Tray visibility** depends on the Windows tray overflow area: if the icon is tucked
+  behind the chevron the panel looks like it never started. Pin it to the tray.
+
 ## [Unreleased]
 
 ### Added
@@ -1131,6 +1167,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**panel 0.1.0-beta**](#panel-010-beta-win--2026-10-22) | 2026-10-22 | First Windows beta of the desktop panel: tray-first launch, Start with Windows, per-service startup type, release zip with install.ps1 |
 | [**2.5.0-win**](#250-win--130-nix--2026-10-22) | 2026-10-22 | Machine-readable CLI (`status`/`start`/`stop`/`restart`, `--json`, `--watch`) + Rust control panel; upgrades stop the stack before re-extracting PHP and verify the extensions load |
 | [**2.4.5-win**](#245-win--2026-09-06) | 2026-09-06 | Refuses to start into another stack's ports; names the holder |
 | [**2.4.4-win**](#244-win--2026-08-30) | 2026-08-30 | Download progress bars restored, delete/extract progress silenced, %APPDATA% pointer default-path only |
