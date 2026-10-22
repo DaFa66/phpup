@@ -55,8 +55,8 @@ Both scripts answer `version`, and with `--json` they emit a single object and n
 `script` is `ps1` on Windows and `sh` on macOS/Linux, so a caller can tell which
 implementation answered. The same pair appears as `phpup.version` and `phpup.script` in
 the `status` payload (section 6), and it is required on both scripts — consumers must not
-infer the running version from the components. Each interactive dashboard prints it on the
-architecture line, and the desktop panel shows it in its About popup.
+infer the running version from the components. Each interactive dashboard prints it in the
+banner beside the wordmark (`phpup v1.3.0`), and the desktop panel shows it in its About popup.
 
 ## 3. Flags
 

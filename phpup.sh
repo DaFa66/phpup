@@ -996,6 +996,11 @@ manage_path() {
 
 # ---- Dashboard Display --------------------------------------
 show_banner() {
+    # The version rides with the wordmark. The box is 29 columns wide, so the
+    # right-hand padding is computed to survive a longer version string.
+    local label="phpup v$(script_version)"
+    local pad=$(( 29 - 9 - ${#label} ))
+    (( pad < 1 )) && pad=1
     printf "\n"
     printf "┌─────────────────────────────┐\n"
     printf "│    ____  _   _ ____         │\n"
@@ -1007,8 +1012,8 @@ show_banner() {
     printf "${YELLOW}▲${RESET} ${GREEN}▲${RESET} ${CYAN}▲${RESET}"
     printf "               │\n"
     printf "│         "
-    printf "${BLUE}phpup${RESET}"
-    printf "               │\n"
+    printf "${BLUE}phpup${RESET} ${CYAN}v%s${RESET}" "$(script_version)"
+    printf "%${pad}s│\n" ""
     printf "└─────────────────────────────┘\n"
     printf "\n"
 }
@@ -1018,16 +1023,16 @@ show_dashboard() {
 
     # Architecture line
     if [[ $USE_APT == 1 ]]; then
-        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}apt${RESET} | phpup: ${CYAN}%s${RESET}\n" \
-            "$ARCH" "$OS_DISTRO" "$OS_VERSION" "$(script_version)"
+        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}apt${RESET}\n" \
+            "$ARCH" "$OS_DISTRO" "$OS_VERSION"
     elif [[ $USE_PORTS == 1 ]]; then
-        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}port${RESET} | phpup: ${CYAN}%s${RESET}\n" \
-            "$ARCH" "$OS_NAME" "$OS_VERSION" "$(script_version)"
+        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Package: ${CYAN}port${RESET}\n" \
+            "$ARCH" "$OS_NAME" "$OS_VERSION"
     else
         local brew_note=""
         [[ $INTEL_BREW_NO_BOTTLES == 1 ]] && brew_note=" (Intel — PHP builds from source)"
-        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Homebrew: ${CYAN}%s${RESET}%s | phpup: ${CYAN}%s${RESET}\n" \
-            "$ARCH" "$OS_NAME" "$OS_VERSION" "$BREW_PREFIX" "$brew_note" "$(script_version)"
+        printf "Architecture: ${CYAN}%s${RESET} | OS: ${CYAN}%s %s${RESET} | Homebrew: ${CYAN}%s${RESET}%s\n" \
+            "$ARCH" "$OS_NAME" "$OS_VERSION" "$BREW_PREFIX" "$brew_note"
     fi
     printf "\n"
 

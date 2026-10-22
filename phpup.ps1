@@ -3826,8 +3826,12 @@ function Show-Dashboard {
         }
         elseif ($line -match 'phpup') {
             Write-Host "│         " -NoNewline -ForegroundColor White
-            Write-Host "phpup" -NoNewline -ForegroundColor Blue
-            Write-Host "               │" -ForegroundColor White
+            Write-Host "phpup " -NoNewline -ForegroundColor Blue
+            $verLabel = "v" + (Get-ScriptVersion)
+            Write-Host $verLabel -NoNewline -ForegroundColor Cyan
+            $pad = 29 - 9 - ("phpup " + $verLabel).Length
+            if ($pad -lt 1) { $pad = 1 }
+            Write-Host ((" " * $pad) + "│") -ForegroundColor White
         }
         else {
             Write-Host $line -ForegroundColor White
@@ -3843,9 +3847,7 @@ function Show-Dashboard {
     Write-Host "Architecture: " -NoNewline
     Write-Host "$arch" -ForegroundColor Cyan -NoNewline
     Write-Host " | Windows: " -NoNewline
-    Write-Host "$osCaption" -ForegroundColor Cyan -NoNewline
-    Write-Host " | phpup: " -NoNewline
-    Write-Host "$(Get-ScriptVersion)" -ForegroundColor Cyan
+    Write-Host "$osCaption" -ForegroundColor Cyan
     Write-Host ""
 
     # ---- System Prerequisites ----
