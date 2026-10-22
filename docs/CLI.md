@@ -56,7 +56,7 @@ Both scripts answer `version`, and with `--json` they emit a single object and n
 implementation answered. The same pair appears as `phpup.version` and `phpup.script` in
 the `status` payload (section 6), and it is required on both scripts — consumers must not
 infer the running version from the components. Each interactive dashboard prints it on the
-architecture line, and the desktop panel shows it in the header and in About.
+architecture line, and the desktop panel shows it in its About popup.
 
 ## 3. Flags
 
