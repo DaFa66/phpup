@@ -3279,13 +3279,15 @@ $script:STATUS_SCHEMA  = 1
 $script:VERSION_CACHE  = $null
 
 function Get-ScriptVersion {
-    # The header comment is the single source of truth for the version, so
-    # there is no second place to keep in sync.
+    # The header comment owns the version when the script is a file on disk.
+    # A streamed run (`irm ... | iex`) has no file, so the literal below is the
+    # fallback and must be bumped together with the header.
     if ($script:VERSION_CACHE) { return $script:VERSION_CACHE }
-    $script:VERSION_CACHE = '0.0.0'
-    $head = Get-Content $PSCommandPath -TotalCount 12 -ErrorAction SilentlyContinue
-    foreach ($line in $head) {
-        if ($line -match '^#\s*Version:\s*(\S+)') { $script:VERSION_CACHE = $matches[1]; break }
+    $script:VERSION_CACHE = '2.5.0'
+    if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) {
+        foreach ($line in (Get-Content $PSCommandPath -TotalCount 12 -ErrorAction SilentlyContinue)) {
+            if ($line -match '^#\s*Version:\s*(\S+)') { $script:VERSION_CACHE = $matches[1]; break }
+        }
     }
     return $script:VERSION_CACHE
 }

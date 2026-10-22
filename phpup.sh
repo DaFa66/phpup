@@ -11,6 +11,8 @@
 
 # ---- Config -------------------------------------------------
 REMOTE_URL='https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh'
+# Runtime version (the script is usually streamed, so no file to grep).
+PHPUP_VERSION="1.3.0"
 BASE_DIR="${HOME}/phpup"
 DOC_ROOT="${BASE_DIR}/www"
 LOGS_DIR="${BASE_DIR}/logs"
@@ -3953,7 +3955,8 @@ iso_now() {
 }
 
 script_version() {
-    sed -n 's/^#[[:space:]]*Version:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$0" 2>/dev/null | head -1
+    # Usually streamed (source <(curl ...)), so no file to grep: literal.
+    printf '%s\n' "$PHPUP_VERSION"
 }
 
 stack_pids() {
