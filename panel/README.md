@@ -3,6 +3,8 @@
 A desktop control surface for phpup. Rust + egui (glow), one static binary, no webview and
 no Node toolchain.
 
+Project site: **[phpup.org](https://phpup.org)**.
+
 **Panel version 0.1.0, beta** — Windows x64. Tagged and downloadable as a pre-release.
 It is a beta: expect rough edges, and read the known limits in the release notes before
 trusting it with a stack you care about.

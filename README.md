@@ -2,6 +2,9 @@
 
 > Install, update and manage complete PHP development environments from a single command.
 
+**[phpup.org](https://phpup.org)** — install guides per platform, screenshots of the panel and
+links to the docs.
+
 Originally inspired by getPHP, **phpup** has evolved into an independent project focused on giving developers complete control over their local PHP environment.
 
 ## Why phpup?
@@ -219,6 +222,10 @@ to macOS (Intel and Apple silicon), Linux (x86_64 and arm64) and Windows on ARM.
 Proposed, not yet started.
 
 ## Support
+
+- Project site: **[phpup.org](https://phpup.org)**
+- Releases and pre-releases: [Releases](https://github.com/DaFa66/phpup/releases)
+- Docs: [`docs/`](docs)
 
 Open an [issue](https://github.com/DaFa66/phpup/issues) or submit a [pull request](https://github.com/DaFa66/phpup/pulls).
 
