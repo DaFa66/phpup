@@ -4,8 +4,8 @@
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-10-22
-#  Version: 2.5.0
+#  Date: 2026-10-31
+#  Version: 2.6.0
 # =======================================================================
 
 param(
@@ -1336,6 +1336,33 @@ function Invoke-ConfigurePhp {
     $ini = Set-IniDirective $ini 'session.gc_maxlifetime' '14400'
     Write-Ok "Session GC lifetime: 4 hours"
 
+    # CA bundle. PHP for Windows ships no certificate store of its own, so every
+    # HTTPS request from PHP fails to verify ("unable to get local issuer
+    # certificate") unless one is configured. That takes curl and anything built
+    # on openssl streams down with it: API calls, and mail relays that need
+    # STARTTLS on port 587.
+    $caPath = "$PHP_PATH\extras\ssl\cacert.pem"
+    if (-not (Test-Path $caPath)) {
+        $caDir = Split-Path $caPath -Parent
+        if (-not (Test-Path $caDir)) {
+            New-Item -ItemType Directory -Path $caDir -Force | Out-Null
+        }
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest "https://curl.se/ca/cacert.pem" -OutFile $caPath -UseBasicParsing -Headers @{ "User-Agent" = $UA_STRING } -ErrorAction Stop
+        }
+        catch {
+            Write-Warn "Could not download the CA bundle - HTTPS requests from PHP may fail to verify certificates."
+        }
+    }
+
+    if (Test-Path $caPath) {
+        $caUnix = $caPath -replace '\\', '/'
+        $ini = Set-IniDirective $ini 'curl.cainfo' "`"$caUnix`""
+        $ini = Set-IniDirective $ini 'openssl.cafile' "`"$caUnix`""
+        Write-Ok "CA bundle -> $caPath"
+    }
+
     Set-Content -Path $iniPath -Value $ini
     Write-Ok "PHP extensions enabled: curl, fileinfo, gd, intl, mbstring, mysqli, openssl, pdo_mysql, pdo_sqlite, sodium, sqlite3"
 }
@@ -1398,6 +1425,15 @@ function Invoke-CopyPhpDlls {
 
     $phpDlls = @(Get-ChildItem "$PHP_PATH\icu*.dll" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
     $phpDlls += @('libssh2.dll', 'nghttp2.dll', 'libsodium.dll')
+
+    # OpenSSL. httpd's own bin carries a different OpenSSL major (3.x, for
+    # apr_crypto) while PHP 8.6 is built against 4.x, and Windows resolves the
+    # dependency from the Apache process first. php_openssl.dll therefore failed
+    # with "The specified module could not be found", and php_curl.dll went with
+    # it because curl is built on the same libraries. Copy whichever version PHP
+    # actually ships; the filenames differ, so both can coexist in Apache bin.
+    $phpDlls += @(Get-ChildItem "$PHP_PATH\libssl*.dll" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    $phpDlls += @(Get-ChildItem "$PHP_PATH\libcrypto*.dll" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
 
     foreach ($dll in $phpDlls) {
         $src = "$PHP_PATH\$dll"

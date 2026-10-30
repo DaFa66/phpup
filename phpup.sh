@@ -5,14 +5,14 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-10-22
-#  Version: 1.3.0
+#  Date: 2026-10-31
+#  Version: 1.4.0
 # ============================================================
 
 # ---- Config -------------------------------------------------
 REMOTE_URL='https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh'
 # Runtime version (the script is usually streamed, so no file to grep).
-PHPUP_VERSION="1.3.0"
+PHPUP_VERSION="1.4.0"
 BASE_DIR="${HOME}/phpup"
 DOC_ROOT="${BASE_DIR}/www"
 LOGS_DIR="${BASE_DIR}/logs"
@@ -687,6 +687,18 @@ verify_apache_php() {
         printf "<?php echo PHP_VERSION; ?>\n" | sudo tee "$probe" > /dev/null
     fi
     curl -s --max-time 5 "http://localhost/phpinfo.php" 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1
+}
+
+verify_php_tls() {
+    # A PHP that cannot verify certificates breaks STARTTLS mail relays and every
+    # HTTPS API call, and it fails quietly: the request just returns false. Ask
+    # for a tiny resource and report whether the handshake verified. Prints "ok"
+    # on success and nothing when the check fails.
+    local php_bin out
+    php_bin="$(stack_php_bin 2>/dev/null)" || return 1
+    [[ -n "$php_bin" && -x "$php_bin" ]] || return 1
+    out="$("$php_bin" -r '$c = stream_context_create(["http" => ["timeout" => 6]]); echo @file_get_contents("https://cloudflare.com/cdn-cgi/trace", false, $c) === false ? "" : "ok";' 2>/dev/null)"
+    [[ "$out" == "ok" ]] && printf "ok"
 }
 
 
@@ -3522,6 +3534,7 @@ switch_php_apt() {
     printf "  PHP CLI:    %s\n" "$("$(apt_php_bin)" -r 'echo PHP_VERSION;' 2>/dev/null)"
     printf "  PHP-FPM:    %s (%s)\n" "$target" "$(systemctl is-active "php${target}-fpm" 2>/dev/null)"
     printf "  Apache PHP: %s\n" "$(verify_apache_php || echo "unreachable")"
+    printf "  TLS from PHP: %s\n" "$(verify_php_tls || echo "failed (CA bundle / openssl)")"
     printf "\n"
     read -r -p "Press Enter to return to the dashboard..."
 }

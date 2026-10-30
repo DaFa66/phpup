@@ -81,8 +81,17 @@ out to the script for every action, so the scripts stay the source of truth.
   www folder into the Start-Restart-Stop buttons.
 - **Version shown in the dashboard banner wordmark** (`phpup v2.5.0`, `phpup v1.3.0`) instead
   of on the architecture line, and in the panel's About popup only. `docs/CLI.md` updated.
+- **Version bump: `phpup.ps1` 2.6.0, `phpup.sh` 1.4.0** - no release cut from this, so the
+  versioned headings and tags stay for the release pass. `docs/CLI.md` and `panel/README.md`
+  follow the new numbers.
 
 ### Fixed
+- **Windows: PHP could not make a single HTTPS request, so STARTTLS mail relays and every API call failed** - `php_openssl.dll` and `php_curl.dll` both refused to load under Apache, logging `PHP Startup: Unable to load dynamic library 'php_openssl.dll' ... The specified module could not be found` even though the DLL sat in `php\ext`. Apache's `bin` carries OpenSSL 3 for `apr_crypto`, PHP 8.6 is built against OpenSSL 4, and Windows resolves an extension's dependencies from the Apache process first, so the pair looked for a bundled dependency that was never there. `Invoke-CopyPhpDlls` copied ICU, libssh2, nghttp2 and libsodium but never the OpenSSL pair; it now copies whichever `libssl*` and `libcrypto*` PHP ships. The filenames differ by major, so both can live in Apache's bin without disturbing `mod_ssl`.
+
+- **Windows: no CA bundle, so HTTPS verification failed even once the extensions loaded** - `curl.cainfo` and `openssl.cafile` were unset and PHP for Windows ships no certificate store, which surfaces as `SSL certificate problem: unable to get local issuer certificate`. `Invoke-ConfigurePhp` now fetches `cacert.pem` into `php\extras\ssl\` and points both directives at it. Verified on a live stack: a Trongate contact form went from `mail_sent = 0` (Gmail STARTTLS refused) to `mail_sent = 1`, with a Cloudflare Turnstile check returning `success: true` from the same request, and `siteverify` reachable from the Apache SAPI.
+
+- **mac/Linux: TLS capability was never checked after a version switch** - the `fu` verification block now runs `verify_php_tls`, which asks PHP for a small HTTPS resource and prints `ok` or `failed (CA bundle / openssl)`. Same class of failure as the Windows bug above, caught at the moment a switch could introduce it.
+
 - **Windows: the documented `irm ... | iex` command failed with a parse error** - `phpup.ps1` keeps a
   UTF-8 BOM so Windows PowerShell 5.1 decodes its box characters, and piped into `iex` that BOM
   attaches to the first comment, so the first line is read as a command (`The term '?' is not

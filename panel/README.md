@@ -34,7 +34,7 @@ To build it yourself instead, see Build below.
 
 - Windows 10/11 (x64). The panel is Windows-first; it builds on macOS and Linux but service
   control and elevation are Windows paths today.
-- phpup 2.5.0+ for the CLI verbs. On an older `phpup.ps1` the panel says "not usable" and
+- phpup 2.6.0+ for the CLI verbs. On an older `phpup.ps1` the panel says "not usable" and
   waits rather than guessing.
 - To compile: Rust stable and the MSVC linker from Visual Studio Build Tools.
 
