@@ -16,6 +16,9 @@ PHPUP_VERSION="1.4.0"
 BASE_DIR="${HOME}/phpup"
 DOC_ROOT="${BASE_DIR}/www"
 LOGS_DIR="${BASE_DIR}/logs"
+# PHP session store: kept inside the stack, out of the system temp directory
+# that every PHP process on the host shares.
+SESSIONS_DIR="${BASE_DIR}/sessions"
 CONFIG_DIR="${BASE_DIR}"
 CONFIG_FILE="${BASE_DIR}/config.json"
 LEGACY_CONFIG_DIR="${HOME}/.config/phpup"
@@ -1806,6 +1809,17 @@ configure_php() {
     rm -f "${php_ini}.bak"
 }
 
+# ---- Session store ------------------------------------------
+# Create the session directory and give the web server group write access while
+# the developer stays the owner (same pattern as the document root). Setgid, so
+# files written by the CLI and by the web server share one group: PHP has to be
+# able to read and clean up both.
+ensure_sessions_dir() {
+    mkdir -p "$SESSIONS_DIR" 2>/dev/null || true
+    sudo chgrp "$HTTPD_USER" "$SESSIONS_DIR" 2>/dev/null || chgrp "$HTTPD_USER" "$SESSIONS_DIR" 2>/dev/null || true
+    sudo chmod 2775 "$SESSIONS_DIR" 2>/dev/null || chmod 2775 "$SESSIONS_DIR" 2>/dev/null || true
+}
+
 # ---- Shared php.ini policy ----------------------------------
 # Apply the common phpup php.ini settings with set-or-append semantics.
 # $1 = php.ini path, $2 = sed command (may include sudo; default sed -i.bak),
@@ -1841,6 +1855,10 @@ apply_php_ini_policy() {
 
     set_ini_directive session.gc_maxlifetime 14400
     print_ok "Session GC lifetime: 4 hours"
+
+    ensure_sessions_dir
+    set_ini_directive session.save_path "\"$SESSIONS_DIR\""
+    print_ok "Session save path: ${SESSIONS_DIR}"
 }
 
 # ---- PHP Configuration (apt) ---------------------------------

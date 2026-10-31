@@ -53,6 +53,7 @@ phpup uses standard Linux system paths:
 ├── www/             # ← Your websites go here
 │   └── phpinfo.php  # (auto-created test file)
 ├── logs/            # Apache access/error logs
+├── sessions/        # PHP session store (see Session Store)
 └── data_backup/     # (created on delete — MariaDB databases preserved)
 
 System paths (managed by apt):
@@ -87,7 +88,30 @@ System paths (managed by apt):
 - Upload limits: 50 MB files, 300s timeout (suitable for phpMyAdmin imports)
 - OPCache enabled with JIT
 - `session.gc_maxlifetime = 14400` (4 hours, matches phpMyAdmin session timeout)
+- Sessions stored in `~/phpup/sessions/` rather than the shared system store
 - PHP runs as **PHP-FPM** (`phpX.Y-fpm` systemd service) — the CLI default (`update-alternatives`) and the FPM runtime move together on version switch
+
+#### Session Store
+
+PHP writes its sessions to `session.save_path`. The apt default is
+`/var/lib/php/sessions`, a store every PHP application on the host writes to as
+`www-data`, so two projects can read each other's session data and a session key
+left behind by one app can break the next one to run.
+
+The installer sets:
+
+```ini
+session.save_path = "/home/<user>/phpup/sessions"
+```
+
+and creates the directory, owned by you with group `www-data` and mode `2775`,
+so PHP-FPM can write to it while you keep ownership. Reload the FPM service
+after a change: `sudo systemctl reload php8.5-fpm`.
+
+The stack serves through PHP-FPM, so `.htaccess` cannot override these. An app
+that needs its own session cookie gets a dedicated pool with
+`php_admin_value[session.name]`, plus `php_admin_value[session.save_path]` if it
+should have its own store.
 
 ### MariaDB
 
