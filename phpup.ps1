@@ -1513,6 +1513,102 @@ function Test-PhpRuntimeHealthy {
     return @{ Ok = $true; Detail = $matches[1] }
 }
 
+function Test-PhpTreeRunnable([string]$TreePath) {
+# Same idea as Test-PhpRuntimeHealthy, but for a STAGED tree that may be broken.
+# The binary is launched with a watchdog: a missing core DLL makes the Windows
+# loader put up a modal error box, and that process never exits by itself. That
+# is exactly how the failed 8.5.12 switch turned into an endless dialog loop.
+    $exe = Join-Path $TreePath 'php.exe'
+    if (-not (Test-Path $exe)) {
+        return @{ Ok = $false; Detail = 'php.exe is missing from the staged tree' }
+    }
+
+    $coreDll = @(Get-ChildItem $TreePath -Filter 'php*ts.dll' -ErrorAction SilentlyContinue)
+    if ($coreDll.Count -eq 0) {
+        return @{ Ok = $false; Detail = 'the core DLL (php8ts.dll) is missing - incomplete extract' }
+    }
+
+    $stamp = [guid]::NewGuid().ToString('N')
+    $outFile = Join-Path $env:TEMP "phpup-phpcheck-$stamp.out"
+    $errFile = Join-Path $env:TEMP "phpup-phpcheck-$stamp.err"
+    try {
+        $proc = Start-Process -FilePath $exe -ArgumentList '-v' -NoNewWindow -PassThru `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+    }
+    catch {
+        return @{ Ok = $false; Detail = "php.exe could not be started: $($_.Exception.Message)" }
+    }
+
+    if (-not $proc.WaitForExit(15000)) {
+        try { $proc.Kill() } catch { }
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+        return @{ Ok = $false; Detail = 'php.exe hung on startup (loader error dialog) - incomplete tree' }
+    }
+
+    $out = ((Get-Content $outFile -Raw -ErrorAction SilentlyContinue) + (Get-Content $errFile -Raw -ErrorAction SilentlyContinue))
+    Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    $out = ([string]$out).Trim()
+
+    if ($proc.ExitCode -ne 0) {
+        return @{ Ok = $false; Detail = "php.exe exited with $($proc.ExitCode): $out" }
+    }
+    if ($out -match 'Unable to load dynamic library|Unable to initialize module|compiled with module API') {
+        return @{ Ok = $false; Detail = 'core loads but the extensions do not match it' }
+    }
+    if ($out -notmatch 'PHP\s+(\d+\.\d+\.\d+)') {
+        return @{ Ok = $false; Detail = "no version reported: $out" }
+    }
+    return @{ Ok = $true; Detail = $matches[1] }
+}
+
+function Test-TreeUnlocked([string]$TreePath, [string[]]$Names) {
+# Can this folder be renamed right now? Windows allows the rename only when
+# nothing holds a handle on its files, and Move-Item's failure is unhelpful: it
+# creates the destination folder BEFORE it gives up, which is how a rollback
+# ends up looking for php.ini inside php.old\php. Probing first keeps the swap
+# clean, and keeps the destination path free of leftovers.
+    foreach ($name in $Names) {
+        $file = Join-Path $TreePath $name
+        if (-not (Test-Path $file)) { continue }
+        try {
+            $stream = [System.IO.File]::Open($file, 'Open', 'Read', 'None')
+            $stream.Close()
+        }
+        catch {
+            return @{ Ok = $false; Detail = $name }
+        }
+    }
+    return @{ Ok = $true; Detail = '' }
+}
+
+function Stop-StrayPhpProcesses {
+# Any php.exe from THIS stack still alive once the services are stopped is
+# holding the PHP folder open, and Windows then refuses to move or overwrite it.
+# Only processes running that binary are touched: a PHP script elsewhere on the
+# machine is none of our business. Returns $true when the folder is free.
+    $procs = @(Get-ProcessesByName -Names @('php') | Where-Object {
+        try { $_.Path -and $_.Path.StartsWith($PHP_PATH, [System.StringComparison]::OrdinalIgnoreCase) }
+        catch { $false }
+    })
+    if ($procs.Count -eq 0) { return $true }
+
+    Write-Warn "Stopping $($procs.Count) php.exe process(es) that would lock the PHP folder..."
+    foreach ($p in $procs) {
+        try { $p.Kill(); $p.WaitForExit(5000) | Out-Null } catch { }
+    }
+    Start-Sleep -Milliseconds 700
+
+    $left = @(Get-ProcessesByName -Names @('php'))
+    if ($left.Count -gt 0) {
+        Write-Err "$($left.Count) php.exe process(es) are still running."
+        Write-Info "  A PHP loader dialog holds them open. Close it, then re-run."
+        return $false
+    }
+    Write-Ok "PHP folder is free"
+    return $true
+}
+
+
 function Start-PhpupService($Name) {
 # Start one phpup Windows service and say WHY it failed.
 # Start-Service's own message is unhelpful ("Cannot start service 'X' on computer
@@ -3149,6 +3245,15 @@ function Invoke-ForcedUpdate {
     Stop-WebStackServices
     Start-Sleep -Seconds 2
 
+    # Windows will not move or overwrite a file another process holds open, and a
+    # php.exe wedged on a loader dialog keeps php.exe and every DLL locked. The
+    # old delete-then-extract wiped the folder anyway and left a half-new tree
+    # with no php.ini. Free the folder first; if it cannot be freed, leave PHP be.
+    if ($needsPhp -and -not (Stop-StrayPhpProcesses)) {
+        Write-Warn "Skipping the PHP switch - your current PHP is untouched."
+        $needsPhp = $false
+    }
+
     Write-Host ""
     Write-Warn "Applying selected versions..."
 
@@ -3162,23 +3267,79 @@ function Invoke-ForcedUpdate {
         Write-Host ""
     }
     if ($needsPhp) {
-        Remove-Item $PHP_PATH -Recurse -Force -ErrorAction SilentlyContinue
-        Invoke-ExtractZip $selectedPhp.Path $PHP_PATH "PHP"
-        Invoke-ConfigurePhp
-        Invoke-FixSqliteDll
-        Invoke-CopyPhpDlls
-        # PHP major may have changed (e.g. 8.x → 7.x): the Apache module DLL
-        # name follows the major version, so re-point httpd.conf at it.
-        Invoke-ConfigureApache
+        # Stage, verify, then swap. Deleting first is what turned a locked file
+        # into a broken stack: the extract died part way, but the old tree was
+        # already gone and php.ini with it. Now the live tree is only replaced
+        # once a runnable copy exists beside it, and the previous one is kept
+        # until the new one has loaded its extensions.
+        $stagedPath = "$PHP_PATH.new"
+        $backupPath = "$PHP_PATH.old"
+        Remove-Tree $stagedPath
+        Remove-Tree $backupPath
 
-        # Fail loudly here rather than letting Apache take the blame later.
-        $phpHealth = Test-PhpRuntimeHealthy
-        if ($phpHealth.Ok) {
-            Write-Ok "PHP $($phpHealth.Detail) verified - core and extensions load"
+        $phpSwapped = $false
+        if (-not (Invoke-ExtractZip $selectedPhp.Path $stagedPath "PHP")) {
+            Write-Err "PHP switch aborted - the new tree could not be written."
+            Write-Info "  $PHP_PATH is untouched and still starts."
+            Remove-Tree $stagedPath
         }
         else {
-            Write-Err "PHP verification FAILED: $($phpHealth.Detail)"
-            Write-Info "  That is a mismatched PHP tree, not an Apache problem."
+            $staged = Test-PhpTreeRunnable $stagedPath
+            if (-not $staged.Ok) {
+                Write-Err "PHP switch aborted - the staged tree is not runnable: $($staged.Detail)"
+                Write-Info "  $PHP_PATH is untouched and still starts."
+                Remove-Tree $stagedPath
+            }
+            else {
+                $unlocked = Test-TreeUnlocked $PHP_PATH @('php.exe', 'php8ts.dll', 'php8apache2_4.dll')
+                if (-not $unlocked.Ok) {
+                    Write-Err "PHP switch aborted - $($unlocked.Detail) is still open in $PHP_PATH."
+                    Write-Info "  Close whatever is holding it, then re-run. Nothing was changed."
+                    Remove-Tree $stagedPath
+                }
+                else {
+                    try {
+                        Move-Item $PHP_PATH $backupPath -ErrorAction Stop
+                        Move-Item $stagedPath $PHP_PATH -ErrorAction Stop
+                        $phpSwapped = $true
+                    }
+                    catch {
+                        Write-Err "PHP switch aborted - the folder is still in use: $($_.Exception.Message)"
+                        # Move-Item creates the destination before it fails; put the
+                        # tree back and drop the empty leftover so the rollback path
+                        # never finds php.ini nested one level too deep.
+                        if (Test-Path $backupPath) {
+                            if (Test-Path $PHP_PATH) { Remove-Tree $backupPath }
+                            else { Move-Item $backupPath $PHP_PATH -ErrorAction SilentlyContinue }
+                        }
+                        Remove-Tree $stagedPath
+                    }
+                }
+            }
+        }
+
+        if ($phpSwapped) {
+            Invoke-ConfigurePhp
+            Invoke-FixSqliteDll
+            Invoke-CopyPhpDlls
+            # PHP major may have changed (e.g. 8.x → 7.x): the Apache module DLL
+            # name follows the major version, so re-point httpd.conf at it.
+            Invoke-ConfigureApache
+
+            # Fail loudly here rather than letting Apache take the blame later.
+            $phpHealth = Test-PhpRuntimeHealthy
+            if ($phpHealth.Ok) {
+                Write-Ok "PHP $($phpHealth.Detail) verified - core and extensions load"
+                Remove-Tree $backupPath
+            }
+            else {
+                Write-Err "PHP verification FAILED: $($phpHealth.Detail)"
+                Write-Info "  Rolling back to the previous PHP - that is a bad tree, not an Apache problem."
+                Remove-Tree $PHP_PATH
+                if (Test-Path $backupPath) { Move-Item $backupPath $PHP_PATH -ErrorAction SilentlyContinue }
+                Invoke-ConfigureApache
+                Write-Info "  Previous PHP restored."
+            }
         }
         Write-Host ""
     }
