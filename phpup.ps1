@@ -1336,6 +1336,26 @@ function Invoke-ConfigurePhp {
     $ini = Set-IniDirective $ini 'session.gc_maxlifetime' '14400'
     Write-Ok "Session GC lifetime: 4 hours"
 
+    # Session store. Left unset, PHP writes sessions to the machine's temp
+    # directory: one folder shared by every PHP process on the box (and wiped
+    # by Windows cleanup tools), so two local projects can read each other's
+    # session data and logins vanish at random. A stack-owned directory keeps
+    # the store predictable and out of TEMP.
+    # The template carries commented examples (some indented, some not), so
+    # match only the column-0 form and append when there is none, otherwise the
+    # directive can end up commented out and silently do nothing.
+    $sessionsPath = "$BASE\tmp\sessions"
+    if (-not (Test-Path $sessionsPath)) {
+        New-Item -ItemType Directory -Path $sessionsPath -Force | Out-Null
+    }
+    $sessionsPathUnix = $sessionsPath -replace '\\', '/'
+    if ($ini -match '(?m)^;?session\.save_path\s*=') {
+        $ini = $ini -replace '(?m)^;?session\.save_path\s*=.*$', "session.save_path = `"$sessionsPathUnix`""
+    } else {
+        $ini = $ini + "`nsession.save_path = `"$sessionsPathUnix`""
+    }
+    Write-Ok "Session save path: $sessionsPath"
+
     # CA bundle. PHP for Windows ships no certificate store of its own, so every
     # HTTPS request from PHP fails to verify ("unable to get local issuer
     # certificate") unless one is configured. That takes curl and anything built

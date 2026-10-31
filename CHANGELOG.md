@@ -13,6 +13,68 @@ overview of every release.
 
 ---
 
+## [2.6.0-win] / [1.4.0-nix] — 2026-10-31
+
+### Windows (phpup.ps1 v2.6.0) and macOS/Linux (phpup.sh v1.4.0)
+
+Minor release. Windows: PHP could not make a single HTTPS request (OpenSSL 4 and a CA bundle), the streamed install path works, and sessions moved out of the machine temp directory into a stack-owned store. macOS/Linux: the streamed install path and dashboard version were fixed, and the `u` path stops claiming success when the stack did not come up.
+
+### Changed
+
+- **Version shown in the dashboard banner wordmark** (`phpup v2.5.0`, `phpup v1.3.0`) instead
+  of on the architecture line, and in the panel's About popup only. `docs/CLI.md` updated.
+
+- **Windows: PHP sessions now live in a stack-owned directory** - `session.save_path` is set to
+  `C:\phpup\tmp\sessions` and the directory is created during install, update and forced update.
+  Left unset, PHP wrote sessions to the machine temp directory: one store shared by every PHP
+  process on the box and deleted by Windows cleanup tools, so two local projects could read each
+  other's session data and logins vanished without warning. The edit targets the column-0
+  directive in PHP's template and appends when there is none, since the template also carries
+  indented commented examples that a looser match would leave silently commented out.
+
+### Fixed
+
+- **Windows: PHP could not make a single HTTPS request, so STARTTLS mail relays and every API call failed** - `php_openssl.dll` and `php_curl.dll` both refused to load under Apache, logging `PHP Startup: Unable to load dynamic library 'php_openssl.dll' ... The specified module could not be found` even though the DLL sat in `php\ext`. Apache's `bin` carries OpenSSL 3 for `apr_crypto`, PHP 8.6 is built against OpenSSL 4, and Windows resolves an extension's dependencies from the Apache process first, so the pair looked for a bundled dependency that was never there. `Invoke-CopyPhpDlls` copied ICU, libssh2, nghttp2 and libsodium but never the OpenSSL pair; it now copies whichever `libssl*` and `libcrypto*` PHP ships. The filenames differ by major, so both can live in Apache's bin without disturbing `mod_ssl`.
+
+- **Windows: no CA bundle, so HTTPS verification failed even once the extensions loaded** - `curl.cainfo` and `openssl.cafile` were unset and PHP for Windows ships no certificate store, which surfaces as `SSL certificate problem: unable to get local issuer certificate`. `Invoke-ConfigurePhp` now fetches `cacert.pem` into `php\extras\ssl\` and points both directives at it. Verified on a live stack: a Trongate contact form went from `mail_sent = 0` (Gmail STARTTLS refused) to `mail_sent = 1`, with a Cloudflare Turnstile check returning `success: true` from the same request, and `siteverify` reachable from the Apache SAPI.
+
+- **mac/Linux: TLS capability was never checked after a version switch** - the `fu` verification block now runs `verify_php_tls`, which asks PHP for a small HTTPS resource and prints `ok` or `failed (CA bundle / openssl)`. Same class of failure as the Windows bug above, caught at the moment a switch could introduce it.
+
+- **Windows: the documented `irm ... | iex` command failed with a parse error** - `phpup.ps1` keeps a
+  UTF-8 BOM so Windows PowerShell 5.1 decodes its box characters, and piped into `iex` that BOM
+  attaches to the first comment, so the first line is read as a command (`The term '?' is not
+  recognized`) and the `param` block below it mis-binds (`Cannot convert "0" ... to SwitchParameter`).
+  Added `phpup-boot.ps1`, a BOM-free launcher that fetches the script, strips the marker and runs it;
+  the README and `docs/WINDOWS.md` now install through it. Verified under PowerShell 7 and 5.1.
+
+- **Version missing from the mac/Linux dashboard when streamed** - the banner read `phpup v`
+  with nothing after it. `script_version()` grepped `$0`, which is the shell and not a file
+  when the script runs the documented way (`source <(curl ...)`, `bash -c "$(curl ...)"`), so
+  it came back empty. It now reads a literal, which also fixes `phpup.sh version` and the
+  `phpup.version` field in `--json`. Windows had the same hole: `Get-ScriptVersion` fell back
+  to `0.0.0` under `irm | iex`, and now falls back to the header version without throwing.
+
+- **Dashboards: the wordmark reads in dark and light terminals** - `phpup` was drawn in ANSI blue with the version in cyan, both dark variants, so on a dark terminal profile the wordmark was near invisible and the version hard to read. Both dashboards now use bold default foreground, inheriting the theme's own contrast (`phpup.ps1` used `-ForegroundColor Blue`, which maps to dark blue).
+
+- **Windows: pinned fallback URLs were stale, and the PHP one was dead** - these are the last
+  resort when live version resolution fails, and they pointed at PHP 8.5.9, which
+  `windows.php.net` has since removed (HTTP 404), plus Apache 2.4.68 and MariaDB 12.3.2 while
+  the installer ships 2.4.69 and 13.0.2. All three refreshed to the versions the script
+  installs, each verified by HEAD request before being written in. `phpMyAdmin` 5.2.3 and the
+  VC redist were already current.
+
+- **`u` claimed "[ OK ] UPDATE COMPLETE!" even when the stack did not come up** — `cmd_update`
+  printed that line unconditionally after all three backend branches. Each `start_services`
+  call now sets `update_ok=0` on failure, and the closing message distinguishes "packages
+  updated and stack up" from "packages updated, stack did not come up". Found on the Debian
+  box, where ports 80 and 3306 were held by the Ubuntu stack in the same WSL2 network
+  namespace.
+
+- **The apt update path could block on a dpkg conffile prompt** — `cmd_update`'s `apt upgrade`
+  was the only apt call in the script without `DEBIAN_FRONTEND=noninteractive`, so a `php.ini`
+  or `httpd.conf` conffile question could stall an unattended run and swallow whatever was
+  queued on stdin. Observed on Debian: the prompt consumed the remaining scripted answers.
+
 ## [panel 0.1.0-beta-win] — 2026-10-22
 
 ### Desktop panel (phpup-panel v0.1.0, beta)
@@ -51,7 +113,11 @@ out to the script for every action, so the scripts stay the source of truth.
 
 ## [Unreleased]
 
-### Added
+### Desktop panel (phpup-panel, unreleased)
+
+Improvements on top of `panel 0.1.0-beta`, not yet cut as a release. They bump no script version.
+
+#### Added
 
 - **Panel: start in the tray at launch** - Settings -> Window. On, the panel starts with no
   window and no taskbar button, tray icon only, which is what an autostart launch wants. Off
@@ -70,7 +136,7 @@ out to the script for every action, so the scripts stay the source of truth.
   Applied in `theme.rs`: the panel's explicit button fills had been suppressing egui's hover
   fill, which is why hover did nothing visible.
 
-### Changed
+#### Changed
 
 - **Panel: Settings manages boot behaviour only** - the service rows no longer carry their own
   Start/Stop. `Start` / `Restart` / `Stop` above the cards control the running processes;
@@ -79,51 +145,6 @@ out to the script for every action, so the scripts stay the source of truth.
 - **Panel: quick links moved beneath the component cards** - opening the Settings slide-out
   narrows the content area and had been pushing localhost / phpinfo / phpMyAdmin / logs /
   www folder into the Start-Restart-Stop buttons.
-- **Version shown in the dashboard banner wordmark** (`phpup v2.5.0`, `phpup v1.3.0`) instead
-  of on the architecture line, and in the panel's About popup only. `docs/CLI.md` updated.
-- **Version bump: `phpup.ps1` 2.6.0, `phpup.sh` 1.4.0** - no release cut from this, so the
-  versioned headings and tags stay for the release pass. `docs/CLI.md` and `panel/README.md`
-  follow the new numbers.
-
-### Fixed
-- **Windows: PHP could not make a single HTTPS request, so STARTTLS mail relays and every API call failed** - `php_openssl.dll` and `php_curl.dll` both refused to load under Apache, logging `PHP Startup: Unable to load dynamic library 'php_openssl.dll' ... The specified module could not be found` even though the DLL sat in `php\ext`. Apache's `bin` carries OpenSSL 3 for `apr_crypto`, PHP 8.6 is built against OpenSSL 4, and Windows resolves an extension's dependencies from the Apache process first, so the pair looked for a bundled dependency that was never there. `Invoke-CopyPhpDlls` copied ICU, libssh2, nghttp2 and libsodium but never the OpenSSL pair; it now copies whichever `libssl*` and `libcrypto*` PHP ships. The filenames differ by major, so both can live in Apache's bin without disturbing `mod_ssl`.
-
-- **Windows: no CA bundle, so HTTPS verification failed even once the extensions loaded** - `curl.cainfo` and `openssl.cafile` were unset and PHP for Windows ships no certificate store, which surfaces as `SSL certificate problem: unable to get local issuer certificate`. `Invoke-ConfigurePhp` now fetches `cacert.pem` into `php\extras\ssl\` and points both directives at it. Verified on a live stack: a Trongate contact form went from `mail_sent = 0` (Gmail STARTTLS refused) to `mail_sent = 1`, with a Cloudflare Turnstile check returning `success: true` from the same request, and `siteverify` reachable from the Apache SAPI.
-
-- **mac/Linux: TLS capability was never checked after a version switch** - the `fu` verification block now runs `verify_php_tls`, which asks PHP for a small HTTPS resource and prints `ok` or `failed (CA bundle / openssl)`. Same class of failure as the Windows bug above, caught at the moment a switch could introduce it.
-
-- **Windows: the documented `irm ... | iex` command failed with a parse error** - `phpup.ps1` keeps a
-  UTF-8 BOM so Windows PowerShell 5.1 decodes its box characters, and piped into `iex` that BOM
-  attaches to the first comment, so the first line is read as a command (`The term '?' is not
-  recognized`) and the `param` block below it mis-binds (`Cannot convert "0" ... to SwitchParameter`).
-  Added `phpup-boot.ps1`, a BOM-free launcher that fetches the script, strips the marker and runs it;
-  the README and `docs/WINDOWS.md` now install through it. Verified under PowerShell 7 and 5.1.
-
-- **Version missing from the mac/Linux dashboard when streamed** - the banner read `phpup v`
-  with nothing after it. `script_version()` grepped `$0`, which is the shell and not a file
-  when the script runs the documented way (`source <(curl ...)`, `bash -c "$(curl ...)"`), so
-  it came back empty. It now reads a literal, which also fixes `phpup.sh version` and the
-  `phpup.version` field in `--json`. Windows had the same hole: `Get-ScriptVersion` fell back
-  to `0.0.0` under `irm | iex`, and now falls back to the header version without throwing.
-
-- **Dashboards: the wordmark reads in dark and light terminals** - `phpup` was drawn in ANSI blue with the version in cyan, both dark variants, so on a dark terminal profile the wordmark was near invisible and the version hard to read. Both dashboards now use bold default foreground, inheriting the theme's own contrast (`phpup.ps1` used `-ForegroundColor Blue`, which maps to dark blue).
-- **Windows: pinned fallback URLs were stale, and the PHP one was dead** - these are the last
-  resort when live version resolution fails, and they pointed at PHP 8.5.9, which
-  `windows.php.net` has since removed (HTTP 404), plus Apache 2.4.68 and MariaDB 12.3.2 while
-  the installer ships 2.4.69 and 13.0.2. All three refreshed to the versions the script
-  installs, each verified by HEAD request before being written in. `phpMyAdmin` 5.2.3 and the
-  VC redist were already current.
-
-- **`u` claimed "[ OK ] UPDATE COMPLETE!" even when the stack did not come up** — `cmd_update`
-  printed that line unconditionally after all three backend branches. Each `start_services`
-  call now sets `update_ok=0` on failure, and the closing message distinguishes "packages
-  updated and stack up" from "packages updated, stack did not come up". Found on the Debian
-  box, where ports 80 and 3306 were held by the Ubuntu stack in the same WSL2 network
-  namespace.
-- **The apt update path could block on a dpkg conffile prompt** — `cmd_update`'s `apt upgrade`
-  was the only apt call in the script without `DEBIAN_FRONTEND=noninteractive`, so a `php.ini`
-  or `httpd.conf` conffile question could stall an unattended run and swallow whatever was
-  queued on stdin. Observed on Debian: the prompt consumed the remaining scripted answers.
 
 ## [2.5.0-win] / [1.3.0-nix] — 2026-10-22
 
@@ -1197,6 +1218,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**2.6.0-win**](#260-win--140-nix--2026-10-31) | 2026-10-31 | Sessions moved to a stack-owned store out of the Windows temp directory; PHP on Windows can make HTTPS requests at all (OpenSSL 4 + CA bundle); streamed install path fixed; `u` stops claiming success when the stack stays down |
 | [**panel 0.1.0-beta**](#panel-010-beta-win--2026-10-22) | 2026-10-22 | First Windows beta of the desktop panel: tray-first launch, Start with Windows, per-service startup type, release zip with install.ps1 |
 | [**2.5.0-win**](#250-win--130-nix--2026-10-22) | 2026-10-22 | Machine-readable CLI (`status`/`start`/`stop`/`restart`, `--json`, `--watch`) + Rust control panel; upgrades stop the stack before re-extracting PHP and verify the extensions load |
 | [**2.4.5-win**](#245-win--2026-09-06) | 2026-09-06 | Refuses to start into another stack's ports; names the holder |
@@ -1225,6 +1247,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**1.4.0-nix**](#260-win--140-nix--2026-10-31) | 2026-10-31 | Streamed installs report their version; dashboards readable on dark and light terminals; `u` stops claiming success when the stack stays down; apt update no longer blocks on a dpkg conffile prompt |
 | [**1.3.0-nix**](#250-win--130-nix--2026-10-22) | 2026-10-22 | Machine-readable CLI (`status`/`start`/`stop`/`restart`), `--json`, `--watch`, documented exit codes |
 | [**1.2.7-nix**](#127-nix--2026-09-13) | 2026-09-13 | `fu` version-switch menu: stderr stream contract, 1-based selection, unlink guard |
 | [**1.2.6-nix**](#126-nix--2026-09-12) | 2026-09-12 | Stack-aware service status, Apache PHP module follows the active formula, dashboard reports the served PHP |

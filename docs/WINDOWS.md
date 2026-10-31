@@ -57,6 +57,7 @@ C:\phpup\
 │   ├── apache_access.log
 │   ├── php_errors.log
 │   └── mariadb_error.log
+├── tmp\sessions\    # PHP session store (see Session Store)
 ├── data_backup\     # (created on delete — databases preserved)
 └── config_backup\   # (created on delete — config files preserved)
 ```
@@ -100,6 +101,27 @@ phpup doesn't hardcode version numbers. Every install and update dynamically res
 - OPCache enabled with 256 MB memory, JIT tracing, 100 MB buffer — web server only; CLI runs with opcache off so phar tools (Composer, artisan) work reliably
 - PHP dependency DLLs copied to Apache `bin/` for clean extension loading
 - Added to user PATH
+
+#### Session Store
+
+PHP writes its sessions to `session.save_path`. Left at the default, that is the machine's temp
+directory: one store shared by every PHP process on the box and emptied by Windows cleanup tools.
+Two projects on the same host then read each other's session data, and a stale session can break a
+brand new install (a session key left behind by one app is read by the next one to run).
+
+The installer sets:
+
+```ini
+session.save_path = "C:/phpup/tmp/sessions"
+```
+
+and creates the directory, on install, update and forced update. `session.gc_maxlifetime` is four
+hours, matched to phpMyAdmin's `LoginCookieValidity`. Apache must be restarted for a changed
+`php.ini` to take effect (`R` from the dashboard).
+
+Two apps that need separate session cookies on the same host can set `php_value session.name` and,
+if they want their own store, `php_value session.save_path` in their own `.htaccess` (this works
+because the stack uses `mod_php`).
 
 #### SQLite3 DLL Fix
 
