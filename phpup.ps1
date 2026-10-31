@@ -779,14 +779,21 @@ function Resolve-PhpSeriesUrl($json, [string]$series) {
 # has no stable build.
     $entry = $json.$series
     if (-not $entry -or -not $entry.version) { return $null }
-    if ($entry.version -notmatch '^\d+\.\d+\.\d+$') { return $null }  # not a stable patch
 
-    # Prefer VS17, fall back to VS16, then VC15 (7.x)
-    foreach ($key in @('ts-vs17-x64', 'ts-vs16-x64', 'ts-vc15-x64')) {
+    # windows.php.net publishes rebuild suffixes ("8.2.35-1", "8.5.12-1"): the
+    # base version is what people recognise and compare, the suffix only
+    # survives inside the zip name. Demanding a bare x.y.z rejected every entry
+    # once 8.2 shipped that way, which emptied the switch menu of every series
+    # that was not already sitting in the download cache.
+    if ($entry.version -notmatch '^(\d+\.\d+\.\d+)(?:-\d+)?$') { return $null }
+    $baseVersion = $matches[1]
+
+    # Prefer VS18 (8.6+), then VS17, VS16, and VC15 (7.x)
+    foreach ($key in @('ts-vs18-x64', 'ts-vs17-x64', 'ts-vs16-x64', 'ts-vc15-x64')) {
         if ($entry.$key -and $entry.$key.zip) {
             $path = $entry.$key.zip.path
             return @{
-                Version = $entry.version
+                Version = $baseVersion
                 Url     = "https://windows.php.net/downloads/releases/$path"
                 File    = $path
             }
