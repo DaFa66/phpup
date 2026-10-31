@@ -5,7 +5,7 @@
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
 #  Date: 2026-10-31
-#  Version: 2.6.0
+#  Version: 2.5.1
 # =======================================================================
 
 param(
@@ -3507,7 +3507,7 @@ function Get-ScriptVersion {
     # A streamed run (`irm ... | iex`) has no file, so the literal below is the
     # fallback and must be bumped together with the header.
     if ($script:VERSION_CACHE) { return $script:VERSION_CACHE }
-    $script:VERSION_CACHE = '2.5.0'
+    $script:VERSION_CACHE = '2.5.1'
     if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) {
         foreach ($line in (Get-Content $PSCommandPath -TotalCount 12 -ErrorAction SilentlyContinue)) {
             if ($line -match '^#\s*Version:\s*(\S+)') { $script:VERSION_CACHE = $matches[1]; break }

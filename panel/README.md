@@ -34,7 +34,7 @@ To build it yourself instead, see Build below.
 
 - Windows 10/11 (x64). The panel is Windows-first; it builds on macOS and Linux but service
   control and elevation are Windows paths today.
-- phpup 2.6.0+ for the CLI verbs. On an older `phpup.ps1` the panel says "not usable" and
+- phpup 2.5.1+ for the CLI verbs. On an older `phpup.ps1` the panel says "not usable" and
   waits rather than guessing.
 - To compile: Rust stable and the MSVC linker from Visual Studio Build Tools.
 
@@ -188,7 +188,7 @@ launch a panel.
   first frame, so this should not happen; at 200% scaling a fixed 980×700 would not fit.
 - **Copy does nothing** — the `clipboard` feature is missing from eframe. See Build.
 - **Output shows "not usable: ... (exit 1)"** — you are on the GitHub source and the
-  published `phpup.ps1` predates the CLI. Switch to Local until 2.5.0 ships.
+  published `phpup.ps1` predates the CLI. Switch to Local, or update the published script.
 - **Screenshotting the settings panel** — set `PHPUP_PANEL_OPEN_SETTINGS=1` to open it at
   launch.
 - **Panic log** — `%LOCALAPPDATA%\phpup\panel\panic.log`. The release build has no console

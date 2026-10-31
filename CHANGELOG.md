@@ -8,20 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 Versions for `phpup.ps1` (Windows) and `phpup.sh` (Mac/Linux) are tracked independently
 using platform suffixes: **`-win`** for Windows, **`-nix`** for macOS and Linux.
 
+The last digit is a patch: fixes, corrections and small behaviour changes release as
+`x.y.z` → `x.y.z+1`. The middle digit is reserved for a feature milestone, so it only
+moves when a release genuinely adds a capability worth calling out. Both scripts move
+together, keeping their own numbering.
+
 Jump to the [Version History Summary](#version-history-summary) table for a quick
 overview of every release.
 
 ---
 
-## [2.6.0-win] / [1.4.0-nix] — 2026-10-31
+## [2.5.1-win] / [1.3.1-nix] — 2026-10-31
 
-### Windows (phpup.ps1 v2.6.0) and macOS/Linux (phpup.sh v1.4.0)
+### Windows (phpup.ps1 v2.5.1) and macOS/Linux (phpup.sh v1.3.1)
 
-Minor release. Windows: PHP could not make a single HTTPS request (OpenSSL 4 and a CA bundle), the streamed install path works, and sessions moved out of the machine temp directory into a stack-owned store. macOS/Linux: the streamed install path and dashboard version were fixed, and the `u` path stops claiming success when the stack did not come up.
+Patch release. Windows: PHP could not make a single HTTPS request (OpenSSL 4 and a CA bundle), the streamed install path works, sessions moved out of the machine temp directory into a stack-owned store, and `fu` no longer leaves a half-switched PHP tree behind. macOS/Linux: the streamed install path and dashboard version were fixed, sessions moved to the stack in the same way, and the `u` path stops claiming success when the stack did not come up.
 
 ### Changed
 
-- **Version shown in the dashboard banner wordmark** (`phpup v2.5.0`, `phpup v1.3.0`) instead
+- **Version shown in the dashboard banner wordmark** (`phpup v2.5.1`, `phpup v1.3.1`) instead
   of on the architecture line, and in the panel's About popup only. `docs/CLI.md` updated.
 
 - **Windows: PHP sessions now live in a stack-owned directory** - `session.save_path` is set to
@@ -32,7 +37,34 @@ Minor release. Windows: PHP could not make a single HTTPS request (OpenSSL 4 and
   directive in PHP's template and appends when there is none, since the template also carries
   indented commented examples that a looser match would leave silently commented out.
 
+- **mac/Linux: sessions now live in the stack too** - `session.save_path` is set to
+  `~/phpup/sessions` inside `apply_php_ini_policy`, so brew, apt and MacPorts all get it from
+  one place. Debian and Ubuntu put sessions in `/var/lib/php/sessions`, which every PHP
+  application on the host writes to as `www-data`; brew and MacPorts fall back to the system
+  temp directory. `ensure_sessions_dir` creates the directory group-owned by the web server
+  user with mode 2775 and the developer as owner, matching the document root pattern. Verified
+  on Ubuntu 24.04 and on an Intel Mac: one active directive after repeated runs, and a request
+  through the web server writing `sess_*` into the store.
+
+- **`fu`: the PHP list offers every supported series, not just the cached ones** -
+  `windows.php.net` publishes rebuild suffixes (`8.2.35-1`, `8.5.12-1`) and
+  `Resolve-PhpSeriesUrl` demanded a bare `x.y.z`, so it rejected every entry and the menu fell
+  back to the download cache alone. It now accepts the optional suffix, reports the base
+  version, and prefers the VS18 toolchain that 8.6+ builds ship with. With `php_min_series` at
+  8.2 the menu offers 8.2.35, 8.3.36, 8.4.27 and 8.5.12, downloading whichever one is missing
+  when it is selected.
+
 ### Fixed
+
+- **Windows: `fu` could leave a half-switched PHP tree with no `php.ini`** - the switch deleted
+  the PHP folder first and then extracted over it, ignoring whether the extract worked. A
+  `php.exe` still running (wedged on a loader dialog) made Windows refuse to replace the locked
+  files, so the folder ended up holding the new DLLs, the old `php.exe`, no `php8ts.dll` and no
+  `php.ini`, and every later launch opened the same error dialog in a loop. `fu` now stops stray
+  `php.exe` processes from the stack, extracts to `php.new`, checks the core DLL is there and
+  that `php.exe -v` answers within 15 seconds, probes the live folder for locks, and only then
+  renames the old tree to `php.old` and promotes the new one. A switch that fails leaves the
+  previous PHP untouched; a failed health check rolls back to it.
 
 - **Windows: PHP could not make a single HTTPS request, so STARTTLS mail relays and every API call failed** - `php_openssl.dll` and `php_curl.dll` both refused to load under Apache, logging `PHP Startup: Unable to load dynamic library 'php_openssl.dll' ... The specified module could not be found` even though the DLL sat in `php\ext`. Apache's `bin` carries OpenSSL 3 for `apr_crypto`, PHP 8.6 is built against OpenSSL 4, and Windows resolves an extension's dependencies from the Apache process first, so the pair looked for a bundled dependency that was never there. `Invoke-CopyPhpDlls` copied ICU, libssh2, nghttp2 and libsodium but never the OpenSSL pair; it now copies whichever `libssl*` and `libcrypto*` PHP ships. The filenames differ by major, so both can live in Apache's bin without disturbing `mod_ssl`.
 
@@ -1218,7 +1250,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| [**2.6.0-win**](#260-win--140-nix--2026-10-31) | 2026-10-31 | Sessions moved to a stack-owned store out of the Windows temp directory; PHP on Windows can make HTTPS requests at all (OpenSSL 4 + CA bundle); streamed install path fixed; `u` stops claiming success when the stack stays down |
+| [**2.5.1-win**](#251-win--131-nix--2026-10-31) | 2026-10-31 | Sessions moved to a stack-owned store out of the Windows temp directory; PHP on Windows can make HTTPS requests at all (OpenSSL 4 + CA bundle); streamed install path fixed; `fu` stages and verifies a PHP switch instead of deleting first, and lists every supported PHP series; `u` stops claiming success when the stack stays down |
 | [**panel 0.1.0-beta**](#panel-010-beta-win--2026-10-22) | 2026-10-22 | First Windows beta of the desktop panel: tray-first launch, Start with Windows, per-service startup type, release zip with install.ps1 |
 | [**2.5.0-win**](#250-win--130-nix--2026-10-22) | 2026-10-22 | Machine-readable CLI (`status`/`start`/`stop`/`restart`, `--json`, `--watch`) + Rust control panel; upgrades stop the stack before re-extracting PHP and verify the extensions load |
 | [**2.4.5-win**](#245-win--2026-09-06) | 2026-09-06 | Refuses to start into another stack's ports; names the holder |
@@ -1247,7 +1279,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| [**1.4.0-nix**](#260-win--140-nix--2026-10-31) | 2026-10-31 | Streamed installs report their version; dashboards readable on dark and light terminals; `u` stops claiming success when the stack stays down; apt update no longer blocks on a dpkg conffile prompt |
+| [**1.3.1-nix**](#251-win--131-nix--2026-10-31) | 2026-10-31 | Sessions moved into the stack (`~/phpup/sessions`) on brew, apt and MacPorts; streamed installs report their version; dashboards readable on dark and light terminals; `u` stops claiming success when the stack stays down; apt update no longer blocks on a dpkg conffile prompt |
 | [**1.3.0-nix**](#250-win--130-nix--2026-10-22) | 2026-10-22 | Machine-readable CLI (`status`/`start`/`stop`/`restart`), `--json`, `--watch`, documented exit codes |
 | [**1.2.7-nix**](#127-nix--2026-09-13) | 2026-09-13 | `fu` version-switch menu: stderr stream contract, 1-based selection, unlink guard |
 | [**1.2.6-nix**](#126-nix--2026-09-12) | 2026-09-12 | Stack-aware service status, Apache PHP module follows the active formula, dashboard reports the served PHP |
