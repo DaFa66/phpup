@@ -18,7 +18,7 @@ overview of every release.
 
 ---
 
-## [2.5.1-win] / [1.3.1-nix] — 2026-10-31
+## [2.5.1-win] / [1.3.1-nix] — 2026-11-01
 
 ### Windows (phpup.ps1 v2.5.1) and macOS/Linux (phpup.sh v1.3.1)
 
@@ -1250,7 +1250,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| [**2.5.1-win**](#251-win--131-nix--2026-10-31) | 2026-10-31 | Sessions moved to a stack-owned store out of the Windows temp directory; PHP on Windows can make HTTPS requests at all (OpenSSL 4 + CA bundle); streamed install path fixed; `fu` stages and verifies a PHP switch instead of deleting first, and lists every supported PHP series; `u` stops claiming success when the stack stays down |
+| [**2.5.1-win**](#251-win--131-nix--2026-11-01) | 2026-11-01 | Sessions moved to a stack-owned store out of the Windows temp directory; PHP on Windows can make HTTPS requests at all (OpenSSL 4 + CA bundle); streamed install path fixed; `fu` stages and verifies a PHP switch instead of deleting first, and lists every supported PHP series; `u` stops claiming success when the stack stays down |
 | [**panel 0.1.0-beta**](#panel-010-beta-win--2026-10-22) | 2026-10-22 | First Windows beta of the desktop panel: tray-first launch, Start with Windows, per-service startup type, release zip with install.ps1 |
 | [**2.5.0-win**](#250-win--130-nix--2026-10-22) | 2026-10-22 | Machine-readable CLI (`status`/`start`/`stop`/`restart`, `--json`, `--watch`) + Rust control panel; upgrades stop the stack before re-extracting PHP and verify the extensions load |
 | [**2.4.5-win**](#245-win--2026-09-06) | 2026-09-06 | Refuses to start into another stack's ports; names the holder |
@@ -1279,7 +1279,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| [**1.3.1-nix**](#251-win--131-nix--2026-10-31) | 2026-10-31 | Sessions moved into the stack (`~/phpup/sessions`) on brew, apt and MacPorts; streamed installs report their version; dashboards readable on dark and light terminals; `u` stops claiming success when the stack stays down; apt update no longer blocks on a dpkg conffile prompt |
+| [**1.3.1-nix**](#251-win--131-nix--2026-11-01) | 2026-11-01 | Sessions moved into the stack (`~/phpup/sessions`) on brew, apt and MacPorts; streamed installs report their version; dashboards readable on dark and light terminals; `u` stops claiming success when the stack stays down; apt update no longer blocks on a dpkg conffile prompt |
 | [**1.3.0-nix**](#250-win--130-nix--2026-10-22) | 2026-10-22 | Machine-readable CLI (`status`/`start`/`stop`/`restart`), `--json`, `--watch`, documented exit codes |
 | [**1.2.7-nix**](#127-nix--2026-09-13) | 2026-09-13 | `fu` version-switch menu: stderr stream contract, 1-based selection, unlink guard |
 | [**1.2.6-nix**](#126-nix--2026-09-12) | 2026-09-12 | Stack-aware service status, Apache PHP module follows the active formula, dashboard reports the served PHP |

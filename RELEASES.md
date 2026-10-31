@@ -32,7 +32,7 @@ and fixes move the last digit.
    - keep the subheading `### Windows (phpup.ps1 vX) and macOS/Linux (phpup.sh vY)`
    - entries under `### Changed` and `### Fixed`, newest first
    - add **both** rows to the Version History Summary tables, with anchors matching the heading
-     slug (`## [2.5.1-win] / [1.3.1-nix]` → `#251-win--131-nix--2026-10-31`)
+     slug (`## [2.5.1-win] / [1.3.1-nix]` → `#251-win--131-nix--2026-11-01`)
    - panel work that ships separately stays under `## [Unreleased]`
 4. Documentation that describes the behaviour lands in the same commit: `docs/WINDOWS.md`,
    `docs/LINUX.md`, `docs/MACOS.md`, `docs/CLI.md`.
@@ -71,7 +71,7 @@ git push origin :refs/tags/v2.6.0-win :refs/tags/v1.4.0-nix
 
 | Tag | Date | Milestone |
 |---|---|---|
-| `v2.5.1-win` / `v1.3.1-nix` | 2026-10-31 | Sessions in a stack-owned store on both platforms, Windows HTTPS fixed (OpenSSL 4 + CA bundle), `fu` stages and verifies PHP switches and offers every supported series |
+| `v2.5.1-win` / `v1.3.1-nix` | 2026-11-01 | Sessions in a stack-owned store on both platforms, Windows HTTPS fixed (OpenSSL 4 + CA bundle), `fu` stages and verifies PHP switches and offers every supported series |
 | `v2.5.0-win` / `v1.3.0-nix` | 2026-10-22 | Machine-readable CLI (`status`/`--json`/`--watch`) and the Rust control panel |
 | `panel-v0.1.0-beta-win` | 2026-10-22 | First Windows panel beta |
 | `v1.0.0-nix` | 2026-08-11 | First stable release (macOS/Linux) |

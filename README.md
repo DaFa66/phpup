@@ -102,7 +102,7 @@ The dashboard shows installed versions, running services, useful paths, and avai
 | ------ | ----------------------------------------------------------------------------------------------- |
 | **I**  | Install the web stack                                                                           |
 | **U**  | Update outdated components                                                                      |
-| **fu** | _(hidden)_ PHP version switch (package manager on Mac/Linux, offline zips on Windows — fills missing series, flags newer patches, handles pre-release labels; on Linux switches Apache's PHP-FPM runtime + CLI together) |
+| **fu** | _(hidden)_ PHP version switch (package manager on Mac/Linux, cached zips on Windows with a missing series downloaded on demand — flags newer patches, handles pre-release labels; on Linux switches Apache's PHP-FPM runtime + CLI together) |
 | **R**  | Restart Apache + MariaDB                                                                        |
 | **S**  | Toggle services — stops if running, starts if stopped. On Windows, offers service registration. |
 | **D**  | Delete the stack (preserves `www/` and databases)                                               |

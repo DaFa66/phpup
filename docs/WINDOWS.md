@@ -152,7 +152,7 @@ Run with `-Offline` to skip all network activity:
 
 Requires pre-downloaded zips in `C:\phpup\downloads\`. Run the script online once to populate the cache, then all subsequent installs skip downloads entirely.
 
-Once multiple versions are cached, the hidden **`fu`** command lets you switch between them interactively — upgrades, downgrades, or snapshots — without touching the network. MariaDB databases are automatically backed up and restored across version changes.
+Once multiple versions are cached, the hidden **`fu`** command lets you switch between them interactively — upgrades, downgrades, or snapshots — with the cached zips installing offline. A series you have never downloaded is fetched on demand, so `fu` is the only place you need to go to change PHP version. MariaDB databases are automatically backed up and restored across version changes.
 
 ### `fu` on Windows — PHP series management
 
@@ -178,7 +178,9 @@ The dashboard's **Process Status** section groups the web server with its PHP en
 
 If one or more components are missing (a failed `fu` apply, a manually deleted folder, an interrupted install), the dashboard shows a **partial stack detected** notice and offers **I** Install as the recovery path. Install skips components already at or above the latest version (Apache, PHP, MariaDB, and phpMyAdmin are all checked) and installs only what's missing — websites, databases, and settings are preserved.
 
-Upgrades are safe by construction on Windows. MariaDB keeps its data: the install path stops the services, backs up the data directory to `data_backup_update\`, extracts the new version, and restores the data before restarting. Apache and PHP are stop-then-replace as well: the stack is stopped and the destination folder is cleared before extracting, because a running `httpd` memory-maps `php8ts.dll` and the loaded extension DLLs, and overwriting a mapped file fails without an error. After extraction PHP is verified (`php.exe -v`, with no extension load failures) and every dependency DLL copied into `Apache\bin` is size-checked, so a bad install is reported at that point instead of surfacing later as Apache refusing to start. This applies to both online installs and `-Offline` cached-zip installs.
+Upgrades are safe by construction on Windows. MariaDB keeps its data: the install path stops the services, backs up the data directory to `data_backup_update\`, extracts the new version, and restores the data before restarting. Apache and phpMyAdmin are stop-then-replace: the stack is stopped and the destination folder is cleared before extracting, because a running `httpd` memory-maps `php8ts.dll` and the loaded extension DLLs, and overwriting a mapped file fails without an error.
+
+PHP is never cleared first. A switch stops the services, force-stops any `php.exe` from `C:\phpup\php` that survived (a build wedged on a loader dialog holds `php.exe` and every DLL open, and Windows then refuses to replace them), and extracts into `php.new`. The staged tree is checked before anything is touched: the core DLL must be there, and `php.exe -v` must answer within 15 seconds, because a missing DLL makes the Windows loader raise a modal box that never closes. Only then is the live folder renamed to `php.old`, the new tree promoted, `php.ini` regenerated, every dependency DLL copied into `Apache\bin` size-checked, and `php.exe -v` run again with extension load failures reported. If any step fails the previous PHP is restored and the stack restarts on it, so a failed switch can no longer leave a half-extracted folder with no `php.ini`. `php.old` is deleted only after the new build reports itself healthy. This applies to online installs and to cached-zip installs alike.
 
 ## Service Registration
 
