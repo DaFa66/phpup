@@ -117,14 +117,15 @@ session.save_path = "/Users/<user>/phpup/sessions"
 ```
 
 and creates the directory, owned by you with group `_www` and mode `2775`, so
-the web server can write to it while you keep ownership. Restart the PHP-FPM
-service after a change (`brew services restart php`, or `sudo port reload phpXY`
-on MacPorts).
+the web server can write to it while you keep ownership. On macOS PHP is loaded
+into Apache as `mod_php` on both backends, so Apache is what has to be restarted
+after a change: `sudo /usr/local/opt/httpd/bin/httpd -k restart` (Homebrew) or
+the MacPorts `apache2` service. Until it restarts, `phpinfo()` still reports
+`session.save_path`, `no value`.
 
-The stack serves through PHP-FPM, so `.htaccess` cannot override these. An app
-that needs its own session cookie gets a dedicated pool with
-`php_admin_value[session.name]`, plus `php_admin_value[session.save_path]` if it
-should have its own store.
+Because PHP runs inside Apache and the document root allows overrides, an app
+can give itself its own cookie with `php_value session.name` in its own
+`.htaccess`, plus `php_value session.save_path` if it should have its own store.
 
 ### MariaDB
 
