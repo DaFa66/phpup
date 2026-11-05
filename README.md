@@ -226,9 +226,10 @@ Proposed, not yet started.
 - Project site: **[phpup.org](https://phpup.org)**
 - Releases and pre-releases: [Releases](https://github.com/DaFa66/phpup/releases)
 - Docs: [`docs/`](docs)
+- Legal and licensing: [LEGAL.md](LEGAL.md)
 
 Open an [issue](https://github.com/DaFa66/phpup/issues) or submit a [pull request](https://github.com/DaFa66/phpup/pulls).
 
 ---
 
-> **Disclaimer:** phpup is an independent, open-source tool and is not affiliated with, sponsored by, or endorsed by the PHP Group, the PHP Foundation, Apache Lounge, MariaDB Foundation, or phpMyAdmin.
+> **Disclaimer:** phpup is an independent, open-source tool and is not affiliated with, sponsored by, or endorsed by the PHP Group, the PHP Foundation, Apache Lounge, MariaDB Foundation, or phpMyAdmin. The full notice, covering copyright, the MIT licence, third-party software, warranty and liability, is in [LEGAL.md](LEGAL.md).
