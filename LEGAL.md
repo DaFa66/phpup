@@ -12,6 +12,8 @@ Unless otherwise stated, the code, scripts, documentation, configuration and int
 
 The Windows implementation was independently developed by Simon Field. The macOS and Linux implementations initially incorporated adaptations of work from the earlier getPHP project, and have since undergone substantial independent development and modification. Where any identifiable portions of original third-party code remain, the applicable original copyright notices and licence terms continue to apply.
 
+A copy of the original getPHP copyright notice and MIT licence is retained unchanged in the repository: [`docs/licences/getphp-original-MIT.txt`](docs/licences/getphp-original-MIT.txt).
+
 The acknowledgement of getPHP recognises the project's origins. It does not imply that phpup is owned, maintained, endorsed or supported by the original getPHP author.
 
 ## Licence

@@ -227,6 +227,7 @@ Proposed, not yet started.
 - Releases and pre-releases: [Releases](https://github.com/DaFa66/phpup/releases)
 - Docs: [`docs/`](docs)
 - Legal and licensing: [LEGAL.md](LEGAL.md)
+- Third-party licence notices: [`docs/licences/`](docs/licences)
 
 Open an [issue](https://github.com/DaFa66/phpup/issues) or submit a [pull request](https://github.com/DaFa66/phpup/pulls).
 
