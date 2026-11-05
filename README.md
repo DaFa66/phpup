@@ -7,6 +7,10 @@ links to the docs.
 
 Originally inspired by getPHP, **phpup** has evolved into an independent project focused on giving developers complete control over their local PHP environment.
 
+**More than one phpup.** This repository is the stack installer at
+[phpup.org](https://phpup.org). Other projects on GitHub share the name and do
+different things, including a PHP version manager.
+
 ## Why phpup?
 
 - Always installs the latest stable component versions
