@@ -8,7 +8,7 @@ and fixes move the last digit.
 - `phpup.ps1` (Windows) and `phpup.sh` (macOS/Linux) are versioned independently, tagged with
   the `-win` and `-nix` suffixes. Both move together at release time, each keeping its own numbers.
 - **Last digit — patch.** Bug fixes, corrections and small behaviour changes. Most releases are
-  these: `2.5.0` → `2.5.1`, `1.3.0` → `1.3.1`.
+  these: `2.5.1` → `2.5.2`, `1.3.1` → `1.3.2`.
 - **Middle digit — feature milestone.** A release that genuinely adds a capability worth calling
   out: a new backend, a cross-series PHP upgrade, platform parity, a new component.
 - **First digit — structural.** Rebrand, breaking change, or a platform dropped.
@@ -43,15 +43,14 @@ and fixes move the last digit.
    bash phpup.sh version
    pwsh -NoProfile -Command '$e=$null; $null=[System.Management.Automation.Language.Parser]::ParseFile("phpup.ps1",[ref]$null,[ref]$e); "parse errors: " + $e.Count'
    bash -n phpup.sh
-   git grep -n -E "2\.6\.0|1\.4\.0" -- .     # no stale numbers left behind
+   git grep -n -E "2\.5\.1|1\.3\.1" -- .     # no stale numbers left behind
    ```
 
 6. Commit the bump on its own, then tag the tip:
 
    ```
-   git tag -a v2.5.1-win -m "phpup 2.5.1 (Windows) — <headline>"
-   git tag -a v1.3.1-nix -m "phpup 1.3.1 (macOS/Linux) — <headline>"
-   git push origin main v2.5.1-win v1.3.1-nix
+   git tag -a v2.5.2-win -m "phpup 2.5.2 (Windows) — <headline>"
+   git push origin main v2.5.2-win
    ```
 
 7. GitHub Releases are opt-in. Tags are the record by default; release pages are only cut when
@@ -71,6 +70,7 @@ git push origin :refs/tags/v2.6.0-win :refs/tags/v1.4.0-nix
 
 | Tag | Date | Milestone |
 |---|---|---|
+| `v2.5.2-win` | 2026-11-09 | PHP switching no longer aborts on a healthy staged tree under Windows PowerShell 5.1 (`$null` exit code read as a failure) |
 | `v2.5.1-win` / `v1.3.1-nix` | 2026-11-01 | Sessions in a stack-owned store on both platforms, Windows HTTPS fixed (OpenSSL 4 + CA bundle), `fu` stages and verifies PHP switches and offers every supported series |
 | `v2.5.0-win` / `v1.3.0-nix` | 2026-10-22 | Machine-readable CLI (`status`/`--json`/`--watch`) and the Rust control panel |
 | `panel-v0.1.0-beta-win` | 2026-10-22 | First Windows panel beta |

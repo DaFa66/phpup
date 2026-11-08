@@ -4,8 +4,8 @@
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-11-01
-#  Version: 2.5.1
+#  Date: 2026-11-09
+#  Version: 2.5.2
 # =======================================================================
 
 param(
@@ -1541,6 +1541,11 @@ function Test-PhpTreeRunnable([string]$TreePath) {
     try {
         $proc = Start-Process -FilePath $exe -ArgumentList '-v' -NoNewWindow -PassThru `
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+        # Windows PowerShell 5.1 cannot re-open a process handle once the process
+        # has gone, so $proc.ExitCode reads back as $null and a perfectly good tree
+        # looks like a failed one ("exited with :" plus the version banner). Caching
+        # the handle while the process is still alive keeps ExitCode readable.
+        $null = $proc.Handle
     }
     catch {
         return @{ Ok = $false; Detail = "php.exe could not be started: $($_.Exception.Message)" }
@@ -1556,7 +1561,9 @@ function Test-PhpTreeRunnable([string]$TreePath) {
     Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
     $out = ([string]$out).Trim()
 
-    if ($proc.ExitCode -ne 0) {
+    # A $null ExitCode means "not readable", not "failed": judge the tree on what
+    # php actually printed rather than on a code we could not collect.
+    if (($null -ne $proc.ExitCode) -and ($proc.ExitCode -ne 0)) {
         return @{ Ok = $false; Detail = "php.exe exited with $($proc.ExitCode): $out" }
     }
     if ($out -match 'Unable to load dynamic library|Unable to initialize module|compiled with module API') {
@@ -3507,7 +3514,7 @@ function Get-ScriptVersion {
     # A streamed run (`irm ... | iex`) has no file, so the literal below is the
     # fallback and must be bumped together with the header.
     if ($script:VERSION_CACHE) { return $script:VERSION_CACHE }
-    $script:VERSION_CACHE = '2.5.1'
+    $script:VERSION_CACHE = '2.5.2'
     if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) {
         foreach ($line in (Get-Content $PSCommandPath -TotalCount 12 -ErrorAction SilentlyContinue)) {
             if ($line -match '^#\s*Version:\s*(\S+)') { $script:VERSION_CACHE = $matches[1]; break }

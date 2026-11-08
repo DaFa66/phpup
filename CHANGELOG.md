@@ -18,6 +18,30 @@ overview of every release.
 
 ---
 
+## [2.5.2-win] — 2026-11-09
+
+### Windows (phpup.ps1 v2.5.2)
+
+*Previous platform update: [2.5.1-win](#251-win--131-nix--2026-11-01).*
+
+Patch release. Every PHP switch run from Windows PowerShell 5.1 aborted on a healthy
+download: the staged-tree check could not read `php.exe`'s exit code, so the version banner
+it had just printed was reported as the failure. `phpup.sh` is unchanged, still 1.3.1.
+
+### Fixed
+
+- **PHP switching no longer aborts on a good staged tree under Windows PowerShell 5.1** —
+  the pre-swap check launches `php.exe -v` with `Start-Process -PassThru` and then reads
+  `$proc.ExitCode`. PowerShell 5.1 cannot re-open a process handle once the process has
+  exited, so `ExitCode` came back `$null` — and `$null -ne 0` is true — so the switch died
+  with `PHP switch aborted - the staged tree is not runnable: php.exe exited with : PHP
+  8.5.12 (cli) ...` on a tree that had started perfectly. The handle is now cached while the
+  process is alive, and a `$null` exit code is treated as unknown rather than as a failure,
+  so the verdict comes from what php actually printed. Reproduced on both hosts: 5.1 returned
+  `ExitCode=[]`, PowerShell 7 returned `0`, same exe, same code. Affected every switch on
+  5.1, not one PHP version: a user on 8.1.35 could not move to 8.5.12 and `D:\phpup\php`
+  was untouched throughout.
+
 ## [2.5.1-win] / [1.3.1-nix] — 2026-11-01
 
 ### Windows (phpup.ps1 v2.5.1) and macOS/Linux (phpup.sh v1.3.1)
@@ -1250,6 +1274,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**2.5.2-win**](#252-win--2026-11-09) | 2026-11-09 | PHP switching no longer aborts on a healthy staged tree under Windows PowerShell 5.1 (`$null` exit code read as a failure) |
 | [**2.5.1-win**](#251-win--131-nix--2026-11-01) | 2026-11-01 | Sessions moved to a stack-owned store out of the Windows temp directory; PHP on Windows can make HTTPS requests at all (OpenSSL 4 + CA bundle); streamed install path fixed; `fu` stages and verifies a PHP switch instead of deleting first, and lists every supported PHP series; `u` stops claiming success when the stack stays down |
 | [**panel 0.1.0-beta**](#panel-010-beta-win--2026-10-22) | 2026-10-22 | First Windows beta of the desktop panel: tray-first launch, Start with Windows, per-service startup type, release zip with install.ps1 |
 | [**2.5.0-win**](#250-win--130-nix--2026-10-22) | 2026-10-22 | Machine-readable CLI (`status`/`start`/`stop`/`restart`, `--json`, `--watch`) + Rust control panel; upgrades stop the stack before re-extracting PHP and verify the extensions load |
