@@ -306,7 +306,9 @@ What the lazy work removed: `Get-CimInstance` OS caption (530-1100ms, now a regi
 VC++ registry scan (~400ms), and three binary version probes (`httpd -v` alone is 579ms).
 Full status on Windows went from 5.7s to 2.0s; `status` on Linux from 0.74s to 0.34s.
 
-Fast path avoids `Get-CimInstance`, full `netstat -ano`, `sc queryex` and all binary probes.
+Fast path avoids `Get-CimInstance`, full `netstat -ano`, `sc queryex` and all binary probes,
+including the `php.exe -v` fork it used to pay on every tick to choose between `php7_module`
+and `php_module` for a version `config.json` already held.
 
 GUI cadence: run `--watch 2` (or 3) as the poll source and take a full `status --json` every
 30s for prerequisites and the OS caption.

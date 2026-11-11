@@ -18,6 +18,28 @@ overview of every release.
 
 ---
 
+## [Unreleased]
+
+### Windows (phpup.ps1, unreleased)
+
+### Fixed
+
+- **`status` no longer forks `php.exe` on every poll** — `Get-CliStatus` called
+  `Test-PhpApacheModuleWired`, which called `Get-PhpApacheModuleSymbol` with no argument, and
+  that function's default parameter is `(Get-PhpVersion)`. Every tick therefore spawned
+  `php.exe -v` (~225ms) to decide whether to look for `php7_module` or `php_module` in
+  `httpd.conf`, when `Get-CliStatus` already held the installed version from `config.json`. The
+  panel polls `status --watch 2 --fast`, so a tray panel left running spawned a PHP process every
+  couple of seconds, indefinitely. Invisible while the machine has commit headroom; on a box that
+  has run out of it the loader refuses the fork and Windows raises `php.exe - Application Error
+  (0xC000012D)`, which reads as a random PHP crash on a stack that was working. The check now
+  accepts an optional version and `status` passes the one it already has, while callers that do
+  not know it still fall back to probing. Ad-hoc harness, 8/8: no-argument and empty-version calls
+  still probe and return `$true`; `8.5.12` and `7.4.33` return the correct verdict with zero
+  spawns; pwsh 7 and PS 5.1 parse clean; BOM intact. Instrumented `status --fast`:
+  `Get-PhpVersionRaw` calls 1 → 0, JSON unchanged (`sapi=apache2handler`). A/B on a loaded Windows
+  box: tick cost 522ms → 377ms.
+
 ## [2.5.2-win] — 2026-11-09
 
 ### Windows (phpup.ps1 v2.5.2)

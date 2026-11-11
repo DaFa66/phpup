@@ -1110,15 +1110,20 @@ function Get-PhpApacheModuleSymbol([string]$version = (Get-PhpVersion)) {
 }
 
 function Test-PhpApacheModuleWired {
+    param([string]$version)
 # True when httpd.conf references the PHP LoadModule line for the CURRENT
 # installed PHP major AND the DLL it points at exists. Catches a broken
 # version switch: php.exe may exist while the LoadModule line still names
 # the previous major's DLL (or a path that no longer exists).
+# $version is optional but must be passed by callers that already know it:
+# Get-PhpApacheModuleSymbol's default parameter spawns php.exe -v, and status
+# polls this on every tick (panel: every 2s), which is a pointless fork.
+    if (-not $version) { $version = Get-PhpVersion }
     $confPath = "$APACHE_PATH\conf\httpd.conf"
     if (-not (Test-Path $confPath)) { return $false }
     $conf = Get-Content $confPath -Raw -ErrorAction SilentlyContinue
     if (-not $conf) { return $false }
-    $symbol = Get-PhpApacheModuleSymbol
+    $symbol = Get-PhpApacheModuleSymbol $version
     if ($conf -match "LoadModule\s+$symbol\s+`"([^`"]+)`"") {
         return Test-Path $matches[1]
     }
@@ -3771,7 +3776,8 @@ function Get-CliStatus {
     $sapi = $null
     $cliOnPath = $false
     if ($phpInstalled) {
-        $sapi = if (Test-PhpApacheModuleWired) { 'apache2handler' } else { 'cli' }
+        # Version comes from config.json: passing it avoids a php.exe -v fork per poll.
+        $sapi = if (Test-PhpApacheModuleWired $vPhp) { 'apache2handler' } else { 'cli' }
         # PATH membership without spawning Get-Command (~20ms per poll).
         $cliOnPath = @($env:PATH -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $PHP_PATH) }).Count -gt 0
     }
