@@ -70,7 +70,7 @@ git push origin :refs/tags/v2.6.0-win :refs/tags/v1.4.0-nix
 
 | Tag | Date | Milestone |
 |---|---|---|
-| `v2.5.3-win` | 2026-11-13 | `u` resolves the real latest PHP again (rebuild-suffixed releases hid 8.2–8.5), version parsing and the pinned fallback fixed, `fu` lists alpha/beta/RC builds from the QA index, `status` stops forking `php.exe` every poll |
+| `v2.5.3-win` | 2026-11-13 | `u` resolves the real latest PHP again (rebuild-suffixed releases hid 8.2–8.5), version parsing and the pinned fallback fixed, `fu` lists alpha/beta/RC builds from the QA index, `config.json` written without a BOM, `status` stops forking `php.exe` every poll |
 | `v2.5.2-win` | 2026-11-09 | PHP switching no longer aborts on a healthy staged tree under Windows PowerShell 5.1 (`$null` exit code read as a failure) |
 | `v2.5.1-win` / `v1.3.1-nix` | 2026-11-01 | Sessions in a stack-owned store on both platforms, Windows HTTPS fixed (OpenSSL 4 + CA bundle), `fu` stages and verifies PHP switches and offers every supported series |
 | `v2.5.0-win` / `v1.3.0-nix` | 2026-10-22 | Machine-readable CLI (`status`/`--json`/`--watch`) and the Rust control panel |
