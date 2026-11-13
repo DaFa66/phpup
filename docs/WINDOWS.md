@@ -78,7 +78,7 @@ phpup doesn't hardcode version numbers. Every install and update dynamically res
 | Component      | Source          | Method                                                           |
 | -------------- | --------------- | ---------------------------------------------------------------- |
 | **Apache**     | Apache Lounge   | Scrapes download page, picks highest VS version × Apache version |
-| **PHP**        | windows.php.net | Queries `releases.json`, filters for 8.x TS x64, prefers VS17    |
+| **PHP**        | windows.php.net | Queries `releases.json`, takes the highest 8.x TS x64 series (rebuild suffixes such as `8.5.12-1` are normal), prefers VS18/VS17 builds    |
 | **MariaDB**    | mariadb.org     | REST API, sorts by support policy (Rolling > LTS), then version  |
 | **phpMyAdmin** | phpmyadmin.net  | Scrapes downloads page for latest stable `all-languages.zip`     |
 

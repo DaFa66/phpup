@@ -8,7 +8,7 @@ and fixes move the last digit.
 - `phpup.ps1` (Windows) and `phpup.sh` (macOS/Linux) are versioned independently, tagged with
   the `-win` and `-nix` suffixes. Both move together at release time, each keeping its own numbers.
 - **Last digit — patch.** Bug fixes, corrections and small behaviour changes. Most releases are
-  these: `2.5.1` → `2.5.2`, `1.3.1` → `1.3.2`.
+  these: `2.5.2` → `2.5.3`, `1.3.1` → `1.3.2`.
 - **Middle digit — feature milestone.** A release that genuinely adds a capability worth calling
   out: a new backend, a cross-series PHP upgrade, platform parity, a new component.
 - **First digit — structural.** Rebrand, breaking change, or a platform dropped.
@@ -49,8 +49,8 @@ and fixes move the last digit.
 6. Commit the bump on its own, then tag the tip:
 
    ```
-   git tag -a v2.5.2-win -m "phpup 2.5.2 (Windows) — <headline>"
-   git push origin main v2.5.2-win
+   git tag -a v2.5.3-win -m "phpup 2.5.3 (Windows) — <headline>"
+   git push origin main v2.5.3-win
    ```
 
 7. GitHub Releases are opt-in. Tags are the record by default; release pages are only cut when
@@ -70,6 +70,7 @@ git push origin :refs/tags/v2.6.0-win :refs/tags/v1.4.0-nix
 
 | Tag | Date | Milestone |
 |---|---|---|
+| `v2.5.3-win` | 2026-11-13 | `u` resolves the real latest PHP again (rebuild-suffixed releases hid 8.2–8.5), version parsing and the pinned fallback fixed, `status` stops forking `php.exe` every poll |
 | `v2.5.2-win` | 2026-11-09 | PHP switching no longer aborts on a healthy staged tree under Windows PowerShell 5.1 (`$null` exit code read as a failure) |
 | `v2.5.1-win` / `v1.3.1-nix` | 2026-11-01 | Sessions in a stack-owned store on both platforms, Windows HTTPS fixed (OpenSSL 4 + CA bundle), `fu` stages and verifies PHP switches and offers every supported series |
 | `v2.5.0-win` / `v1.3.0-nix` | 2026-10-22 | Machine-readable CLI (`status`/`--json`/`--watch`) and the Rust control panel |

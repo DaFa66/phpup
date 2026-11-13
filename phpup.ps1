@@ -4,8 +4,8 @@
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-11-09
-#  Version: 2.5.2
+#  Date: 2026-11-13
+#  Version: 2.5.3
 # =======================================================================
 
 param(
@@ -51,7 +51,7 @@ $BANNER_ART = @'
 $FALLBACK_URLS = @{
     Redist     = "https://aka.ms/vc14/vc_redist.x64.exe"
     Apache     = "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.69-261002-Win64-VS18.zip"
-    PHP        = "https://windows.php.net/downloads/releases/php-8.5.12-Win32-vs17-x64.zip"
+    PHP        = "https://windows.php.net/downloads/releases/php-8.5.12-1-Win32-vs17-x64.zip"
     MariaDB    = "https://archive.mariadb.org/mariadb-13.0.2/winx64-packages/mariadb-13.0.2-winx64.zip"
     phpMyAdmin = "https://files.phpmyadmin.net/phpMyAdmin/5.2.3/phpMyAdmin-5.2.3-all-languages.zip"
 }
@@ -207,7 +207,7 @@ function Set-IniDirective($ini, [string]$directive, [string]$value) {
 function Get-VersionFromUrl([string]$url, [string]$component) {
     switch ($component) {
         'apache'     { if ($url -match 'httpd-([\d.]+)-\d+-') { return $matches[1] } }
-        'php'        { if ($url -match 'php-([\d.]+)-Win32-')  { return $matches[1] } }
+        'php'        { if ($url -match 'php-([\d.]+)(?:-\d+)?-Win32-')  { return $matches[1] } }
         'mariadb'    { if ($url -match 'mariadb-([\d.]+)-winx64') { return $matches[1] } }
         'phpmyadmin' { if ($url -match 'phpMyAdmin-([\d.]+)-all-languages') { return $matches[1] } }
     }
@@ -700,54 +700,50 @@ function Get-LatestApacheUrl {
 }
 
 function Get-LatestPhpUrl {
-    Write-Info "Resolving PHP (latest 8.x stable, thread-safe x64 - preferring VS17)..."
+    Write-Info "Resolving PHP (latest 8.x stable, thread-safe x64)..."
 
     try {
         $json = Invoke-RestRetry -Uri "https://windows.php.net/downloads/releases/releases.json" -MaxRetries 3 -RetryDelay 5
 
-        $latestVs17Version = $null
-        $latestVs17File    = $null
-        $latestVs16Version = $null
-        $latestVs16File    = $null
+        $bestVersion = $null
+        $bestFile    = $null
+        $bestToolset = $null
 
+        # releases.json is keyed by series ("8.5", "8.4", "8.3", ...) and new
+        # builds carry a rebuild suffix ("8.5.12-1"). Compare the base version,
+        # let the highest series win, and use the toolset only as a tie-breaker
+        # (VS18 for 8.6+, VS17 for 8.4/8.5, VS16 for 8.2-8.3, VC15 for 7.x).
+        # Demanding a bare x.y.z made every suffixed entry invisible, so the
+        # resolver kept answering with the last unsuffixed build, 8.1.34, which
+        # is older than most installs - hence "u" reporting the stack up to date.
         foreach ($key in $json.PSObject.Properties.Name) {
             $entry = $json.$key
 
             if (-not $entry.version) { continue }
-            if ($entry.version -notmatch '^8\.\d+\.\d+$') { continue }
+            if ($entry.version -notmatch '^(\d+\.\d+\.\d+)(?:-\d+)?$') { continue }
+            $baseVer = [version]$matches[1]
+            if ($baseVer.Major -ne 8) { continue }
 
-            # Check VS17 thread-safe x64 (newer PHP 8.5+)
-            if ($entry.'ts-vs17-x64') {
-                $ver = [version]$entry.version
-                if ($null -eq $latestVs17Version -or $ver -gt $latestVs17Version) {
-                    $latestVs17Version = $ver
-                    $latestVs17File    = $entry.'ts-vs17-x64'.zip.path
-                }
-            }
+            foreach ($ts in @('vs18', 'vs17', 'vs16', 'vc15')) {
+                $node = $entry."ts-$ts-x64"
+                if (-not $node -or -not $node.zip) { continue }
 
-            # Check VS16 thread-safe x64 (fallback)
-            if ($entry.'ts-vs16-x64') {
-                $ver = [version]$entry.version
-                if ($null -eq $latestVs16Version -or $ver -gt $latestVs16Version) {
-                    $latestVs16Version = $ver
-                    $latestVs16File    = $entry.'ts-vs16-x64'.zip.path
+                if ($null -eq $bestVersion -or $baseVer -gt $bestVersion) {
+                    $bestVersion = $baseVer
+                    $bestFile    = $node.zip.path
+                    $bestToolset = $ts.ToUpper()
                 }
+                break
             }
         }
 
-        # Prefer VS17, fall back to VS16
-        if ($latestVs17File) {
-            $url = "https://windows.php.net/downloads/releases/$latestVs17File"
-            Write-Ok "PHP $latestVs17Version (VS17) -> $url"
-            return $url
-        }
-        elseif ($latestVs16File) {
-            $url = "https://windows.php.net/downloads/releases/$latestVs16File"
-            Write-Ok "PHP $latestVs16Version (VS16) -> $url"
+        if ($bestFile) {
+            $url = "https://windows.php.net/downloads/releases/$bestFile"
+            Write-Ok "PHP $bestVersion ($bestToolset) -> $url"
             return $url
         }
 
-        throw "No compatible PHP 8.x TS x64 build found (VS17 or VS16)"
+        throw "No compatible PHP 8.x TS x64 build found (VS18/VS17/VS16/VC15)"
     }
     catch {
         Write-Warn "Live resolution failed after 3 attempts."
@@ -3519,7 +3515,7 @@ function Get-ScriptVersion {
     # A streamed run (`irm ... | iex`) has no file, so the literal below is the
     # fallback and must be bumped together with the header.
     if ($script:VERSION_CACHE) { return $script:VERSION_CACHE }
-    $script:VERSION_CACHE = '2.5.2'
+    $script:VERSION_CACHE = '2.5.3'
     if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) {
         foreach ($line in (Get-Content $PSCommandPath -TotalCount 12 -ErrorAction SilentlyContinue)) {
             if ($line -match '^#\s*Version:\s*(\S+)') { $script:VERSION_CACHE = $matches[1]; break }

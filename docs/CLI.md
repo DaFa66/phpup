@@ -5,7 +5,7 @@ drive phpup without the interactive dashboard.
 
 Non-goal: a daemon, a socket API, or a rewrite of the install/update engine.
 
-**Status:** implemented — `phpup.ps1` 2.5.2 on Windows and `phpup.sh` 1.3.1 on macOS/Linux,
+**Status:** implemented — `phpup.ps1` 2.5.3 on Windows and `phpup.sh` 1.3.1 on macOS/Linux,
 both unreleased. The Windows desktop panel in [`panel/`](../panel/README.md) consumes this
 contract; it is the reason the contract exists.
 
@@ -49,7 +49,7 @@ Reserved for v2, do not alias these names: `install`, `update`, `delete`, `switc
 Both scripts answer `version`, and with `--json` they emit a single object and nothing else:
 
 ```json
-{ "schema": 1, "version": "2.5.2", "script": "ps1" }
+{ "schema": 1, "version": "2.5.3", "script": "ps1" }
 ```
 
 `script` is `ps1` on Windows and `sh` on macOS/Linux, so a caller can tell which
@@ -113,7 +113,7 @@ Rationale for 0 on `status` when the stack is absent: the probe succeeded, "abse
 {
   "schema": 1,
   "generated_at": "2026-10-20T12:34:56+11:00",
-  "phpup": { "version": "2.5.2", "script": "ps1" },
+  "phpup": { "version": "2.5.3", "script": "ps1" },
   "platform": {
     "os": "windows",
     "arch": "x86_64",
@@ -317,7 +317,7 @@ GUI cadence: run `--watch 2` (or 3) as the poll source and take a full `status -
 
 ## 10. Versioning and docs
 
-- `phpup.ps1` → **2.5.2**, `phpup.sh` → **1.3.1** (patch increments; the middle digit is
+- `phpup.ps1` → **2.5.3**, `phpup.sh` → **1.3.1** (patch increments; the middle digit is
   reserved for a feature milestone).
 - CHANGELOG entries, newest first.
 - README gains a short **Automation** section with the two invocation lines above.

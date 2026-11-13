@@ -18,9 +18,15 @@ overview of every release.
 
 ---
 
-## [Unreleased]
+## [2.5.3-win] — 2026-11-13
 
-### Windows (phpup.ps1, unreleased)
+### Windows (phpup.ps1 v2.5.3)
+
+*Previous platform update: [2.5.2-win](#252-win--2026-11-09).*
+
+`u` reported the stack up to date while windows.php.net was publishing newer PHP: the
+resolver was skipping every build whose version string carried a rebuild suffix. Also carries
+the unreleased per-tick `php.exe` fix from 2026-11-11.
 
 ### Fixed
 
@@ -39,6 +45,26 @@ overview of every release.
   spawns; pwsh 7 and PS 5.1 parse clean; BOM intact. Instrumented `status --fast`:
   `Get-PhpVersionRaw` calls 1 → 0, JSON unchanged (`sapi=apache2handler`). A/B on a loaded Windows
   box: tick cost 522ms → 377ms.
+
+- **`u` resolves the real latest PHP again** — `Get-LatestPhpUrl` demanded a bare `x.y.z`, but
+  windows.php.net publishes newer builds with a rebuild suffix (`8.5.12-1`, `8.4.27-1`, `8.3.36-1`,
+  `8.2.35-1`). Every suffixed entry was skipped, leaving `8.1.34` and `8.0.30` as the only matches, so
+  the resolver answered `PHP 8.1.34 (VS16)` and `u` then reported the stack up to date because 8.1.34
+  is older than any current install. The resolver now parses the base version out of either form,
+  keeps the highest 8.x series, and uses the toolset only as a tie-breaker (VS18, VS17, VS16, VC15),
+  so 8.6 cannot fall back to 8.5. Harness against the live `releases.json`, under pwsh 7 and Windows
+  PowerShell 5.1: `PHP 8.5.12 (VS17) -> .../php-8.5.12-1-Win32-vs17-x64.zip`.
+
+- **`Get-VersionFromUrl` reads rebuild-suffixed PHP URLs** — `php-([\d.]+)-Win32-` could not match
+  `php-8.5.12-1-Win32-vs17-x64.zip`, so the resolved version came back `$null`, and the update flow
+  treats an unknown resolved version as a replacement: every `u` would have re-downloaded and
+  reinstalled the PHP you already had. The pattern now tolerates `(?:-\d+)?`. Verified on three URL
+  forms: `8.4.27`, `8.5.12-1` → `8.5.12`, `8.1.34`.
+
+- **The pinned PHP fallback no longer 404s** — `$FALLBACK_URLS.PHP` pointed at
+  `php-8.5.12-Win32-vs17-x64.zip`, which windows.php.net pruned when the rebuild superseded it
+  (HTTP 404, measured). Repointed at `php-8.5.12-1-Win32-vs17-x64.zip`, verified 206. The fallback
+  only runs once live resolution has already failed, which is the worst moment to find a dead link.
 
 ## [2.5.2-win] — 2026-11-09
 
@@ -1296,6 +1322,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**2.5.3-win**](#253-win--2026-11-13) | 2026-11-13 | `u` resolves the real latest PHP again (rebuild suffixes hid 8.2–8.5); version parsing and the pinned fallback fixed; `status` stops forking `php.exe` every poll |
 | [**2.5.2-win**](#252-win--2026-11-09) | 2026-11-09 | PHP switching no longer aborts on a healthy staged tree under Windows PowerShell 5.1 (`$null` exit code read as a failure) |
 | [**2.5.1-win**](#251-win--131-nix--2026-11-01) | 2026-11-01 | Sessions moved to a stack-owned store out of the Windows temp directory; PHP on Windows can make HTTPS requests at all (OpenSSL 4 + CA bundle); streamed install path fixed; `fu` stages and verifies a PHP switch instead of deleting first, and lists every supported PHP series; `u` stops claiming success when the stack stays down |
 | [**panel 0.1.0-beta**](#panel-010-beta-win--2026-10-22) | 2026-10-22 | First Windows beta of the desktop panel: tray-first launch, Start with Windows, per-service startup type, release zip with install.ps1 |
