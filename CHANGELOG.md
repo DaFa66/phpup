@@ -18,9 +18,16 @@ overview of every release.
 
 ---
 
-## [Unreleased]
+## [2.5.3-win] — 2026-11-13
 
-### Windows (phpup.ps1, unreleased)
+### Windows (phpup.ps1 v2.5.3)
+
+*Previous platform update: [2.5.2-win](#252-win--2026-11-09).*
+
+`u` reported the stack up to date while windows.php.net was publishing newer PHP: the
+resolver was skipping every build whose version string carried a rebuild suffix. The same
+release puts the alpha/beta/RC builds into the `fu` menu and carries the per-tick `php.exe`
+fix from 2026-11-11.
 
 ### Added
 
@@ -33,16 +40,6 @@ overview of every release.
   newer stable patch, and `-dev` snapshots are excluded. `php_min_series` gates them as it gates
   stable series, and `-Offline` lists none. Harness, 14/14 under pwsh 7 and Windows PowerShell 5.1:
   index parsing, floor, offline, row numbering, the confirmation path, and `N` backing out unchanged.
-
-## [2.5.3-win] — 2026-11-13
-
-### Windows (phpup.ps1 v2.5.3)
-
-*Previous platform update: [2.5.2-win](#252-win--2026-11-09).*
-
-`u` reported the stack up to date while windows.php.net was publishing newer PHP: the
-resolver was skipping every build whose version string carried a rebuild suffix. Also carries
-the unreleased per-tick `php.exe` fix from 2026-11-11.
 
 ### Fixed
 
@@ -1338,7 +1335,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| [**2.5.3-win**](#253-win--2026-11-13) | 2026-11-13 | `u` resolves the real latest PHP again (rebuild suffixes hid 8.2–8.5); version parsing and the pinned fallback fixed; `status` stops forking `php.exe` every poll |
+| [**2.5.3-win**](#253-win--2026-11-13) | 2026-11-13 | `u` resolves the real latest PHP again (rebuild suffixes hid 8.2–8.5); version parsing and the pinned fallback fixed; `fu` lists alpha/beta/RC builds from the QA index; `status` stops forking `php.exe` every poll |
 | [**2.5.2-win**](#252-win--2026-11-09) | 2026-11-09 | PHP switching no longer aborts on a healthy staged tree under Windows PowerShell 5.1 (`$null` exit code read as a failure) |
 | [**2.5.1-win**](#251-win--131-nix--2026-11-01) | 2026-11-01 | Sessions moved to a stack-owned store out of the Windows temp directory; PHP on Windows can make HTTPS requests at all (OpenSSL 4 + CA bundle); streamed install path fixed; `fu` stages and verifies a PHP switch instead of deleting first, and lists every supported PHP series; `u` stops claiming success when the stack stays down |
 | [**panel 0.1.0-beta**](#panel-010-beta-win--2026-10-22) | 2026-10-22 | First Windows beta of the desktop panel: tray-first launch, Start with Windows, per-service startup type, release zip with install.ps1 |
