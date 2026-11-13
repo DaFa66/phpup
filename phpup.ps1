@@ -311,6 +311,21 @@ function Get-Config {
     return $null
 }
 
+function Write-Utf8File([string]$Path, [string]$Text) {
+# Writes UTF-8 with NO byte-order mark.
+#
+# Windows PowerShell 5.1's "-Encoding UTF8" means UTF-8 *with* BOM, while
+# pwsh 7's means UTF-8 without one - the same call produces different bytes
+# depending on which shell launched phpup. Users arrive through
+# phpup-boot.ps1 | iex, which lands in 5.1, so config.json was being written
+# with a BOM. Every strict JSON reader then fails on byte 0: PHP's
+# json_decode, JS JSON.parse and Rust's serde_json all report "unexpected
+# byte order mark", which is not a thing a config file should cause.
+# .NET's UTF8Encoding(false) is the only form both shells agree on.
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Text, $enc)
+}
+
 function Save-Config {
     param(
         [Parameter(Mandatory=$true)]
@@ -377,7 +392,7 @@ function Save-Config {
     }
     if ($PathEntries) { $config.path_entries = $PathEntries }
 
-    $config | ConvertTo-Json -Depth 4 | Out-File $configFile -Encoding UTF8
+    Write-Utf8File $configFile (($config | ConvertTo-Json -Depth 4) + "`r`n")
 
     # Keep the discovery pointer fresh so a moved/custom stack is still
     # findable when $BASE is wrong on a future run. Only needed for
@@ -387,7 +402,7 @@ function Save-Config {
         if (-not (Test-Path $legacyDir)) {
             New-Item -ItemType Directory -Force -Path $legacyDir | Out-Null
         }
-        @{ install_path = $InstallPath } | ConvertTo-Json | Out-File $CONFIG_FILE_LEGACY -Encoding UTF8
+        Write-Utf8File $CONFIG_FILE_LEGACY ((@{ install_path = $InstallPath } | ConvertTo-Json) + "`r`n")
     }
 }
 

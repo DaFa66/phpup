@@ -18,6 +18,24 @@ overview of every release.
 
 ---
 
+## [Unreleased]
+
+### Windows (phpup.ps1, unreleased)
+
+### Fixed
+
+- **`config.json` is written as UTF-8 without a BOM** — `Save-Config` used
+  `Out-File -Encoding UTF8`, and in Windows PowerShell 5.1 that encoding means UTF-8 *with*
+  a BOM while pwsh 7 means without one, so the same call produced different bytes depending
+  on which shell launched phpup. Users arrive through `phpup-boot.ps1 | iex`, which lands in
+  5.1, so the stack config carried `ef bb bf` at byte 0. phpup's own reader tolerated it
+  (`Get-Content -Encoding UTF8` strips the mark) but every strict JSON consumer refuses a
+  config that starts with one: PHP's `json_decode`, JS `JSON.parse` and Rust's `serde_json`
+  all fail on byte 0. Both the canonical config and the `%APPDATA%` discovery pointer now go
+  through a `Write-Utf8File` helper that uses `UTF8Encoding($false)`, the only form both
+  shells write identically. Harness, pwsh 7 and PS 5.1: helper and `Save-Config` output start
+  `7b 0d 0a`, round-trip through `ConvertFrom-Json`, and decode under a strict UTF-8 reader.
+
 ## [2.5.3-win] — 2026-11-13
 
 ### Windows (phpup.ps1 v2.5.3)
