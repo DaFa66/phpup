@@ -18,6 +18,22 @@ overview of every release.
 
 ---
 
+## [Unreleased]
+
+### Windows (phpup.ps1, unreleased)
+
+### Added
+
+- **`fu` lists PHP pre-releases (alpha, beta, RC)** — the switch menu read stable releases only, so a
+  build like `8.6.0RC7` could not be selected unless its zip was already in the cache. Pre-releases
+  are now fetched from windows.php.net's QA index (`downloads/qa/releases.json`) and listed in their
+  own block at the end of the menu, tagged `(pre-release — download & install)`, with a warning and
+  a confirmation prompt before anything is downloaded. Only builds ahead of the stable release in
+  their own series are offered, so a stale QA build (`8.2.27RC1`, January 2025) does not sit beside a
+  newer stable patch, and `-dev` snapshots are excluded. `php_min_series` gates them as it gates
+  stable series, and `-Offline` lists none. Harness, 14/14 under pwsh 7 and Windows PowerShell 5.1:
+  index parsing, floor, offline, row numbering, the confirmation path, and `N` backing out unchanged.
+
 ## [2.5.3-win] — 2026-11-13
 
 ### Windows (phpup.ps1 v2.5.3)

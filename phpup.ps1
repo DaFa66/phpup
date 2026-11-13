@@ -207,7 +207,7 @@ function Set-IniDirective($ini, [string]$directive, [string]$value) {
 function Get-VersionFromUrl([string]$url, [string]$component) {
     switch ($component) {
         'apache'     { if ($url -match 'httpd-([\d.]+)-\d+-') { return $matches[1] } }
-        'php'        { if ($url -match 'php-([\d.]+)(?:-\d+)?-Win32-')  { return $matches[1] } }
+        'php'        { if ($url -match 'php-([\d.]+)(?:-\d+)?(?:RC\d+|alpha\d+|beta\d+)?-Win32-')  { return $matches[1] } }
         'mariadb'    { if ($url -match 'mariadb-([\d.]+)-winx64') { return $matches[1] } }
         'phpmyadmin' { if ($url -match 'phpMyAdmin-([\d.]+)-all-languages') { return $matches[1] } }
     }
@@ -796,6 +796,58 @@ function Resolve-PhpSeriesUrl($json, [string]$series) {
         }
     }
     return $null
+}
+
+function Get-PhpPreReleaseBuilds {
+# Pre-release PHP builds (alpha, beta, RC) from windows.php.net/downloads/qa/.
+# Returns @{ Series; Version; Label; Url } sorted newest-first, or @() when
+# offline or unreachable. -dev snapshots are excluded: they are rolling
+# development trees with no release-cycle label, not a version to offer.
+    param([version]$MinSeries = [version]'8.2')
+
+    if ($Offline) { return @() }
+
+    try {
+        $json = Invoke-RestRetry -Uri "https://windows.php.net/downloads/qa/releases.json" -MaxRetries 3 -RetryDelay 5
+    }
+    catch {
+        Write-Warn "Could not read the PHP pre-release index - listing stable builds only."
+        return @()
+    }
+    if (-not $json) { return @() }
+
+    $out = @()
+    foreach ($key in $json.PSObject.Properties.Name) {
+        if ($key -notmatch '^(\d+)\.(\d+)$') { continue }
+        try { if ([version]$key -lt $MinSeries) { continue } } catch { continue }
+
+        $entry = $json.$key
+        if (-not $entry -or -not $entry.version) { continue }
+        # "8.6.0RC7" / "8.6.0beta2" / "8.6.0alpha1"; "8.3.34-dev" is skipped.
+        if ($entry.version -notmatch '^(\d+\.\d+\.\d+)(RC\d+|beta\d+|alpha\d+)$') { continue }
+        $baseVer = $matches[1]
+        $cycle   = $matches[2]
+
+        $url = $null
+        foreach ($ts in @('vs18', 'vs17', 'vs16', 'vc15')) {
+            $node = $entry."ts-$ts-x64"
+            if ($node -and $node.zip) {
+                $url = "https://windows.php.net/downloads/qa/$($node.zip.path)"
+                break
+            }
+        }
+        if (-not $url) { continue }
+
+        $out += @{
+            Series  = $key
+            Version = $baseVer
+            Label   = "$baseVer $cycle"
+            Url     = $url
+        }
+    }
+
+    return @($out | Sort-Object @{ Expression = { [version]$_.Version }; Descending = $true },
+                              @{ Expression = { Get-PhpPreReleaseRank $_ }; Descending = $true })
 }
 
 function Get-LatestMariadbUrl {
@@ -2650,6 +2702,7 @@ function Show-PhpSwitchMenu {
     )
 
     # 1. Resolve latest stable per series (online only; offline = cached-only hints)
+    $minSeries = [version]'8.2'
     $latestBySeries = @{}
     $phpJson = $null
     if (-not $Offline) {
@@ -2746,6 +2799,31 @@ function Show-PhpSwitchMenu {
         }
     }
 
+    # 5b. Pre-release builds (alpha / beta / RC). They sit in their own block at
+    #     the end of the menu so nobody picks one by accident, and they are never
+    #     the target of a "newer patch is available" hint.
+    foreach ($pre in @(Get-PhpPreReleaseBuilds -MinSeries $minSeries)) {
+        # Only offer a pre-release that is ahead of the stable build in its own
+        # series: windows.php.net keeps old QA builds listed long after the
+        # branch moved on (8.2.27RC1 is still there, two years stale).
+        if ($latestBySeries.ContainsKey($pre.Series)) {
+            $stableVer = $null
+            try { $stableVer = [version]$latestBySeries[$pre.Series].Version } catch { }
+            if ($stableVer -and ([version]$pre.Version -le $stableVer)) { continue }
+        }
+        $rows += @{
+            Series    = $pre.Series
+            Kind      = 'prerelease'
+            Label     = $pre.Label
+            Version   = $pre.Version
+            Path      = $null
+            Latest    = $pre.Version
+            LatestUrl = $pre.Url
+            Stale     = $false
+            Variants  = 0
+        }
+    }
+
     if ($rows.Count -eq 0) {
         Write-Info "No PHP versions cached and nothing to download."
         return $null
@@ -2754,14 +2832,30 @@ function Show-PhpSwitchMenu {
     # 6. Render menu
     Write-Host ""
     Write-Host "PHP:" -ForegroundColor White
+    $preHeadingShown = $false
     for ($i = 0; $i -lt $rows.Count; $i++) {
         $r = $rows[$i]
         $tag = ""
         $tagColor = "Cyan"
 
+        if ($r.Kind -eq 'prerelease' -and -not $preHeadingShown) {
+            $preHeadingShown = $true
+            Write-Host ""
+            Write-Host "Pre-release builds (alpha, beta, RC - testing only):" -ForegroundColor Yellow
+        }
+
         if ($r.Kind -eq 'missing') {
             $tag = " (not cached — download & install)"
             $tagColor = "Yellow"
+        }
+        elseif ($r.Kind -eq 'prerelease') {
+            $tag = " (pre-release — download & install)"
+            $tagColor = "Yellow"
+            if ($Installed) {
+                try {
+                    if ([version]$r.Version -eq [version]$Installed) { $tag = " (current — pre-release)"; $tagColor = "Green" }
+                } catch { }
+            }
         }
         else {
             # Tag relative to the newest cached patch
@@ -2802,6 +2896,15 @@ function Show-PhpSwitchMenu {
     if ($idx -lt 0 -or $idx -ge $rows.Count) { Write-Warn "  Invalid choice — skipping PHP"; return $null }
 
     $row = $rows[$idx]
+
+    # 8a0. Pre-release (alpha / beta / RC) → confirm, then download & install
+    if ($row.Kind -eq 'prerelease') {
+        Write-Host ""
+        Write-Warn "$($row.Label) is a pre-release build: expect bugs, and check any extension you depend on."
+        $ans = Read-Host "  Install it anyway? [Y]es/[N]o"
+        if ($ans -notmatch '^[Yy]$') { return $null }
+        return @{ Chosen = $true; Version = $row.Version; Download = $row.LatestUrl }
+    }
 
     # 8a. Missing series → download & install
     if ($row.Kind -eq 'missing') {
