@@ -3823,6 +3823,20 @@ function Get-ProcessExePath {
     if (-not $proc) { return $null }
     $exe = $null
     try { $exe = $proc.ExecutablePath } catch { }
+
+    if (-not $exe) {
+        # Process.ExecutablePath comes back EMPTY (not an exception) for some
+        # processes even when we are elevated. Observed on Windows 11 with
+        # XAMPP's httpd.exe and mysqld.exe: the listener is visible, the name is
+        # visible, the image path is not. CIM reads it with admin rights, so use
+        # it as the fallback. ~200-400ms including module autoload, and only
+        # paid when the cheap read fails.
+        try {
+            $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $OwnerProcessId" -ErrorAction Stop
+            if ($cim) { $exe = $cim.ExecutablePath }
+        }
+        catch { }
+    }
     return $exe
 }
 
@@ -3963,8 +3977,9 @@ function Stop-ForeignStack {
     $untouchable = @()
     foreach ($name in @('httpd', 'mysqld', 'mariadbd')) {
         foreach ($proc in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
-            $exe = $null
-            try { $exe = $proc.ExecutablePath } catch { }
+            # Same reader the port probe uses: Process.ExecutablePath can come
+            # back empty even elevated, and killing on a guess is not an option.
+            $exe = Get-ProcessExePath -OwnerProcessId $proc.Id
             if (-not $exe) {
                 $untouchable += "$name (PID $($proc.Id))"
                 continue
@@ -4015,7 +4030,23 @@ function Switch-ToForeign {
         $kind = Get-PortOwnerKind -Port $port -ForeignRoot $Stack.path
         $kinds += $kind
         if ($kind -eq 'other' -or $kind -eq 'unknown') {
-            $blocked += "port $port is held by $(Get-PortOwner -Port $port)"
+            # Name a registered stack when that is who holds it: "held by xampp
+            # (C:\xampp), switch back to phpup first" is actionable, "held by
+            # httpd (PID n)" is not.
+            $holder = Get-PortOwner -Port $port
+            $holderPath = Get-PortOwnerExe -Port $port
+            $holderAlias = $null
+            if ($holderPath) {
+                foreach ($entry in @(Get-ForeignStacks (Get-Config))) {
+                    if ($holderPath -like "$($entry.path)\*") { $holderAlias = $entry.alias }
+                }
+            }
+            if ($holderAlias) {
+                $blocked += "port $port is held by $holderAlias ($holderPath); switch back to phpup first"
+            }
+            else {
+                $blocked += "port $port is held by $holder"
+            }
         }
     }
     if ($blocked.Count -gt 0) {
@@ -4095,6 +4126,14 @@ function Switch-ToPhpup {
         return @{ code = 0; changed = $false; steps = @('ports already held by phpup'); warnings = @(); error = $null }
     }
 
+    # Only the ports the foreign stack actually holds have to fall. Waiting on a
+    # port phpup already owns (a half-stopped stack, or a hand-back after a
+    # partial failure) would time out and report a conflict that does not exist.
+    $foreignPorts = @()
+    for ($i = 0; $i -lt $ports.Count; $i++) {
+        if ($kinds[$i] -eq 'foreign') { $foreignPorts += $ports[$i] }
+    }
+
     $steps += "stop $($Stack.path) apache and mariadb"
     $steps += 'restore phpup service start types'
     $steps += 'start phpup apache and mariadb'
@@ -4112,9 +4151,9 @@ function Switch-ToPhpup {
     }
     if ($stopped.forced) { $warnings += 'The foreign stack did not shut down gracefully, so it was stopped by PID. Its next start will run a normal crash recovery.' }
 
-    if (-not (Wait-PortState -Ports $ports -State 'free' -TimeoutSeconds 20)) {
+    if (-not (Wait-PortState -Ports $foreignPorts -State 'free' -TimeoutSeconds 20)) {
         $held = @()
-        foreach ($port in $ports) {
+        foreach ($port in $foreignPorts) {
             if (Test-TcpPortListening -Port $port) { $held += "port $port held by $(Get-PortOwner -Port $port)" }
         }
         return @{ code = 5; changed = $false; steps = $steps; warnings = $warnings; error = "Ports did not fall: $($held -join '; ')" }
@@ -4129,9 +4168,19 @@ function Switch-ToPhpup {
     if ($saved) {
         if ($saved.apache)  { $null = Set-ServiceStartType $SERVICE_APACHE $saved.apache }
         if ($saved.mariadb) { $null = Set-ServiceStartType $SERVICE_MARIADB $saved.mariadb }
+        # A service just flipped from disabled to auto can refuse the very next
+        # Start-Service ("cannot be started because it is disabled"), even though
+        # sc qc already reports the new start type. Observed twice on this
+        # machine; MariaDB only escaped it by being started a second later.
+        Start-Sleep -Seconds 2
     }
 
     $null = Start-WebStackServices 6>$null
+    if ((-not (Test-ApacheRunning)) -or (-not (Test-MariaDbRunning))) {
+        # Idempotent, so one retry costs nothing and covers a slow SCM.
+        Start-Sleep -Seconds 2
+        $null = Start-WebStackServices 6>$null
+    }
     if (-not (Wait-PortState -Ports $ports -State 'listening' -TimeoutSeconds 30)) {
         return @{ code = 1; changed = $true; steps = $steps; warnings = $warnings; error = 'phpup did not come back on 80 and 3306. Run the dashboard to see which component failed.' }
     }

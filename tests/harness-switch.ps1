@@ -39,7 +39,7 @@ Check (($bom[0] -eq 0xEF) -and ($bom[1] -eq 0xBB) -and ($bom[2] -eq 0xBF)) 'phpu
 $wanted = @(
     'Test-ForeignStack', 'Get-ForeignStacks', 'Get-ForeignAlias', 'Set-ForeignStacks',
     'Register-ForeignStack', 'Set-ForeignHandoverState',
-    'Get-PortOwnerPid', 'Get-ProcessExePath', 'Get-PortOwnerKind', 'Get-PortOwner',
+    'Get-PortOwnerPid', 'Get-ProcessExePath', 'Get-PortOwnerKind', 'Get-PortOwner', 'Get-PortOwnerExe',
     'Wait-PortState', 'Get-ServiceStartType', 'Set-ServiceStartType',
     'Get-PhpupServiceStartTypes', 'Start-ForeignStack', 'Stop-ForeignStack',
     'Switch-ToForeign', 'Switch-ToPhpup', 'Resolve-SwitchTarget',
@@ -145,6 +145,14 @@ Set-Item -Path function:Start-Sleep -Value { param($Seconds, $Milliseconds) }
 Set-Item -Path function:Test-ServicesInstalled -Value { return $script:SERVICES_INSTALLED }
 Set-Item -Path function:Get-ServicePid -Value { param([string]$ServiceName) return $null }
 Set-Item -Path function:Test-CliIsAdmin -Value { return $true }
+# phpup's own component checks. Script scope on purpose: a function: stub created
+# inside Reset-Harness would vanish with that function's scope.
+Set-Item -Path function:Test-ApacheRunning -Value {
+    return ($script:PHASE -eq 'before' -or $script:PHASE -eq 'phpup_again')
+}
+Set-Item -Path function:Test-MariaDbRunning -Value {
+    return ($script:PHASE -eq 'before' -or $script:PHASE -eq 'phpup_again')
+}
 Set-Item -Path function:Stop-WebStackServices -Value {
     $script:STOP_PHPUP_CALLED = $true
     $script:PHASE = 'free'
@@ -204,6 +212,10 @@ function Reset-Harness {
         return $null
     }
     Set-Item -Path function:Get-ServicePid -Value { param([string]$ServiceName) return $null }
+    # Get-ProcessExePath falls back to CIM when ExecutablePath is empty, which is
+    # the live behaviour for XAMPP's processes. Stub it so the harness never
+    # queries the real WMI.
+    Set-Item -Path function:Get-CimInstance -Value { param($ClassName, $Filter, $ErrorAction) return $null }
     Set-Item -Path function:Test-TcpPortListening -Value {
         param([int]$Port)
         switch ($script:PHASE) {
@@ -262,6 +274,19 @@ Set-Item -Path function:Get-ServicePid -Value {
     return $null
 }
 Check ((Get-PortOwnerKind -Port 80 -ForeignRoot 'C:\xampp') -eq 'phpup') 'a service PID with an unreadable path still resolves to phpup via the SCM'
+
+# The live failure of 2026-11-18: Process.ExecutablePath comes back EMPTY (not an
+# exception) for XAMPP's httpd/mysqld even elevated, so only CIM can identify it.
+Reset-Harness
+$script:PROCS = @([pscustomobject]@{ Id = 7101; ProcessName = 'httpd'; ExecutablePath = '' })
+Set-Item -Path function:Get-PortOwnerPid -Value { param([int]$Port) return 7101 }
+Set-Item -Path function:Get-CimInstance -Value {
+    param($ClassName, $Filter, $ErrorAction)
+    return [pscustomobject]@{ ExecutablePath = 'C:\xampp\apache\bin\httpd.exe' }
+}
+Check ((Get-PortOwnerKind -Port 80 -ForeignRoot 'C:\xampp') -eq 'foreign') 'an empty ExecutablePath is resolved through CIM'
+Reset-Harness
+$script:PROCS = @([pscustomobject]@{ Id = 7102; ProcessName = 'mysqld'; ExecutablePath = '' })
 Set-Item -Path function:Get-PortOwnerPid -Value {
     param([int]$Port)
     if ($script:PHASE -eq 'before') { return $script:PHPUP_PIDS[$Port] }
