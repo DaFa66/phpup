@@ -59,6 +59,30 @@ back. Windows first; the macOS and Linux mapping (`/Applications/XAMPP/xamppfile
 
 ---
 
+### macOS / Linux (phpup.sh)
+
+- **`switch` hands the ports to another stack and takes them back** — same verb, same payload and
+  same exit codes as Windows. macOS drives XAMPP's own `xampp startapache|startmysql` (never bare
+  `start`, which also brings up ProFTPD) and disables any launchd agent that references the stack's
+  path, found by path rather than by label because the labels are user-created and vary. Linux
+  drives `/opt/lampp` and records `systemctl is-enabled` for `apache2`/`mariadb` so the handover can
+  disable them at boot and restore them afterwards. A directory without `xamppfiles` is treated as
+  XAMPP-VM and refused: its stack lives inside a VM and never binds the host's 3306.
+- **The registry is its own file** (`~/phpup/foreign_stacks.tsv`) rather than a key in `config.json`,
+  because `save_config()` regenerates `config.json` wholesale on every install and update, which
+  would drop anything added there. One line per stack; the boot state a handover released lives in
+  the last two columns and is cleared when the ports are handed back.
+- **Port ownership trusts `port_owner_active()` before any listener path** — on macOS Apache runs as
+  root (invisible to an unprivileged `lsof`) and the MariaDB binary sits in the brew prefix, not
+  under `~/phpup`, so path matching alone reported phpup's own stack as `other`. Stopping a foreign
+  stack still only kills listeners whose executable path is provably under the named root.
+- **`tests/harness-switch.sh`** — 32 assertions against the real function bodies with `sudo`, `lsof`,
+  `ps`, `launchctl` and `systemctl` stubbed: detection (including the XAMPP-VM refusal), aliases,
+  registry round trip, port classification, "kill only its own listeners", and payload JSON
+  validity. Runs green on macOS bash 3.2.
+
+---
+
 ## [2.5.3-win] — 2026-11-13
 
 ### Windows (phpup.ps1 v2.5.3)

@@ -359,8 +359,8 @@ GUI cadence: run `--watch 2` (or 3) as the poll source and take a full `status -
 
 ## 13. `switch` (stack handover)
 
-**Status:** implemented in `phpup.ps1` (Windows, unreleased). `phpup.sh` not yet implemented;
-see the platform note at the end.
+**Status:** implemented in `phpup.ps1` (Windows) and `phpup.sh` (macOS, Linux), both unreleased.
+`--to off` is not implemented on either script.
 
 **Purpose:** hand ports 80 and 3306 to a foreign stack (XAMPP) and take them back, so a user
 can close phpup and work in the stack their older projects already live in. It moves port
@@ -432,14 +432,31 @@ These are design refusals, not omissions:
 
 ### State it keeps
 
-Registered stacks live in `config.json` under `foreign_stacks` as
-`{alias, path, kind}`. A handover records the phpup service start types it released on that
-entry as `saved_start`, so switching back restores what the user actually had rather than
-assuming `auto`. `Save-Config` preserves the key when a caller does not pass it, and the key
-is cleared for a stack once the ports are handed back.
+Registered stacks live in a registry alongside the stack: `foreign_stacks` in `config.json` on
+Windows, and `foreign_stacks.tsv` (one `alias<TAB>path<TAB>kind<TAB>saved_apache<TAB>saved_mariadb`
+line) on macOS and Linux. The shell side uses its own file because `save_config()` regenerates
+`config.json` wholesale on every install and update, so a key added there would be dropped by an
+unrelated run.
+
+A handover records the boot state it released on that stack's entry (`saved_start` on Windows,
+the two `saved_*` columns here), so switching back restores what the user actually had rather
+than assuming auto-start. On Windows that is the service start type read with `sc.exe qc`; on
+apt it is `systemctl is-enabled`; on macOS there is nothing to record because `brew services stop`
+unloads the job outright. The record is cleared for a stack once the ports are handed back.
 
 ### Platform note
 
-Windows uses `sc.exe qc`/`config` for start types and XAMPP's own `httpd.exe`/`mysqld.exe`.
-The macOS and Linux implementations will map the same verb onto
-`/Applications/XAMPP/xamppfiles` and `/opt/lampp`; the payload does not change.
+Windows drives `sc.exe qc`/`config` and starts XAMPP's own `httpd.exe` and `mysqld.exe` directly
+(the `.bat` launchers run in the foreground and expect their window to stay open).
+
+macOS drives `/Applications/XAMPP/xamppfiles/xampp startapache|startmysql` (never bare `start`,
+which also brings up ProFTPD), finds launchd agents by the path they reference rather than by
+label, and treats a directory without `xamppfiles` as XAMPP-VM, which cannot be handed over at
+all because its stack lives inside a VM and never binds the host's 3306.
+
+Linux drives `/opt/lampp lampp startapache|startmysql` and records `systemctl is-enabled` for
+`apache2` and `mariadb` so it can disable them at boot during the handover and restore them after.
+
+On macOS the port probe trusts `port_owner_active()` before any listener path: Apache runs as
+root (invisible to an unprivileged `lsof`) and the MariaDB binary lives in the brew prefix rather
+than under `~/phpup`, so path matching alone would misreport phpup's own stack.

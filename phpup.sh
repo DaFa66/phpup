@@ -3938,6 +3938,310 @@ detect_backend() {
     USE_PORTS=$want_ports
 }
 
+# ============================================================
+#  STACK HANDOVER — hand ports 80/3306 to a foreign stack and back
+# ============================================================
+# Design and rationale: .junk/2026-11-17-stack-switch-handover.md
+#
+# Hard rules, shared with the Windows implementation:
+#   1. Never point either server at the other's data directory. phpup's MariaDB
+#      and XAMPP's cannot share a datadir across a major version jump; a newer
+#      server opening an older datadir is a one-way upgrade.
+#   2. Never write inside the foreign stack. Its own launchers and binaries
+#      are run; nothing else is touched.
+#   3. Never kill by port. A listener is stopped only when its executable path
+#      is provably under the named root; an unreadable path is reported.
+#   4. No auto-detection. The caller names the stack or its alias.
+#
+# The registry lives in its own file rather than config.json: save_config()
+# regenerates config.json wholesale on every install and update, so a key added
+# there would be dropped by an unrelated run. One line per stack:
+#   alias <TAB> path <TAB> kind <TAB> saved_apache <TAB> saved_mariadb
+# An empty saved_* means no handover is outstanding for that stack.
+
+FOREIGN_REGISTRY="${BASE_DIR}/foreign_stacks.tsv"
+FOREIGN_ROOT=""
+FOREIGN_KIND=""
+FOREIGN_APACHE=""
+FOREIGN_MYSQL=""
+FOREIGN_PHP=""
+FOREIGN_HTDOCS=""
+
+detect_foreign_stack() {
+    # Sets the FOREIGN_* globals. Returns 1 when the path is not a stack we can
+    # drive, which is also how XAMPP-VM is rejected: it keeps everything inside a
+    # VM image, has no xamppfiles directory, and never binds the host's 3306.
+    local root="$1"
+    FOREIGN_ROOT=""; FOREIGN_KIND=""; FOREIGN_APACHE=""; FOREIGN_MYSQL=""; FOREIGN_PHP=""; FOREIGN_HTDOCS=""
+    [[ -n "$root" && -d "$root" ]] || return 1
+    root="${root%/}"
+
+    if [[ -x "${root}/xamppfiles/xampp" && -x "${root}/xamppfiles/bin/apachectl" && -x "${root}/xamppfiles/bin/mysql.server" ]]; then
+        FOREIGN_KIND="xampp"
+        FOREIGN_ROOT="$root"
+        FOREIGN_APACHE="${root}/xamppfiles/bin/apachectl"
+        FOREIGN_MYSQL="${root}/xamppfiles/bin/mysql.server"
+        FOREIGN_PHP="${root}/xamppfiles/bin/php"
+        FOREIGN_HTDOCS="${root}/xamppfiles/htdocs"
+        return 0
+    fi
+    if [[ -x "${root}/lampp" && -d "${root}/apache" && -d "${root}/mysql" ]]; then
+        FOREIGN_KIND="lampp"
+        FOREIGN_ROOT="$root"
+        FOREIGN_APACHE="${root}/lampp"
+        FOREIGN_MYSQL="${root}/lampp"
+        FOREIGN_PHP="${root}/bin/php"
+        FOREIGN_HTDOCS="${root}/htdocs"
+        return 0
+    fi
+    return 1
+}
+
+foreign_alias_for() {
+    local leaf
+    leaf=$(basename "${1%/}")
+    printf '%s' "$leaf" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9][^a-z0-9]*/_/g' -e 's/^_//' -e 's/_$//'
+}
+
+foreign_registry_lines() {
+    [[ -f "$FOREIGN_REGISTRY" ]] && cat "$FOREIGN_REGISTRY"
+    return 0
+}
+
+foreign_registry_field() {
+    # foreign_registry_field <alias> <field-number>
+    awk -F'\t' -v a="$1" -v f="$2" '$1==a {print $f; exit}' "$FOREIGN_REGISTRY" 2>/dev/null
+}
+
+foreign_registry_set() {
+    # foreign_registry_set <alias> <path> <kind> <saved_apache> <saved_mariadb>
+    local alias="$1" path="$2" kind="$3" sa="$4" sm="$5" tmp
+    tmp=$(mktemp "${TMPDIR:-/tmp}/phpup-foreign.XXXXXX") || return 1
+    {
+        foreign_registry_lines | awk -F'\t' -v a="$alias" '$1!=a'
+        printf '%s\t%s\t%s\t%s\t%s\n' "$alias" "$path" "$kind" "$sa" "$sm"
+    } > "$tmp" && mv "$tmp" "$FOREIGN_REGISTRY"
+}
+
+foreign_registry_clear_state() {
+    # Drop the saved start types for one alias, keep it registered.
+    local alias="$1" path kind tmp
+    path=$(foreign_registry_field "$alias" 2)
+    kind=$(foreign_registry_field "$alias" 3)
+    [[ -z "$path" ]] && return 0
+    foreign_registry_set "$alias" "$path" "$kind" "" ""
+}
+
+port_listener_pid() {
+    # sudo -n FIRST, matching port_holder_label: a root-owned listener (phpup's
+    # own httpd, or XAMPP started with sudo) is INVISIBLE to an unprivileged
+    # lsof, so the plain form would report a busy port with no owner. A cached
+    # credential makes this free; without one it refuses politely and we fall
+    # back to the unprivileged probe.
+    local port="$1" pid=""
+    if [[ $EUID -ne 0 ]]; then
+        pid=$(sudo -n lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
+    fi
+    if [[ -z "$pid" ]]; then
+        pid=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
+    fi
+    printf '%s' "$pid"
+}
+
+process_path_for_pid() {
+    [[ -n "$1" ]] || return 1
+    ps -p "$1" -o comm= 2>/dev/null | head -1
+}
+
+port_owner_kind() {
+    # phpup | foreign | other | unknown | free
+    local port="$1" root="$2" pid path
+    tcp_port_listening "$port" || { printf 'free'; return; }
+
+    # Our own stack first. On macOS the binaries live in the brew/ports prefix
+    # rather than under BASE_DIR, and Apache runs as root so an unprivileged lsof
+    # cannot see it at all. port_owner_active() is the authoritative path-pinned
+    # check (the same one the restart path trusts), so ask it before guessing
+    # from a listener path we may not even be able to read.
+    if port_owner_active "$port"; then printf 'phpup'; return; fi
+
+    pid=$(port_listener_pid "$port")
+    [[ -z "$pid" ]] && { printf 'unknown'; return; }
+    path=$(process_path_for_pid "$pid")
+    [[ -z "$path" ]] && { printf 'unknown'; return; }
+
+    if [[ -n "$root" ]]; then
+        case "$path" in
+            "$root"/*) printf 'foreign'; return ;;
+        esac
+    fi
+    # Belt and braces: a readable path under our own prefix is still ours.
+    case "$path" in
+        "${BASE_DIR}"/*) printf 'phpup'; return ;;
+    esac
+    if [[ -n "${BREW_PREFIX:-}" ]]; then
+        case "$path" in
+            "${BREW_PREFIX}"/*) printf 'phpup'; return ;;
+        esac
+    fi
+    printf 'other'
+}
+
+foreign_versions() {
+    local out
+    FV_APACHE=""; FV_MARIADB=""; FV_PHP=""
+    if [[ -x "${FOREIGN_ROOT}/xamppfiles/bin/httpd" ]]; then
+        out=$("${FOREIGN_ROOT}/xamppfiles/bin/httpd" -v 2>/dev/null | head -1)
+        FV_APACHE=$(printf '%s' "$out" | sed -n 's/.*Apache\/\([0-9.]*\).*/\1/p')
+    fi
+    if [[ -x "${FOREIGN_ROOT}/xamppfiles/bin/mysqld" ]]; then
+        out=$("${FOREIGN_ROOT}/xamppfiles/bin/mysqld" --version 2>/dev/null | head -1)
+        FV_MARIADB=$(printf '%s' "$out" | sed -n 's/.*Ver \([0-9.]*\)-MariaDB.*/\1/p')
+    fi
+    if [[ -x "$FOREIGN_PHP" ]]; then
+        FV_PHP=$("$FOREIGN_PHP" -r 'echo PHP_VERSION;' 2>/dev/null | head -1)
+    fi
+}
+
+start_foreign_stack() {
+    case "$FOREIGN_KIND" in
+        xampp)
+            # startapache/startmysql, never bare 'start': that also brings up
+            # ProFTPD, which nobody asked for.
+            sudo "${FOREIGN_ROOT}/xamppfiles/xampp" startapache >/dev/null 2>&1
+            sleep 2
+            sudo "${FOREIGN_ROOT}/xamppfiles/xampp" startmysql >/dev/null 2>&1
+            ;;
+        lampp)
+            sudo "${FOREIGN_ROOT}/lampp" startapache >/dev/null 2>&1
+            sleep 2
+            sudo "${FOREIGN_ROOT}/lampp" startmysql >/dev/null 2>&1
+            ;;
+    esac
+}
+
+foreign_listener_paths() {
+    # port<TAB>pid<TAB>path for the two ports we care about.
+    local port pid path
+    for port in 80 3306; do
+        tcp_port_listening "$port" || continue
+        pid=$(port_listener_pid "$port")
+        [[ -z "$pid" ]] && { printf '%s\t\t\n' "$port"; continue; }
+        path=$(process_path_for_pid "$pid")
+        printf '%s\t%s\t%s\n' "$port" "$pid" "$path"
+    done
+}
+
+stop_foreign_stack() {
+    # Graceful first, then only the listeners whose path is under this root.
+    case "$FOREIGN_KIND" in
+        xampp)
+            sudo "${FOREIGN_ROOT}/xamppfiles/xampp" stopapache >/dev/null 2>&1
+            sudo "${FOREIGN_ROOT}/xamppfiles/xampp" stopmysql >/dev/null 2>&1
+            ;;
+        lampp)
+            sudo "${FOREIGN_ROOT}/lampp" stopapache >/dev/null 2>&1
+            sudo "${FOREIGN_ROOT}/lampp" stopmysql >/dev/null 2>&1
+            ;;
+    esac
+    sleep 2
+
+    FOREIGN_UNTOUCHABLE=""
+    local port pid path
+    while IFS=$'\t' read -r port pid path; do
+        [[ -z "$port" ]] && continue
+        tcp_port_listening "$port" || continue
+        if [[ -z "$pid" || -z "$path" ]]; then
+            FOREIGN_UNTOUCHABLE="${FOREIGN_UNTOUCHABLE}${FOREIGN_UNTOUCHABLE:+, }port $port"
+            continue
+        fi
+        case "$path" in
+            "$FOREIGN_ROOT"/*) sudo kill -TERM "$pid" 2>/dev/null || true ;;
+        esac
+    done <<< "$(foreign_listener_paths)"
+    sleep 1
+}
+
+foreign_launchd_plists() {
+    # XAMPP's autostart is user-created, so labels vary wildly. Find by PATH.
+    [[ -d /Library/LaunchDaemons ]] || return 0
+    grep -l -F "$FOREIGN_ROOT" /Library/LaunchDaemons/*.plist 2>/dev/null || true
+}
+
+foreign_launchd_disable() {
+    local plist
+    while IFS= read -r plist; do
+        [[ -z "$plist" ]] && continue
+        sudo launchctl bootout system "$plist" >/dev/null 2>&1 \
+            || sudo launchctl unload -w "$plist" >/dev/null 2>&1 || true
+    done <<< "$(foreign_launchd_plists)"
+}
+
+switch_json_array() {
+    local out="" line
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        out="${out:+$out,}\"$(json_escape "$line")\""
+    done <<< "${1:-}"
+    printf '[%s]' "$out"
+}
+
+switch_ports_json() {
+    local port kind owner sep=""
+    printf '{'
+    for port in 80 3306; do
+        kind=$(port_owner_kind "$port" "$FOREIGN_ROOT")
+        owner=""
+        [[ "$kind" != "free" ]] && owner=$(port_holder_label "$port" 2>/dev/null || true)
+        printf '%s"%s":{"state":"%s","owner":%s}' "$sep" "$port" "$kind" "$(jstr "$owner")"
+        sep=","
+    done
+    printf '}'
+}
+
+switch_stack_json() {
+    local alias="$1"
+    foreign_versions
+    printf '{"alias":%s,"path":%s,"kind":%s,"apache":{"version":%s,"port":80},"mariadb":{"version":%s,"port":3306},"php":%s,"htdocs":%s}' \
+        "$(jstr "$alias")" "$(jstr "$FOREIGN_ROOT")" "$(jstr "$FOREIGN_KIND")" \
+        "$(jstr "$FV_APACHE")" "$(jstr "$FV_MARIADB")" "$(jstr "$FV_PHP")" "$(jstr "$FOREIGN_HTDOCS")"
+}
+
+emit_switch_payload() {
+    printf '{"schema":1,"ok":%s,"code":%s,"action":"switch","to":%s,"dry_run":%s,"changed":%s,"stack":%s,"ports":%s,"steps":%s,"warnings":%s,"errors":%s}\n' \
+        "$(jbool "${SW_OK:-0}")" "$(jstr "${SW_CODE:-}")" "$(jstr "${SW_TO:-}")" \
+        "$(jbool "${SW_DRY:-0}")" "$(jbool "${SW_CHANGED:-0}")" \
+        "${SW_STACK:-null}" "${SW_PORTS:-null}" \
+        "$(switch_json_array "${SW_STEPS:-}")" "$(switch_json_array "${SW_WARN:-}")" "$(switch_json_array "${SW_ERR:-}")" >&3
+}
+
+switch_wait_ports() {
+    # switch_wait_ports <listening|free> <timeout> <port...>
+    local want="$1" timeout="$2"; shift 2
+    local i port ok
+    for ((i = 0; i < timeout; i++)); do
+        ok=1
+        for port in "$@"; do
+            if [[ "$want" == "listening" ]]; then
+                tcp_port_listening "$port" || { ok=0; break; }
+            else
+                tcp_port_listening "$port" && { ok=0; break; }
+            fi
+        done
+        [[ $ok -eq 1 ]] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+switch_elevation_ok() {
+    # Interactive callers can answer a sudo prompt; JSON callers cannot.
+    [[ $EUID -eq 0 ]] && return 0
+    [[ $CLI_JSON -eq 1 ]] && { sudo -n true 2>/dev/null; return $?; }
+    return 0
+}
+
+
 # ---- Main Entry Point ---------------------------------------
 # ============================================================
 #  CLI — machine-readable status + non-interactive control
@@ -3954,6 +4258,10 @@ CLI_WATCH=0
 CLI_VERB=""
 CLI_EXIT=0
 CLI_WARNINGS=""
+CLI_TO=""
+CLI_PATH=""
+CLI_DRY=0
+CLI_LIST=0
 
 json_escape() {
     local s="$1"
@@ -4337,6 +4645,8 @@ Usage:
   phpup.sh                            interactive dashboard
   phpup.sh status [--fast] [--json]   report stack state
   phpup.sh start|stop|restart         control services (idempotent)
+  phpup.sh switch [--to <target>] [--path <dir>] [--dry-run] [--list] [--json]
+                                      hand ports 80/3306 to a foreign stack (XAMPP) or back
   phpup.sh version                    print version
   phpup.sh help                       this text
 
@@ -4345,6 +4655,11 @@ Flags:
   --fast      status only: skip prerequisite checks (polling)
   --watch N   status only: repeat every N seconds as NDJSON
   --quiet     suppress human output
+
+switch takes --to phpup (take the ports back) or an alias/path of a registered
+foreign stack, --path <dir> to name its root, --list to show what is registered,
+and --dry-run to print the plan without changing anything. It moves port
+ownership only: it never migrates data and never edits the foreign stack.
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 not installed, 4 elevation required, 5 port conflict
 USAGE
@@ -4428,10 +4743,326 @@ cmd_cli_lifecycle() {
     [[ $ok == 1 ]] && CLI_EXIT=0 || CLI_EXIT=1
 }
 
+# ---- switch verb ----------------------------------------------------
+switch_fail() {
+    # switch_fail <exit-code> <slug> <message>
+    SW_OK=0; SW_CODE="$2"; SW_ERR="$3"
+    if [[ $CLI_JSON == 1 ]]; then
+        emit_switch_payload
+    else
+        print_err "$3"
+    fi
+    CLI_EXIT="$1"
+}
+
+switch_registry_json() {
+    local out="" line alias path kind
+    while IFS=$'\t' read -r alias path kind _rest; do
+        [[ -z "$alias" ]] && continue
+        line="{\"alias\":$(jstr "$alias"),\"path\":$(jstr "$path"),\"kind\":$(jstr "$kind")}"
+        out="${out:+$out,}$line"
+    done <<< "$(foreign_registry_lines)"
+    if [[ -n "$out" ]]; then printf '[%s]' "$out"; else printf 'null'; fi
+}
+
+switch_running_foreign_root() {
+    # Prints the registered root whose binary holds 3306 or 80.
+    local alias path kind port pid ppath
+    while IFS=$'\t' read -r alias path kind _rest; do
+        [[ -z "$path" ]] && continue
+        for port in 3306 80; do
+            pid=$(port_listener_pid "$port")
+            [[ -z "$pid" ]] && continue
+            ppath=$(process_path_for_pid "$pid")
+            [[ -z "$ppath" ]] && continue
+            case "$ppath" in
+                "$path"/*) printf '%s' "$path"; return 0 ;;
+            esac
+        done
+    done <<< "$(foreign_registry_lines)"
+    return 1
+}
+
+switch_boot_state() {
+    # What a hand-back should restore. apt records is-enabled. macOS has no
+    # start type that survives a stop (brew services unloads the job), so a
+    # marker is all that is needed.
+    local svc="$1"
+    if [[ $USE_APT == 1 ]]; then
+        systemctl is-enabled "$svc" 2>/dev/null || true
+    else
+        printf 'brew'
+    fi
+}
+
+switch_disable_phpup_boot() {
+    [[ $USE_APT == 1 ]] || return 0
+    sudo systemctl disable apache2 >/dev/null 2>&1 || true
+    sudo systemctl disable mariadb >/dev/null 2>&1 || true
+}
+
+switch_restore_phpup_boot() {
+    local sa="$1" sm="$2"
+    [[ $USE_APT == 1 ]] || return 0
+    if [[ -n "$sa" && "$sa" != "disabled" ]]; then sudo systemctl enable apache2 >/dev/null 2>&1 || true; fi
+    if [[ -n "$sm" && "$sm" != "disabled" ]]; then sudo systemctl enable mariadb >/dev/null 2>&1 || true; fi
+}
+
+switch_human_ports() {
+    local port kind owner
+    for port in 80 3306; do
+        kind=$(port_owner_kind "$port" "$FOREIGN_ROOT")
+        if [[ "$kind" == "free" ]]; then
+            printf 'port %-5s %-8s free\n' "$port" "$kind" >&3
+        else
+            owner=$(port_holder_label "$port" 2>/dev/null || true)
+            printf 'port %-5s %-8s %s\n' "$port" "$kind" "$owner" >&3
+        fi
+    done
+}
+
+switch_human_tail() {
+    local line
+    while IFS= read -r line; do [[ -n "$line" ]] && printf '  - %s\n' "$line" >&3; done <<< "${SW_STEPS:-}"
+    [[ "${SW_CHANGED:-0}" == 1 ]] && printf 'Ports handed over.\n' >&3
+    while IFS= read -r line; do [[ -n "$line" ]] && printf '  ! %s\n' "$line" >&3; done <<< "${SW_WARN:-}"
+    [[ -n "${SW_ERR:-}" ]] && printf '  x %s\n' "$SW_ERR" >&3
+    return 0
+}
+
+cmd_cli_switch_to_foreign() {
+    local alias="$CLI_TO" path kind
+
+    if [[ -n "$CLI_PATH" ]]; then
+        if ! detect_foreign_stack "$CLI_PATH"; then
+            switch_fail 2 usage "'$CLI_PATH' is not a stack phpup can switch to (expected xamppfiles/ or lampp)."
+            return
+        fi
+        alias=$(foreign_alias_for "$FOREIGN_ROOT")
+    else
+        path=$(foreign_registry_field "$alias" 2)
+        if [[ -z "$path" ]]; then
+            switch_fail 2 usage "Unknown target '$alias'. Register it first: switch --to $alias --path /Applications/XAMPP"
+            return
+        fi
+        if ! detect_foreign_stack "$path"; then
+            switch_fail 2 usage "Registered stack '$alias' is gone from $path."
+            return
+        fi
+    fi
+
+    SW_TO="$alias"
+    SW_STACK=$(switch_stack_json "$alias")
+
+    local kind80 kind3306 phpup_ports="" blocked=""
+    kind80=$(port_owner_kind 80 "$FOREIGN_ROOT")
+    kind3306=$(port_owner_kind 3306 "$FOREIGN_ROOT")
+    SW_PORTS=$(switch_ports_json)
+    [[ "$kind80" == "phpup" ]] && phpup_ports="$phpup_ports 80"
+    [[ "$kind3306" == "phpup" ]] && phpup_ports="$phpup_ports 3306"
+    [[ "$kind80" == "other" || "$kind80" == "unknown" ]] && blocked="$blocked 80"
+    [[ "$kind3306" == "other" || "$kind3306" == "unknown" ]] && blocked="$blocked 3306"
+
+    if [[ -n "$blocked" ]]; then
+        switch_fail 5 port_conflict "Port(s)$blocked held by something phpup cannot attribute. Nothing was stopped."
+        return
+    fi
+    if [[ -z "$phpup_ports" ]]; then
+        SW_OK=1; SW_CHANGED=0; SW_STEPS="ports already held by $alias"
+        if [[ $CLI_JSON == 1 ]]; then emit_switch_payload; else switch_human_ports; printf 'Ports are already held by %s.\n' "$alias" >&3; fi
+        CLI_EXIT=0; return
+    fi
+
+    SW_STEPS="stop phpup apache and mariadb"
+    if [[ $USE_APT == 1 ]]; then SW_STEPS="$SW_STEPS
+disable apache2 and mariadb at boot"; fi
+    if [[ $OSTYPE == darwin* ]]; then SW_STEPS="$SW_STEPS
+disable any launchd agent pointing at $FOREIGN_ROOT"; fi
+    SW_STEPS="$SW_STEPS
+start $alias apache and mariadb"
+    SW_WARN="The foreign stack is not managed by phpup, so after a reboot nothing will be listening until it is started again."
+
+    if [[ $CLI_DRY == 1 ]]; then
+        SW_OK=1; SW_CHANGED=0
+        if [[ $CLI_JSON == 1 ]]; then emit_switch_payload; else switch_human_ports; switch_human_tail; fi
+        CLI_EXIT=0; return
+    fi
+    if ! switch_elevation_ok; then
+        switch_fail 4 elevation_required "Handing the ports over needs root. Run once in a terminal, or grant NOPASSWD for the phpup commands."
+        return
+    fi
+
+    foreign_registry_set "$alias" "$FOREIGN_ROOT" "$FOREIGN_KIND" "$(switch_boot_state apache2)" "$(switch_boot_state mariadb)"
+    stop_services
+    switch_disable_phpup_boot
+
+    if ! switch_wait_ports free 20 $phpup_ports; then
+        switch_fail 5 port_conflict "Ports did not fall:$phpup_ports"
+        return
+    fi
+
+    [[ $OSTYPE == darwin* ]] && foreign_launchd_disable
+    start_foreign_stack
+    if ! switch_wait_ports listening 30 80 3306; then
+        SW_CHANGED=1
+        switch_fail 1 action_failed "$alias did not start listening. Start it from its own control panel and check its logs."
+        return
+    fi
+
+    kind80=$(port_owner_kind 80 "$FOREIGN_ROOT")
+    kind3306=$(port_owner_kind 3306 "$FOREIGN_ROOT")
+    SW_PORTS=$(switch_ports_json)
+    if [[ "$kind80" == "phpup" || "$kind3306" == "phpup" ]]; then
+        SW_CHANGED=1
+        switch_fail 1 action_failed "A phpup process still holds one of the ports after the handover."
+        return
+    fi
+
+    SW_OK=1; SW_CHANGED=1
+    if [[ $CLI_JSON == 1 ]]; then emit_switch_payload; else switch_human_ports; switch_human_tail; fi
+    CLI_EXIT=0
+}
+
+cmd_cli_switch_to_phpup() {
+    local root="$CLI_PATH" alias path kind count=0
+
+    if [[ -z "$root" ]]; then
+        root=$(switch_running_foreign_root || true)
+    fi
+    if [[ -z "$root" ]]; then
+        while IFS=$'\t' read -r alias path kind _rest; do
+            [[ -z "$alias" ]] && continue
+            count=$((count + 1)); root="$path"
+        done <<< "$(foreign_registry_lines)"
+        if [[ $count -gt 1 ]]; then
+            switch_fail 2 usage "More than one foreign stack is registered. Name the one to stop with --path."
+            return
+        fi
+    fi
+    if [[ -z "$root" ]]; then
+        switch_fail 2 usage "No foreign stack is holding the ports, and none is registered."
+        return
+    fi
+    if ! detect_foreign_stack "$root"; then
+        switch_fail 2 usage "'$root' is not a stack phpup can switch back from."
+        return
+    fi
+
+    alias=$(foreign_alias_for "$FOREIGN_ROOT")
+    SW_TO="phpup"
+    SW_STACK=$(switch_stack_json "$alias")
+
+    local kind80 kind3306 foreign_ports="" blocked=""
+    kind80=$(port_owner_kind 80 "$FOREIGN_ROOT")
+    kind3306=$(port_owner_kind 3306 "$FOREIGN_ROOT")
+    SW_PORTS=$(switch_ports_json)
+    [[ "$kind80" == "foreign" ]] && foreign_ports="$foreign_ports 80"
+    [[ "$kind3306" == "foreign" ]] && foreign_ports="$foreign_ports 3306"
+    [[ "$kind80" == "other" || "$kind80" == "unknown" ]] && blocked="$blocked 80"
+    [[ "$kind3306" == "other" || "$kind3306" == "unknown" ]] && blocked="$blocked 3306"
+
+    if [[ -n "$blocked" ]]; then
+        switch_fail 5 port_conflict "Port(s)$blocked held by something phpup cannot attribute. Nothing was stopped."
+        return
+    fi
+    if [[ -z "$foreign_ports" ]]; then
+        SW_OK=1; SW_CHANGED=0; SW_STEPS="ports already held by phpup"
+        if [[ $CLI_JSON == 1 ]]; then emit_switch_payload; else switch_human_ports; printf 'Ports are already held by phpup.\n' >&3; fi
+        CLI_EXIT=0; return
+    fi
+
+    SW_STEPS="stop $alias apache and mariadb
+restore phpup boot state
+start phpup apache and mariadb"
+
+    if [[ $CLI_DRY == 1 ]]; then
+        SW_OK=1; SW_CHANGED=0
+        if [[ $CLI_JSON == 1 ]]; then emit_switch_payload; else switch_human_ports; switch_human_tail; fi
+        CLI_EXIT=0; return
+    fi
+    if ! switch_elevation_ok; then
+        switch_fail 4 elevation_required "Taking the ports back needs root. Run once in a terminal, or grant NOPASSWD for the phpup commands."
+        return
+    fi
+
+    stop_foreign_stack
+    if [[ -n "${FOREIGN_UNTOUCHABLE:-}" ]]; then
+        switch_fail 5 port_conflict "Cannot identify ${FOREIGN_UNTOUCHABLE} by executable path. Close the stack from its own control panel, then try again."
+        return
+    fi
+    if ! switch_wait_ports free 20 $foreign_ports; then
+        switch_fail 5 port_conflict "Ports did not fall:$foreign_ports"
+        return
+    fi
+
+    switch_restore_phpup_boot "$(foreign_registry_field "$alias" 4)" "$(foreign_registry_field "$alias" 5)"
+    start_services
+    if ! switch_wait_ports listening 30 80 3306; then
+        SW_CHANGED=1
+        switch_fail 1 action_failed "phpup did not come back on 80 and 3306. Run the dashboard to see which component failed."
+        return
+    fi
+
+    kind80=$(port_owner_kind 80 "$FOREIGN_ROOT")
+    kind3306=$(port_owner_kind 3306 "$FOREIGN_ROOT")
+    SW_PORTS=$(switch_ports_json)
+    if [[ "$kind80" == "foreign" || "$kind3306" == "foreign" ]]; then
+        SW_CHANGED=1
+        switch_fail 1 action_failed "$alias still holds one of the ports after switching back."
+        return
+    fi
+
+    foreign_registry_clear_state "$alias"
+    SW_OK=1; SW_CHANGED=1
+    if [[ $CLI_JSON == 1 ]]; then emit_switch_payload; else switch_human_ports; switch_human_tail; fi
+    CLI_EXIT=0
+}
+
+cmd_cli_switch() {
+    detect_all
+    SW_OK=0; SW_CODE=""; SW_TO="$CLI_TO"; SW_CHANGED=0; SW_DRY="$CLI_DRY"
+    SW_STEPS=""; SW_WARN=""; SW_ERR=""; SW_STACK="null"; SW_PORTS="null"
+
+    if [[ $CLI_LIST == 1 ]]; then
+        SW_OK=1; SW_STACK=$(switch_registry_json); SW_PORTS=$(switch_ports_json)
+        if [[ $CLI_JSON == 1 ]]; then
+            emit_switch_payload
+        else
+            switch_human_ports
+            if [[ "$SW_STACK" == "null" ]]; then printf 'No foreign stacks registered.\n' >&3; fi
+            foreign_registry_lines | awk -F'\t' 'NF>=3 {printf "  %-18s %s\n", $1, $2}' >&3
+        fi
+        CLI_EXIT=0; return
+    fi
+
+    if [[ -z "$CLI_TO" ]]; then
+        FOREIGN_ROOT=$(switch_running_foreign_root || true)
+        SW_OK=1; SW_STACK=$(switch_registry_json); SW_PORTS=$(switch_ports_json)
+        if [[ $CLI_JSON == 1 ]]; then
+            emit_switch_payload
+        else
+            switch_human_ports
+            if [[ "$SW_STACK" == "null" ]]; then printf 'No foreign stacks registered.\n' >&3; fi
+            foreign_registry_lines | awk -F'\t' 'NF>=3 {printf "  %-18s %s\n", $1, $2}' >&3
+        fi
+        CLI_EXIT=0; return
+    fi
+
+    if [[ "$CLI_TO" == "phpup" ]]; then
+        if [[ $STACK == 0 ]]; then
+            switch_fail 3 not_installed "The web stack is not installed."
+            return
+        fi
+        cmd_cli_switch_to_phpup
+    else
+        cmd_cli_switch_to_foreign
+    fi
+}
+
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            status|start|stop|restart|version|help)
+            status|start|stop|restart|switch|version|help)
                 CLI_VERB="$1"; CLI_MODE=1 ;;
             --json|-Json|json) CLI_JSON=1 ;;
             --fast|-Fast|fast) CLI_FAST=1 ;;
@@ -4448,6 +5079,12 @@ parse_args() {
                 CLI_MODE=1; CLI_VERB="${CLI_VERB:-status}"; CLI_JSON=1 ;;
             --help|-Help) CLI_VERB=help; CLI_MODE=1 ;;
             --version) CLI_VERB=version; CLI_MODE=1 ;;
+            --to|-To) shift; CLI_TO="${1:-}" ;;
+            --to=*) CLI_TO="${1#*=}" ;;
+            --path|-Path) shift; CLI_PATH="${1:-}" ;;
+            --path=*) CLI_PATH="${1#*=}" ;;
+            --dry-run|-DryRun) CLI_DRY=1 ;;
+            --list|-List) CLI_LIST=1 ;;
             *)
                 printf 'Unknown argument: %s\n' "$1" >&2
                 CLI_MODE=1; CLI_VERB=""; CLI_EXIT=2 ;;
@@ -4462,6 +5099,7 @@ run_cli() {
         version) cmd_cli_version ;;
         help)    cmd_cli_usage ;;
         start|stop|restart) cmd_cli_lifecycle "$CLI_VERB" ;;
+        switch)  cmd_cli_switch ;;
         *)
             [[ $CLI_EXIT == 2 ]] || printf 'Unknown command: %s\n' "$CLI_VERB" >&2
             [[ $CLI_QUIET == 0 ]] && printf "Run 'phpup.sh help' for usage.\n" >&2
