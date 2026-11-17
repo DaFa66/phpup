@@ -18,6 +18,47 @@ overview of every release.
 
 ---
 
+## [Unreleased]
+
+### Windows (phpup.ps1)
+
+Adds the `switch` verb: hand ports 80 and 3306 to an existing XAMPP install and take them
+back. Windows first; the macOS and Linux mapping (`/Applications/XAMPP/xamppfiles`,
+`/opt/lampp`) follows in the same contract.
+
+### Added
+
+- **`switch` hands the ports to another stack and takes them back** — for users whose older
+  projects live in XAMPP, phpup can now shut its own stack down, release 80 and 3306, start
+  the named XAMPP root, and later reverse it. `--to <alias>`, `--path <root>`, `--list`,
+  `--dry-run` and `--json`, with the same exit codes as every other verb (2 usage, 4
+  elevation, 5 port held by a stack phpup cannot attribute). Idempotent: a second press
+  reports `changed: false`. It records the phpup service start types it released
+  (`sc.exe qc`) and restores them on the way back, so a handover cannot leave phpup disabled
+  after a reboot. Refusals, deliberately: no data migration, no shared data directory
+  (phpup's MariaDB 13.x would upgrade XAMPP's 10.4 datadir one way and irreversibly), no
+  writes inside the foreign stack, no guessing which XAMPP root, and no killing by port: a
+  stop is filtered by executable path, and a process whose path cannot be read is reported
+  instead of killed. The stack's own binaries are started directly (`httpd.exe`,
+  `mysqld.exe --defaults-file`), never the `.bat` launchers, which run in the foreground and,
+  in this install, still contain an unsubstituted `@@BITROCK_INSTALLDIR@@` token in their
+  stop scripts.
+- **`tests/harness-switch.ps1`** — 62 assertions against the real function bodies with the
+  leaves stubbed: footprint detection and refusals, port-owner classification (including a
+  service PID whose executable path is unreadable unelevated), path-filtered stopping with a
+  decoy `mysqld` from another root, dry-run purity, both handover directions, idempotence,
+  config preservation and the elevation/conflict refusals. Mutation-tested: removing the path
+  filter turns exactly the two safety assertions red.
+
+### Changed
+
+- **`Save-Config` preserves the foreign stack registry** — it gained `-ForeignStacks` and,
+  like `MinSeries`, keeps the existing key when a caller does not pass it. `Save-Config`
+  rebuilds its object from scratch, so without this any unrelated save would have silently
+  dropped the registry and the handover state with it.
+
+---
+
 ## [2.5.3-win] — 2026-11-13
 
 ### Windows (phpup.ps1 v2.5.3)

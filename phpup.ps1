@@ -19,7 +19,15 @@ param(
     [switch]$Fast,             # status: skip prerequisites + OS caption
     [switch]$Quiet,            # suppress human output
     [switch]$NoColor,          # no-op: CLI output is never coloured
-    [int]$Watch = 0            # status: repeat every N seconds (NDJSON)
+    [int]$Watch = 0,           # status: repeat every N seconds (NDJSON)
+
+    # ---- switch verb (stack handover) ----
+    [string]$To,               # phpup | off | alias of a registered foreign stack
+    [Alias('Path')]
+    [string]$SwitchPath,       # foreign stack root, required on first use
+    [Alias('dry-run')]
+    [switch]$DryRun,           # report the plan, change nothing
+    [switch]$List              # list registered foreign stacks
 )
 
 # ---- Config -----------------------------------------------------------
@@ -340,7 +348,13 @@ function Save-Config {
         # Pass the current fu download floor to avoid re-reading the config
         # just to preserve it. When omitted, an existing value is preserved
         # (fallback for old callers) and the 8.2 default persists otherwise.
-        [string]$MinSeries = $null
+        [string]$MinSeries = $null,
+
+        # Foreign stack registry (switch verb). Omitted = preserve whatever is
+        # already on disk, so the ~10 existing call sites cannot wipe it. Same
+        # rule as MinSeries, and for the same reason: this function rebuilds
+        # the object from scratch.
+        [array]$ForeignStacks = $null
     )
 
     $configFile = Get-ConfigFilePath
@@ -352,6 +366,7 @@ function Save-Config {
     # Preserve the fu download floor (php_min_series): keep an existing
     # user-set value, else persist the 8.2 default so it is visible/editable.
     $minSeries = $MinSeries
+    $existingConfig = $null
     if (-not $minSeries) {
         $existingConfig = Get-Config
         if ($existingConfig -and $existingConfig.php_min_series) {
@@ -391,6 +406,21 @@ function Save-Config {
         }
     }
     if ($PathEntries) { $config.path_entries = $PathEntries }
+
+    # Foreign stack registry: written only when the caller supplied it, else
+    # carried over from disk. Depth 4 on the JSON write below already covers
+    # the nested alias/path/kind/saved_start shape.
+    $foreign = @()
+    if ($PSBoundParameters.ContainsKey('ForeignStacks')) {
+        $foreign = @($ForeignStacks)
+    }
+    else {
+        if (-not $existingConfig) { $existingConfig = Get-Config }
+        if ($existingConfig -and $existingConfig.PSObject.Properties['foreign_stacks']) {
+            $foreign = @($existingConfig.foreign_stacks)
+        }
+    }
+    if ($foreign.Count -gt 0) { $config.foreign_stacks = $foreign }
 
     Write-Utf8File $configFile (($config | ConvertTo-Json -Depth 4) + "`r`n")
 
@@ -3612,6 +3642,727 @@ function Invoke-DeleteWebStack {
 }
 
 # ============================================================
+#  STACK HANDOVER — hand ports 80/3306 to a foreign stack and back
+# ============================================================
+# Design and rationale: .junk/2026-11-17-stack-switch-handover.md
+#
+# Hard rules, do not relax without changing that document:
+#   1. Never point either server at the other's data directory. phpup ships
+#      MariaDB 13.x, XAMPP ships 10.4.x, and a newer server opening an older
+#      datadir is a one-way upgrade the old binary can never undo.
+#   2. Never write inside the foreign stack. We run its binaries, nothing else.
+#   3. Never kill by port. Filter by executable path and refuse when the path
+#      cannot be read (an unelevated process we cannot attribute is not ours).
+#   4. No auto-detection. The caller names the stack; three XAMPP roots on one
+#      machine must never be resolved by guessing.
+
+function Test-ForeignStack {
+    # Footprints, not ports: a stack that is stopped is still a stack we can
+    # switch to. Returns $null when the path is not a stack we can drive.
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $root = (Resolve-Path -LiteralPath $Path).Path.TrimEnd('\')
+
+    $apache  = Join-Path $root 'apache\bin\httpd.exe'
+    $mariadb = Join-Path $root 'mysql\bin\mysqld.exe'
+    if (-not (Test-Path -LiteralPath $apache))  { return $null }
+    if (-not (Test-Path -LiteralPath $mariadb)) { return $null }
+
+    $php        = Join-Path $root 'php\php.exe'
+    $htdocs     = Join-Path $root 'htdocs'
+    $mysqladmin = Join-Path $root 'mysql\bin\mysqladmin.exe'
+    $httpdConf  = Join-Path $root 'apache\conf\httpd.conf'
+    $myIni      = Join-Path $root 'mysql\bin\my.ini'
+
+    $phpPath = $null
+    if (Test-Path -LiteralPath $php) { $phpPath = $php }
+    $htdocsPath = $null
+    if (Test-Path -LiteralPath $htdocs) { $htdocsPath = $htdocs }
+    $adminPath = $null
+    if (Test-Path -LiteralPath $mysqladmin) { $adminPath = $mysqladmin }
+
+    return [pscustomobject]@{
+        path       = $root
+        kind       = 'xampp'
+        apache     = $apache
+        mariadb    = $mariadb
+        mysqladmin = $adminPath
+        php        = $phpPath
+        htdocs     = $htdocsPath
+        httpd_conf = $httpdConf
+        my_ini     = $myIni
+    }
+}
+
+function Get-ForeignVersions {
+    # Read-only, from the stack's own binaries. Directory names are not
+    # evidence: D:\xampp keeps folders called apache_2.4.54(php7) and
+    # apache_2.4.66, and only one of them is in use.
+    param($Stack)
+
+    $out = [ordered]@{ apache = $null; mariadb = $null; php = $null }
+
+    $text = (& $Stack.apache -v 2>&1 | Out-String)
+    if ($text -match 'Apache/([\d.]+)') { $out.apache = $matches[1] }
+
+    $text = (& $Stack.mariadb --version 2>&1 | Out-String)
+    if ($text -match 'Ver\s+([\d.]+)-MariaDB') { $out.mariadb = $matches[1] }
+    elseif ($text -match 'Ver\s+([\d.]+)-MySQL') { $out.mariadb = "$($matches[1]) (MySQL)" }
+
+    if ($Stack.php) {
+        $text = (& $Stack.php -r "echo PHP_VERSION;" 2>&1 | Out-String).Trim()
+        if ($text -match '^\d+\.\d+\.\d+') { $out.php = $text }
+    }
+    return $out
+}
+
+function Get-ForeignStacks {
+    param($Config)
+    if (-not $Config) { $Config = Get-Config }
+    if (-not $Config) { return @() }
+    if (-not $Config.PSObject.Properties['foreign_stacks']) { return @() }
+    return @($Config.foreign_stacks)
+}
+
+function Get-ForeignAlias {
+    param([string]$Path)
+    $leaf = Split-Path -Leaf ($Path.TrimEnd('\'))
+    return ($leaf.ToLower() -replace '[^a-z0-9]+', '_').Trim('_')
+}
+
+function Set-ForeignStacks {
+    # Single writer for the registry, so Save-Config's preservation rule only
+    # has to be right in one place.
+    param([array]$Stacks, $Config)
+    if (-not $Config) { $Config = Get-Config }
+
+    $minSeries  = $null
+    $versions   = $null
+    $pathEntries = $null
+    $registered = $false
+    if ($Config) {
+        $minSeries = $Config.php_min_series
+        $versions = $Config.versions
+        $pathEntries = $Config.path_entries
+        $registered = [bool]$Config.services_registered
+    }
+    Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries `
+                -ServicesRegistered:$registered -MinSeries $minSeries -ForeignStacks @($Stacks)
+}
+
+function Register-ForeignStack {
+    # Additive. Keeps any saved handover state for the same path.
+    param($Stack, $Config)
+    $alias = Get-ForeignAlias $Stack.path
+    $stacks = @()
+    $savedStart = $null
+
+    foreach ($entry in @(Get-ForeignStacks $Config)) {
+        if ($entry.path -eq $Stack.path) {
+            if ($entry.PSObject.Properties['saved_start']) { $savedStart = $entry.saved_start }
+            continue
+        }
+        $stacks += $entry
+    }
+
+    $record = [ordered]@{ alias = $alias; path = $Stack.path; kind = $Stack.kind }
+    if ($savedStart) { $record.saved_start = $savedStart }
+    $stacks += $record
+
+    Set-ForeignStacks -Stacks $stacks -Config $Config
+    return $alias
+}
+
+function Set-ForeignHandoverState {
+    # Records the phpup service start types released by a handover, on that
+    # stack's own registry entry. $null clears it. Stored per stack because a
+    # second XAMPP root may be handed over on a different day.
+    #
+    # If the path is not registered yet, add it: losing this record silently
+    # would leave phpup's services disabled after a reboot with nothing to
+    # restore them from, which is the worst failure this feature can produce.
+    param([string]$Path, $Saved, $Config)
+    $updated = @()
+    $found = $false
+    foreach ($entry in @(Get-ForeignStacks $Config)) {
+        $record = [ordered]@{ alias = $entry.alias; path = $entry.path; kind = $entry.kind }
+        if ($entry.path -eq $Path) {
+            $found = $true
+            if ($Saved) { $record.saved_start = $Saved }
+        }
+        elseif ($entry.PSObject.Properties['saved_start']) {
+            $record.saved_start = $entry.saved_start
+        }
+        $updated += $record
+    }
+    if (-not $found -and $Saved) {
+        $updated += [ordered]@{
+            alias       = (Get-ForeignAlias $Path)
+            path        = $Path
+            kind        = 'xampp'
+            saved_start = $Saved
+        }
+    }
+    Set-ForeignStacks -Stacks $updated -Config $Config
+}
+
+function Get-PortOwnerPid {
+    # netstat costs ~220ms, so callers check Test-TcpPortListening first.
+    param([int]$Port)
+    $line = netstat -ano 2>$null | Select-String ":$Port\s" | Select-String 'LISTENING' | Select-Object -First 1
+    if (-not $line) { return $null }
+    return [int](($line.ToString().Trim() -split '\s+')[-1])
+}
+
+function Get-ProcessExePath {
+    param([int]$OwnerProcessId)
+    if (-not $OwnerProcessId) { return $null }
+    $proc = Get-Process -Id $OwnerProcessId -ErrorAction SilentlyContinue
+    if (-not $proc) { return $null }
+    $exe = $null
+    try { $exe = $proc.ExecutablePath } catch { }
+    return $exe
+}
+
+function Get-PortOwnerExe {
+    param([int]$Port)
+    return (Get-ProcessExePath -OwnerProcessId (Get-PortOwnerPid -Port $Port))
+}
+
+function Get-PortOwnerKind {
+    # phpup | foreign | other | unknown | free. 'unknown' means something is
+    # listening but we cannot identify it, so we refuse to act.
+    param([int]$Port, [string]$ForeignRoot)
+    if (-not (Test-TcpPortListening -Port $Port)) { return 'free' }
+
+    $ownerPid = Get-PortOwnerPid -Port $Port
+    if (-not $ownerPid) { return 'unknown' }
+
+    # Service-hosted processes run under an account whose ExecutablePath we
+    # cannot read when unelevated, so ask the SCM about our own services first.
+    # Same reasoning as Resolve-ComponentPids: never report 'not ours' (or
+    # worse, 'unknown') just because the shell is not elevated.
+    if (Test-ServicesInstalled) {
+        $apachePid = Get-ServicePid $SERVICE_APACHE
+        if ($apachePid -and $ownerPid -eq $apachePid) { return 'phpup' }
+        $mariaPid = Get-ServicePid $SERVICE_MARIADB
+        if ($mariaPid -and $ownerPid -eq $mariaPid) { return 'phpup' }
+    }
+
+    $exe = Get-ProcessExePath -OwnerProcessId $ownerPid
+    if (-not $exe) { return 'unknown' }
+    if ($exe -like "$BASE\*") { return 'phpup' }
+    if ($ForeignRoot -and ($ForeignRoot.Length -gt 0) -and ($exe -like "$ForeignRoot\*")) { return 'foreign' }
+    return 'other'
+}
+
+function Wait-PortState {
+    param(
+        [int[]]$Ports = @(80, 3306),
+        [ValidateSet('listening', 'free')][string]$State = 'listening',
+        [int]$TimeoutSeconds = 20
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $ok = $true
+        foreach ($port in $Ports) {
+            $listening = Test-TcpPortListening -Port $port
+            if ($State -eq 'listening' -and -not $listening) { $ok = $false; break }
+            if ($State -eq 'free' -and $listening) { $ok = $false; break }
+        }
+        if ($ok) { return $true }
+        Start-Sleep -Milliseconds 400
+    }
+    return $false
+}
+
+function Get-ServiceStartType {
+    # sc.exe qc reads without elevation (~20ms). Captures the delayed flag too,
+    # so restoring does not silently turn delayed-auto into auto.
+    param([string]$Name)
+    if (-not $Name) { return $null }
+    try {
+        foreach ($line in (& sc.exe qc "$Name" 2>$null)) {
+            if ($line -match 'START_TYPE\s*:\s*(\d+)') {
+                $startNum = [int]$matches[1]
+                $delayed = $line -match 'DELAYED'
+                switch ($startNum) {
+                    0 { return 'boot' }
+                    1 { return 'system' }
+                    2 {
+                        if ($delayed) { return 'delayed-auto' }
+                        return 'auto'
+                    }
+                    3 { return 'manual' }
+                    4 { return 'disabled' }
+                }
+            }
+        }
+    }
+    catch { }
+    return $null
+}
+
+function Set-ServiceStartType {
+    param([string]$Name, [string]$Type)
+    if (-not $Name -or -not $Type) { return $false }
+    $null = & sc.exe config "$Name" 'start=' "$Type" 2>&1
+    return ((Get-ServiceStartType $Name) -eq $Type)
+}
+
+function Get-PhpupServiceStartTypes {
+    # Snapshot before releasing. Only registered services have a start type.
+    $saved = [ordered]@{ apache = $null; mariadb = $null }
+    if (Test-ServicesInstalled) {
+        $saved.apache = Get-ServiceStartType $SERVICE_APACHE
+        $saved.mariadb = Get-ServiceStartType $SERVICE_MARIADB
+    }
+    return $saved
+}
+
+function Start-ForeignStack {
+    # Start the binaries, not the .bat launchers. apache_start.bat and
+    # mysql_start.bat run the server in the foreground and expect their window
+    # to stay open, and this install's *_stop.bat files still contain an
+    # unsubstituted @@BITROCK_INSTALLDIR@@ placeholder.
+    # WorkingDirectory matters: XAMPP's my.ini uses drive-relative paths such
+    # as basedir = "/xampp/mysql", which only resolve correctly from the root.
+    param($Stack)
+
+    Start-Process -FilePath $Stack.apache -WorkingDirectory (Join-Path $Stack.path 'apache') -WindowStyle Hidden | Out-Null
+    Start-Sleep -Seconds 2
+
+    $mysqlArgs = @("--defaults-file=`"$($Stack.my_ini)`"", '--standalone')
+    Start-Process -FilePath $Stack.mariadb -ArgumentList $mysqlArgs -WorkingDirectory $Stack.path -WindowStyle Hidden | Out-Null
+}
+
+function Stop-ForeignStack {
+    # Graceful where it is cheap, then path-filtered force. A process whose
+    # executable path cannot be read is reported, never killed.
+    param($Stack)
+
+    $forced = $false
+
+    # mysqladmin talks to a port, not to a path. Only ask this stack's own client
+    # to shut down if the listener on 3306 really is this stack, otherwise a
+    # caller naming the wrong root could shut down somebody else's MariaDB.
+    $mysqlOwner = Get-PortOwnerKind -Port 3306 -ForeignRoot $Stack.path
+    if ($Stack.mysqladmin -and $mysqlOwner -eq 'foreign') {
+        $null = & $Stack.mysqladmin -uroot --host=127.0.0.1 --port=3306 shutdown 2>&1
+        Start-Sleep -Seconds 2
+    }
+    $apacheOwner = Get-PortOwnerKind -Port 80 -ForeignRoot $Stack.path
+    if ($apacheOwner -eq 'foreign') {
+        $null = & $Stack.apache -d (Join-Path $Stack.path 'apache') -f 'conf/httpd.conf' -k stop 2>&1
+        Start-Sleep -Seconds 2
+    }
+
+    $killed = @()
+    $untouchable = @()
+    foreach ($name in @('httpd', 'mysqld', 'mariadbd')) {
+        foreach ($proc in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
+            $exe = $null
+            try { $exe = $proc.ExecutablePath } catch { }
+            if (-not $exe) {
+                $untouchable += "$name (PID $($proc.Id))"
+                continue
+            }
+            if ($exe -like "$($Stack.path)\*") {
+                try {
+                    Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+                    $killed += [int]$proc.Id
+                    $forced = $true
+                }
+                catch { }
+            }
+        }
+    }
+    return [pscustomobject]@{ killed = $killed; untouchable = $untouchable; forced = $forced }
+}
+
+function New-ForeignStackPayload {
+    param($Stack, [string]$Alias, $Versions)
+
+    $apachePid = $null
+    if (Test-TcpPortListening -Port 80) { $apachePid = Get-PortOwnerPid -Port 80 }
+    $mariaPid = $null
+    if (Test-TcpPortListening -Port 3306) { $mariaPid = Get-PortOwnerPid -Port 3306 }
+
+    return [ordered]@{
+        alias   = $Alias
+        path    = $Stack.path
+        kind    = $Stack.kind
+        apache  = [ordered]@{ version = $Versions.apache; pid = $apachePid; port = 80 }
+        mariadb = [ordered]@{ version = $Versions.mariadb; pid = $mariaPid; port = 3306 }
+        php     = $Versions.php
+        htdocs  = $Stack.htdocs
+    }
+}
+
+function Switch-ToForeign {
+    param($Stack, [string]$Alias, [switch]$DryRun)
+
+    $ports = @(80, 3306)
+    $steps = @()
+    $warnings = @()
+
+    # Who holds what right now? Anything we cannot attribute blocks the switch.
+    $kinds = @()
+    $blocked = @()
+    foreach ($port in $ports) {
+        $kind = Get-PortOwnerKind -Port $port -ForeignRoot $Stack.path
+        $kinds += $kind
+        if ($kind -eq 'other' -or $kind -eq 'unknown') {
+            $blocked += "port $port is held by $(Get-PortOwner -Port $port)"
+        }
+    }
+    if ($blocked.Count -gt 0) {
+        return @{ code = 5; changed = $false; steps = @(); warnings = @(); error = ($blocked -join '; ') }
+    }
+    if (-not ($kinds -contains 'phpup')) {
+        return @{ code = 0; changed = $false; steps = @('ports already held by the foreign stack'); warnings = @(); error = $null }
+    }
+
+    $steps += 'stop phpup apache and mariadb'
+    if (Test-ServicesInstalled) {
+        $steps += "set $SERVICE_APACHE and $SERVICE_MARIADB to disabled"
+    }
+    $steps += 'wait for ports 80 and 3306 to fall'
+    $steps += "start $($Stack.path) apache and mariadb"
+    $warnings += 'The foreign stack is not a Windows service, so after a reboot nothing will be listening until it is started again.'
+
+    if ($DryRun) {
+        return @{ code = 0; changed = $false; steps = $steps; warnings = $warnings; error = $null }
+    }
+    if (-not (Test-CliIsAdmin)) {
+        return @{ code = 4; changed = $false; steps = $steps; warnings = @(); error = 'Handing over registered services needs Administrator rights.' }
+    }
+
+    $saved = Get-PhpupServiceStartTypes
+    $null = Stop-WebStackServices 6>$null
+
+    if (Test-ServicesInstalled) {
+        $null = Set-ServiceStartType $SERVICE_APACHE 'disabled'
+        $null = Set-ServiceStartType $SERVICE_MARIADB 'disabled'
+    }
+    Set-ForeignHandoverState -Path $Stack.path -Saved $saved -Config (Get-Config)
+
+    if (-not (Wait-PortState -Ports $ports -State 'free' -TimeoutSeconds 20)) {
+        $held = @()
+        foreach ($port in $ports) {
+            if (Test-TcpPortListening -Port $port) { $held += "port $port held by $(Get-PortOwner -Port $port)" }
+        }
+        return @{ code = 5; changed = $false; steps = $steps; warnings = @(); error = "Ports did not fall: $($held -join '; ')" }
+    }
+
+    Start-ForeignStack -Stack $Stack
+    if (-not (Wait-PortState -Ports $ports -State 'listening' -TimeoutSeconds 30)) {
+        return @{ code = 1; changed = $true; steps = $steps; warnings = $warnings; error = "The stack at $($Stack.path) did not start listening. Start it from its own control panel and check for a UAC prompt or a port error in its logs." }
+    }
+
+    $after = @()
+    foreach ($port in $ports) {
+        $after += (Get-PortOwnerKind -Port $port -ForeignRoot $Stack.path)
+    }
+    if ($after -contains 'phpup') {
+        return @{ code = 1; changed = $true; steps = $steps; warnings = $warnings; error = 'A phpup process still holds one of the ports after the handover.' }
+    }
+    return @{ code = 0; changed = $true; steps = $steps; warnings = $warnings; error = $null }
+}
+
+function Switch-ToPhpup {
+    param($Stack, [switch]$DryRun)
+
+    $ports = @(80, 3306)
+    $steps = @()
+    $warnings = @()
+
+    $kinds = @()
+    $blocked = @()
+    foreach ($port in $ports) {
+        $kind = Get-PortOwnerKind -Port $port -ForeignRoot $Stack.path
+        $kinds += $kind
+        if ($kind -eq 'other' -or $kind -eq 'unknown') {
+            $blocked += "port $port is held by $(Get-PortOwner -Port $port)"
+        }
+    }
+    if ($blocked.Count -gt 0) {
+        return @{ code = 5; changed = $false; steps = @(); warnings = @(); error = ($blocked -join '; ') }
+    }
+    if (-not ($kinds -contains 'foreign')) {
+        return @{ code = 0; changed = $false; steps = @('ports already held by phpup'); warnings = @(); error = $null }
+    }
+
+    $steps += "stop $($Stack.path) apache and mariadb"
+    $steps += 'restore phpup service start types'
+    $steps += 'start phpup apache and mariadb'
+
+    if ($DryRun) {
+        return @{ code = 0; changed = $false; steps = $steps; warnings = $warnings; error = $null }
+    }
+    if (-not (Test-CliIsAdmin)) {
+        return @{ code = 4; changed = $false; steps = $steps; warnings = @(); error = 'Restoring service start types needs Administrator rights.' }
+    }
+
+    $stopped = Stop-ForeignStack -Stack $Stack
+    if ($stopped.untouchable.Count -gt 0) {
+        return @{ code = 5; changed = $false; steps = $steps; warnings = @(); error = "Cannot identify $($stopped.untouchable -join ', ') by executable path. Close the stack from its own control panel, then run switch --to phpup again." }
+    }
+    if ($stopped.forced) { $warnings += 'The foreign stack did not shut down gracefully, so it was stopped by PID. Its next start will run a normal crash recovery.' }
+
+    if (-not (Wait-PortState -Ports $ports -State 'free' -TimeoutSeconds 20)) {
+        $held = @()
+        foreach ($port in $ports) {
+            if (Test-TcpPortListening -Port $port) { $held += "port $port held by $(Get-PortOwner -Port $port)" }
+        }
+        return @{ code = 5; changed = $false; steps = $steps; warnings = $warnings; error = "Ports did not fall: $($held -join '; ')" }
+    }
+
+    # Restore what the user actually had, not an assumed auto.
+    $config = Get-Config
+    $saved = $null
+    foreach ($entry in @(Get-ForeignStacks $config)) {
+        if ($entry.path -eq $Stack.path -and $entry.PSObject.Properties['saved_start']) { $saved = $entry.saved_start }
+    }
+    if ($saved) {
+        if ($saved.apache)  { $null = Set-ServiceStartType $SERVICE_APACHE $saved.apache }
+        if ($saved.mariadb) { $null = Set-ServiceStartType $SERVICE_MARIADB $saved.mariadb }
+    }
+
+    $null = Start-WebStackServices 6>$null
+    if (-not (Wait-PortState -Ports $ports -State 'listening' -TimeoutSeconds 30)) {
+        return @{ code = 1; changed = $true; steps = $steps; warnings = $warnings; error = 'phpup did not come back on 80 and 3306. Run the dashboard to see which component failed.' }
+    }
+
+    Set-ForeignHandoverState -Path $Stack.path -Saved $null -Config (Get-Config)
+
+    $after = @()
+    foreach ($port in $ports) {
+        $after += (Get-PortOwnerKind -Port $port -ForeignRoot $Stack.path)
+    }
+    if ($after -contains 'foreign') {
+        return @{ code = 1; changed = $true; steps = $steps; warnings = $warnings; error = 'The foreign stack still holds one of the ports after switching back.' }
+    }
+    return @{ code = 0; changed = $true; steps = $steps; warnings = $warnings; error = $null }
+}
+
+function Resolve-SwitchTarget {
+    param([string]$To, [string]$Path, $Config)
+
+    if ($Path) {
+        $stack = Test-ForeignStack -Path $Path
+        if (-not $stack) {
+            return @{ error = "'$Path' is not a stack phpup can switch to (expected apache\bin\httpd.exe and mysql\bin\mysqld.exe)." }
+        }
+        return @{ stack = $stack; alias = (Get-ForeignAlias $stack.path) }
+    }
+
+    $stacks = @(Get-ForeignStacks $Config)
+    foreach ($entry in $stacks) {
+        if ($entry.alias -eq $To) {
+            $stack = Test-ForeignStack -Path $entry.path
+            if (-not $stack) { return @{ error = "Registered stack '$To' is gone from $($entry.path)." } }
+            return @{ stack = $stack; alias = $entry.alias }
+        }
+    }
+
+    if ($stacks.Count -eq 0) {
+        return @{ error = "No foreign stack registered yet. Run switch --to <alias> --path C:\xampp (or name the root with --path)." }
+    }
+    $names = @($stacks | ForEach-Object { $_.alias })
+    return @{ error = "Unknown target '$To'. Registered: $($names -join ', ')" }
+}
+
+function Resolve-RunningForeignStack {
+    # Used by --to phpup, where the point is to stop whatever foreign stack is
+    # actually holding the ports rather than whatever happens to be listed.
+    param($Config)
+    foreach ($port in @(3306, 80)) {
+        $exe = Get-PortOwnerExe -Port $port
+        if (-not $exe) { continue }
+        foreach ($entry in @(Get-ForeignStacks $Config)) {
+            if ($exe -like "$($entry.path)\*") { return (Test-ForeignStack -Path $entry.path) }
+        }
+    }
+    return $null
+}
+
+function New-SwitchPayload {
+    param(
+        [bool]$Ok,
+        $Code,
+        [string]$To,
+        $Steps,
+        $Warnings,
+        $Errors,
+        [bool]$Changed,
+        [bool]$DryRun,
+        $Stack,
+        $Ports
+    )
+    return [ordered]@{
+        schema   = $script:STATUS_SCHEMA
+        ok       = $Ok
+        code     = $Code
+        action   = 'switch'
+        to       = $To
+        dry_run  = $DryRun
+        changed  = $Changed
+        stack    = $Stack
+        ports    = $Ports
+        steps    = @($Steps)
+        warnings = @($Warnings)
+        errors   = @($Errors)
+    }
+}
+
+function Get-SwitchPortSummary {
+    param([string]$ForeignRoot)
+    $summary = [ordered]@{}
+    foreach ($port in @(80, 3306)) {
+        $kind = Get-PortOwnerKind -Port $port -ForeignRoot $ForeignRoot
+        $owner = $null
+        if ($kind -ne 'free') { $owner = Get-PortOwner -Port $port }
+        $summary[[string]$port] = [ordered]@{ state = $kind; owner = $owner }
+    }
+    return $summary
+}
+
+function Invoke-CliSwitch {
+    param(
+        [string]$To,
+        [string]$Path,
+        [switch]$DryRun,
+        [switch]$List,
+        [switch]$Json,
+        [switch]$Quiet
+    )
+
+    $config = Get-Config
+    Initialize-Paths
+
+    # --list: the registry only, no probing, no stack required.
+    if ($List) {
+        $rows = @()
+        foreach ($entry in @(Get-ForeignStacks $config)) {
+            $rows += [ordered]@{ alias = $entry.alias; path = $entry.path; kind = $entry.kind }
+        }
+        $payload = New-SwitchPayload -Ok $true -Code $null -To $null -Steps @() -Warnings @() `
+                                     -Errors @() -Changed $false -DryRun $false -Stack $rows -Ports $null
+        return @{ code = 0; payload = $payload }
+    }
+
+    # No target: say who holds what, and what is registered. Exit 0, because
+    # the probe succeeded, exactly like `status` on an absent stack.
+    if ([string]::IsNullOrWhiteSpace($To)) {
+        $running = Resolve-RunningForeignStack -Config $config
+        $foreignRoot = $null
+        if ($running) { $foreignRoot = $running.path }
+        $summary = Get-SwitchPortSummary -ForeignRoot $foreignRoot
+        $rows = @()
+        foreach ($entry in @(Get-ForeignStacks $config)) {
+            $rows += [ordered]@{ alias = $entry.alias; path = $entry.path; kind = $entry.kind }
+        }
+        $payload = New-SwitchPayload -Ok $true -Code $null -To $null -Steps @() -Warnings @() `
+                                     -Errors @() -Changed $false -DryRun $false -Stack $rows -Ports $summary
+        return @{ code = 0; payload = $payload }
+    }
+
+    $target = $To.ToLower()
+
+    if ($target -eq 'phpup') {
+        $stack = $null
+        if ($Path) {
+            $stack = Test-ForeignStack -Path $Path
+            if (-not $stack) { return @{ code = 2; payload = (New-SwitchPayload -Ok $false -Code 'usage' -To $target -Steps @() -Warnings @() -Errors @("'$Path' is not a stack phpup can switch back from.") -Changed $false -DryRun ([bool]$DryRun) -Stack $null -Ports $null) } }
+        }
+        else {
+            $stack = Resolve-RunningForeignStack -Config $config
+            if (-not $stack) {
+                return @{ code = 2; payload = (New-SwitchPayload -Ok $false -Code 'usage' -To $target -Steps @() -Warnings @() -Errors @('No foreign stack is holding the ports. Name it with --path if it is registered under a different root.') -Changed $false -DryRun ([bool]$DryRun) -Stack $null -Ports $null) }
+            }
+        }
+
+        $versions = Get-ForeignVersions -Stack $stack
+        $alias = Get-ForeignAlias $stack.path
+        $stackPayload = New-ForeignStackPayload -Stack $stack -Alias $alias -Versions $versions
+        $result = Switch-ToPhpup -Stack $stack -DryRun:$DryRun
+
+        $errors = @()
+        if ($result.error) { $errors += $result.error }
+        $code = 'ok'
+        if ($result.code -ne 0) { $code = 'action_failed' }
+        if ($result.code -eq 4) { $code = 'elevation_required' }
+        if ($result.code -eq 5) { $code = 'port_conflict' }
+
+        $payload = New-SwitchPayload -Ok ($result.code -eq 0) -Code $(if ($result.code -eq 0) { $null } else { $code }) `
+                                     -To $target -Steps $result.steps -Warnings $result.warnings -Errors $errors `
+                                     -Changed ([bool]$result.changed) -DryRun ([bool]$DryRun) -Stack $stackPayload `
+                                     -Ports (Get-SwitchPortSummary -ForeignRoot $stack.path)
+        return @{ code = $result.code; payload = $payload }
+    }
+
+    $resolved = Resolve-SwitchTarget -To $target -Path $Path -Config $config
+    if ($resolved.error) {
+        $payload = New-SwitchPayload -Ok $false -Code 'usage' -To $target -Steps @() -Warnings @() -Errors @($resolved.error) `
+                                     -Changed $false -DryRun ([bool]$DryRun) -Stack $null -Ports $null
+        return @{ code = 2; payload = $payload }
+    }
+
+    $stack = $resolved.stack
+    $alias = $resolved.alias
+    if (-not $DryRun) { $null = Register-ForeignStack -Stack $stack -Config $config }
+
+    $versions = Get-ForeignVersions -Stack $stack
+    $stackPayload = New-ForeignStackPayload -Stack $stack -Alias $alias -Versions $versions
+    $result = Switch-ToForeign -Stack $stack -Alias $alias -DryRun:$DryRun
+
+    $errors = @()
+    if ($result.error) { $errors += $result.error }
+    $code = 'ok'
+    if ($result.code -ne 0) { $code = 'action_failed' }
+    if ($result.code -eq 4) { $code = 'elevation_required' }
+    if ($result.code -eq 5) { $code = 'port_conflict' }
+
+    $payload = New-SwitchPayload -Ok ($result.code -eq 0) -Code $(if ($result.code -eq 0) { $null } else { $code }) `
+                                 -To $alias -Steps $result.steps -Warnings $result.warnings -Errors $errors `
+                                 -Changed ([bool]$result.changed) -DryRun ([bool]$DryRun) -Stack $stackPayload `
+                                 -Ports (Get-SwitchPortSummary -ForeignRoot $stack.path)
+    return @{ code = $result.code; payload = $payload }
+}
+
+function Write-CliSwitchHuman {
+    param($Payload)
+
+    if ($Payload.ports) {
+        foreach ($key in $Payload.ports.Keys) {
+            $entry = $Payload.ports[$key]
+            $owner = 'free'
+            if ($entry.owner) { $owner = $entry.owner }
+            Write-Output ("port {0,-5} {1,-8} {2}" -f $key, $entry.state, $owner)
+        }
+    }
+    if ($Payload.stack -is [System.Collections.IList]) {
+        if ($Payload.stack.Count -eq 0) { Write-Output 'No foreign stacks registered.' }
+        foreach ($row in $Payload.stack) {
+            Write-Output ("  {0,-16} {1}" -f $row.alias, $row.path)
+        }
+    }
+    elseif ($Payload.stack) {
+        Write-Output ("target: {0} ({1})" -f $Payload.stack.alias, $Payload.stack.path)
+        Write-Output ("        Apache {0}, MariaDB {1}, PHP {2}" -f $Payload.stack.apache.version, $Payload.stack.mariadb.version, $Payload.stack.php)
+    }
+    if ($Payload.steps.Count -gt 0) {
+        foreach ($step in $Payload.steps) { Write-Output ("  - {0}" -f $step) }
+    }
+    if ($Payload.changed) { Write-Output 'Ports handed over.' }
+    foreach ($warning in $Payload.warnings) { Write-Output ("  ! {0}" -f $warning) }
+    foreach ($failure in $Payload.errors) { Write-Output ("  x {0}" -f $failure) }
+}
+
+# ============================================================
 #  DASHBOARD
 # ============================================================
 
@@ -4024,6 +4775,8 @@ Usage:
   phpup.ps1                          interactive dashboard
   phpup.ps1 status [-Fast] [-Json]   report stack state
   phpup.ps1 start|stop|restart       control services (idempotent)
+  phpup.ps1 switch [-To <target>] [-Path <dir>] [-DryRun] [-List] [-Json]
+                                     hand ports 80/3306 to a foreign stack (XAMPP) or back
   phpup.ps1 version                  print version
   phpup.ps1 help                     this text
 
@@ -4032,6 +4785,11 @@ Flags:
   -Fast    status only: skip prerequisites and OS caption (polling)
   -Watch N status only: repeat every N seconds as NDJSON
   -Quiet   suppress human output
+
+switch takes -To phpup (take the ports back) or an alias/path of a registered
+foreign stack, -Path <dir> to name that stack's root, -List to show what is
+registered, and -DryRun to print the plan without changing anything. It moves
+port ownership only: it never migrates data and never edits the foreign stack.
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 not installed, 4 elevation required, 5 port conflict
 '@
@@ -4105,7 +4863,8 @@ function Invoke-CliLifecycle {
 }
 
 function Invoke-CliVerb {
-    param([string]$Verb, [switch]$Json, [switch]$Fast, [switch]$Quiet, [int]$Watch)
+    param([string]$Verb, [switch]$Json, [switch]$Fast, [switch]$Quiet, [int]$Watch,
+          [string]$To, [string]$SwitchPath, [switch]$DryRun, [switch]$List)
 
     # The exit code travels in a script variable, not the return value: the
     # payload goes out on the success stream and capturing both in one
@@ -4147,6 +4906,19 @@ function Invoke-CliVerb {
                 $state = if ($p.ok) { 'ok' } else { "failed: $(if ($p.code) { $p.code } else { 'unknown' })" }
                 Write-Output ("{0}: {1} (changed: {2})" -f $p.action, $state, $p.changed)
             }
+            $script:CliExitCode = $result.code
+            return
+        }
+        'switch' {
+            # Status-only flags are a usage error here, never silently ignored.
+            if ($Fast -or $Watch -gt 0) {
+                [Console]::Error.WriteLine('switch does not accept --fast or --watch')
+                $script:CliExitCode = 2
+                return
+            }
+            $result = Invoke-CliSwitch -To $To -Path $SwitchPath -DryRun:$DryRun -List:$List -Json:$Json -Quiet:$Quiet
+            if ($Json) { Write-CliJson $result.payload }
+            elseif (-not $Quiet) { Write-CliSwitchHuman $result.payload }
             $script:CliExitCode = $result.code
             return
         }
@@ -4384,7 +5156,8 @@ if (-not [string]::IsNullOrWhiteSpace($Command)) {
     [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
     $OutputEncoding = New-Object System.Text.UTF8Encoding $false
     $script:CliExitCode = 0
-    Invoke-CliVerb -Verb $Command -Json:$Json -Fast:$Fast -Quiet:$Quiet -Watch $Watch
+    Invoke-CliVerb -Verb $Command -Json:$Json -Fast:$Fast -Quiet:$Quiet -Watch $Watch `
+                   -To $To -SwitchPath $SwitchPath -DryRun:$DryRun -List:$List
     exit $script:CliExitCode
 }
 

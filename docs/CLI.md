@@ -39,10 +39,11 @@ No arguments = today's interactive dashboard, byte-for-byte unchanged.
 | `start`   | starts       | idempotent                                         |
 | `stop`    | stops        | idempotent                                         |
 | `restart` | stop + start | idempotent                                         |
+| `switch`  | stops one stack, starts another | hands ports 80/3306 over; see §13    |
 | `version` | none         | prints script version, no config or stack access   |
 | `help`    | none         | usage text, exit 0                                 |
 
-Reserved for v2, do not alias these names: `install`, `update`, `delete`, `switch`, `doctor`.
+Reserved for v2, do not alias these names: `install`, `update`, `delete`, `doctor`.
 
 ### `version` output
 
@@ -353,3 +354,92 @@ GUI cadence: run `--watch 2` (or 3) as the poll source and take a full `status -
    0.85s on Windows, so a GUI polling with one process per tick would burn real CPU. `--watch`
    holds one process open and emits one NDJSON line per interval. Everything expensive is
    lazy: OS caption, version probes, prerequisite scans.
+
+---
+
+## 13. `switch` (stack handover)
+
+**Status:** implemented in `phpup.ps1` (Windows, unreleased). `phpup.sh` not yet implemented;
+see the platform note at the end.
+
+**Purpose:** hand ports 80 and 3306 to a foreign stack (XAMPP) and take them back, so a user
+can close phpup and work in the stack their older projects already live in. It moves port
+ownership and nothing else.
+
+```
+phpup.ps1 switch                                # who owns 80/3306, and what is registered
+phpup.ps1 switch --to xampp --path C:\xampp     # register on first use, then hand over
+phpup.ps1 switch --to xampp                     # hand over to the registered alias
+phpup.ps1 switch --to phpup                     # take the ports back
+phpup.ps1 switch --list                         # registered foreign stacks
+phpup.ps1 switch --to xampp --dry-run           # print the plan, change nothing
+```
+
+`--json`, `--quiet` and `--no-color` behave as in §3. `--fast` and `--watch` are status-only
+and are rejected here with exit 2 rather than silently ignored.
+
+### Payload
+
+```json
+{
+  "schema": 1, "ok": true, "code": null, "action": "switch",
+  "to": "xampp", "dry_run": false, "changed": true,
+  "stack": {
+    "alias": "xampp", "path": "C:\\xampp", "kind": "xampp",
+    "apache":  { "version": "2.4.58",  "pid": 1234, "port": 80 },
+    "mariadb": { "version": "10.4.32", "pid": 5678, "port": 3306 },
+    "php": "8.2.19", "htdocs": "C:\\xampp\\htdocs"
+  },
+  "ports": {
+    "80":   { "state": "foreign", "owner": "httpd (PID 1234)" },
+    "3306": { "state": "foreign", "owner": "mysqld (PID 5678)" }
+  },
+  "steps": ["stop phpup apache and mariadb", "set phpup_Apache and phpup_MariaDB to disabled"],
+  "warnings": ["The foreign stack is not a Windows service, so after a reboot nothing will be listening until it is started again."],
+  "errors": []
+}
+```
+
+`ports.*.state` is one of `phpup`, `foreign`, `other`, `unknown`, `free`. `unknown` means
+something is listening but its executable cannot be identified, and the verb will refuse to
+act on it.
+
+### Semantics
+
+- **Idempotent.** If the target already holds the ports, exit 0 with `changed: false`.
+- **Exit 5** when a port is held by a stack phpup cannot attribute. It never kills by port;
+  stops are filtered by executable path, and a process whose path cannot be read is reported
+  rather than killed.
+- **Exit 4** when registered services need their start type changed and the shell is not
+  elevated.
+- **Exit 1** when the handover ran but the target never started listening. The message names
+  the likely causes (a UAC prompt, a port error) and says to start it by hand.
+- **`--dry-run` has no side effects at all**, including no service reads and no config write.
+
+### What `switch` will not do
+
+These are design refusals, not omissions:
+
+1. **It never shares or migrates a data directory.** phpup ships MariaDB 13.x; XAMPP ships
+   10.4.x. A newer server opening an older datadir performs a one-way upgrade that the old
+   binary can never reverse.
+2. **It never writes inside the foreign stack.** No `httpd.conf`, `my.ini`, `php.ini`,
+   `htdocs` or data changes. It runs the stack's own binaries and nothing more.
+3. **It never guesses which foreign stack.** A registered alias or `--path` is required, even
+   when exactly one candidate exists.
+4. **It does not migrate data.** Importing an old stack's databases is a separate, one-way
+   adopt feature with its own verification.
+
+### State it keeps
+
+Registered stacks live in `config.json` under `foreign_stacks` as
+`{alias, path, kind}`. A handover records the phpup service start types it released on that
+entry as `saved_start`, so switching back restores what the user actually had rather than
+assuming `auto`. `Save-Config` preserves the key when a caller does not pass it, and the key
+is cleared for a stack once the ports are handed back.
+
+### Platform note
+
+Windows uses `sc.exe qc`/`config` for start types and XAMPP's own `httpd.exe`/`mysqld.exe`.
+The macOS and Linux implementations will map the same verb onto
+`/Applications/XAMPP/xamppfiles` and `/opt/lampp`; the payload does not change.

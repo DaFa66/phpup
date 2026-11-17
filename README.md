@@ -19,6 +19,7 @@ different things, including a PHP version manager.
 - Built-in update manager
 - Cross-platform — Windows, macOS, and Linux
 - Version switching
+- Switch between phpup and an existing XAMPP install, ports handed over and back without migrating data
 - Safe delete with database preservation
 - Designed for developers and power users
 
