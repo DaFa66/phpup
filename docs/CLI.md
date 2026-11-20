@@ -369,6 +369,7 @@ ownership and nothing else.
 
 ```
 phpup.ps1 switch                                # who owns 80/3306, and what is registered
+phpup.ps1 switch --add --path C:\xampp          # register a root, leave the ports alone
 phpup.ps1 switch --to xampp --path C:\xampp     # register on first use, then hand over
 phpup.ps1 switch --to xampp                     # hand over to the registered alias
 phpup.ps1 switch --to phpup                     # take the ports back
@@ -378,6 +379,13 @@ phpup.ps1 switch --to xampp --dry-run           # print the plan, change nothing
 
 `--json`, `--quiet` and `--no-color` behave as in §3. `--fast` and `--watch` are status-only
 and are rejected here with exit 2 rather than silently ignored.
+
+`--add` registers a root without touching the ports or services, which is what a GUI uses to
+list several XAMPP installs before the user picks one. It requires `--path`; a path that is not
+a stack returns `code: "usage"`, exit 2, and leaves the registry unchanged. `--add --dry-run`
+reports the alias it would use and writes nothing. `to` is always a string and `stack` is always
+an array in the payload, on both platforms, so a client parses one shape; `ports` is null only
+when the command failed before probing.
 
 ### Payload
 

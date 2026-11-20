@@ -4324,10 +4324,15 @@ switch_stack_json() {
 }
 
 emit_switch_payload() {
-    printf '{"schema":1,"ok":%s,"code":%s,"action":"switch","to":%s,"dry_run":%s,"changed":%s,"stack":%s,"ports":%s,"steps":%s,"warnings":%s,"errors":%s}\n' \
-        "$(jbool "${SW_OK:-0}")" "$(jstr "${SW_CODE:-}")" "$(jstr "${SW_TO:-}")" \
+    # `to` is always a string and `stack` always an array, so a client parsing both
+    # platforms sees one shape: phpup.ps1 emits "" and [], and null for neither.
+    # `ports` stays nullable on both (it is absent on a usage error).
+    local stack_json="${SW_STACK:-}"
+    [[ -z "$stack_json" || "$stack_json" == "null" ]] && stack_json='[]'
+    printf '{"schema":1,"ok":%s,"code":%s,"action":"switch","to":"%s","dry_run":%s,"changed":%s,"stack":%s,"ports":%s,"steps":%s,"warnings":%s,"errors":%s}\n' \
+        "$(jbool "${SW_OK:-0}")" "$(jstr "${SW_CODE:-}")" "$(json_escape "${SW_TO:-}")" \
         "$(jbool "${SW_DRY:-0}")" "$(jbool "${SW_CHANGED:-0}")" \
-        "${SW_STACK:-null}" "${SW_PORTS:-null}" \
+        "$stack_json" "${SW_PORTS:-null}" \
         "$(switch_json_array "${SW_STEPS:-}")" "$(switch_json_array "${SW_WARN:-}")" "$(switch_json_array "${SW_ERR:-}")" >&3
 }
 
@@ -4378,6 +4383,7 @@ CLI_TO=""
 CLI_PATH=""
 CLI_DRY=0
 CLI_LIST=0
+CLI_ADD=0
 
 json_escape() {
     local s="$1"
@@ -4761,8 +4767,9 @@ Usage:
   phpup.sh                            interactive dashboard
   phpup.sh status [--fast] [--json]   report stack state
   phpup.sh start|stop|restart         control services (idempotent)
-  phpup.sh switch [--to <target>] [--path <dir>] [--dry-run] [--list] [--json]
-                                      hand ports 80/3306 to a foreign stack (XAMPP) or back
+  phpup.sh switch [--to <target>] [--path <dir>] [--dry-run] [--list] [--add] [--json]
+                                      hand ports 80/3306 to a foreign stack (XAMPP) or back;
+                                      --add --path <dir> registers one without switching
   phpup.sh version                    print version
   phpup.sh help                       this text
 
@@ -5163,6 +5170,38 @@ cmd_cli_switch() {
         CLI_EXIT=0; return
     fi
 
+    # --add: register a stack for later handovers without touching the ports. The
+    # panel needs this: a user with several XAMPP roots wants them all listed
+    # before switching to any of them.
+    if [[ $CLI_ADD == 1 ]]; then
+        if [[ -z "$CLI_PATH" ]]; then
+            switch_fail 2 usage "Add needs --path <dir>"
+            return
+        fi
+        if ! detect_foreign_stack "$CLI_PATH"; then
+            switch_fail 2 usage "'$CLI_PATH' is not a stack phpup can switch to (expected xamppfiles/ or lampp)."
+            return
+        fi
+        local add_alias
+        add_alias=$(foreign_alias_for "$FOREIGN_ROOT")
+        SW_TO="$add_alias"; SW_PORTS="null"
+        if [[ $CLI_DRY == 1 ]]; then
+            SW_OK=1; SW_CHANGED=0
+            SW_STEPS="would register $add_alias at $FOREIGN_ROOT"
+        else
+            foreign_registry_set "$add_alias" "$FOREIGN_ROOT" "$FOREIGN_KIND" "" ""
+            SW_OK=1; SW_CHANGED=1
+            SW_STEPS="registered $add_alias at $FOREIGN_ROOT"
+        fi
+        SW_STACK=$(switch_registry_json)
+        if [[ $CLI_JSON == 1 ]]; then
+            emit_switch_payload
+        else
+            printf 'Registered %s at %s\n' "$add_alias" "$FOREIGN_ROOT" >&3
+        fi
+        CLI_EXIT=0; return
+    fi
+
     if [[ -z "$CLI_TO" ]]; then
         FOREIGN_ROOT=$(switch_running_foreign_root || true)
         SW_OK=1; SW_STACK=$(switch_registry_json); SW_PORTS=$(switch_ports_json)
@@ -5208,6 +5247,7 @@ parse_args() {
             --help|-Help) CLI_VERB=help; CLI_MODE=1 ;;
             --version) CLI_VERB=version; CLI_MODE=1 ;;
             --to|-To) shift; CLI_TO="${1:-}" ;;
+            --add|-Add) CLI_ADD=1 ;;
             --to=*) CLI_TO="${1#*=}" ;;
             --path|-Path) shift; CLI_PATH="${1:-}" ;;
             --path=*) CLI_PATH="${1#*=}" ;;

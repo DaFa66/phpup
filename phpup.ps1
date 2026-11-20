@@ -27,7 +27,8 @@ param(
     [string]$SwitchPath,       # foreign stack root, required on first use
     [Alias('dry-run')]
     [switch]$DryRun,           # report the plan, change nothing
-    [switch]$List              # list registered foreign stacks
+    [switch]$List,             # list registered foreign stacks
+    [switch]$Add               # register a stack by -Path, leave the ports alone
 )
 
 # ---- Config -----------------------------------------------------------
@@ -4331,6 +4332,7 @@ function Invoke-CliSwitch {
         [string]$Path,
         [switch]$DryRun,
         [switch]$List,
+        [switch]$Add,
         [switch]$Json,
         [switch]$Quiet
     )
@@ -4346,6 +4348,42 @@ function Invoke-CliSwitch {
         }
         $payload = New-SwitchPayload -Ok $true -Code $null -To $null -Steps @() -Warnings @() `
                                      -Errors @() -Changed $false -DryRun $false -Stack $rows -Ports $null
+        return @{ code = 0; payload = $payload }
+    }
+
+    # --add: register a stack for later handovers without touching the ports.
+    # The panel needs this: a user with three XAMPP roots (C:\, D:\, a renamed
+    # 7.4 build) wants them all in the list before switching to any of them.
+    if ($Add) {
+        if ([string]::IsNullOrWhiteSpace($Path)) {
+            return @{ code = 2; payload = (New-SwitchPayload -Ok $false -Code 'usage' -To $null `
+                -Steps @() -Warnings @() -Errors @('Add needs -Path <dir>') -Changed $false `
+                -DryRun ([bool]$DryRun) -Stack $null -Ports $null) }
+        }
+        $newStack = Test-ForeignStack -Path $Path
+        if (-not $newStack) {
+            return @{ code = 2; payload = (New-SwitchPayload -Ok $false -Code 'usage' -To $null `
+                -Steps @() -Warnings @() `
+                -Errors @("'$Path' is not a stack phpup can switch to (expected apache\bin\httpd.exe and mysql\bin\mysqld.exe under one root).") `
+                -Changed $false -DryRun ([bool]$DryRun) -Stack $null -Ports $null) }
+        }
+        $addAlias = Get-ForeignAlias $newStack.path
+        if (-not $DryRun) {
+            $addAlias = Register-ForeignStack -Stack $newStack -Config $config
+            $config = Get-Config
+        }
+        $addRows = @()
+        foreach ($entry in @(Get-ForeignStacks $config)) {
+            $addRows += [ordered]@{ alias = $entry.alias; path = $entry.path; kind = $entry.kind }
+        }
+        if ($DryRun) {
+            $step = "would register $addAlias at $($newStack.path)"
+        } else {
+            $step = "registered $addAlias at $($newStack.path)"
+        }
+        $payload = New-SwitchPayload -Ok $true -Code $null -To $addAlias -Steps @($step) `
+                                     -Warnings @() -Errors @() -Changed (-not [bool]$DryRun) `
+                                     -DryRun ([bool]$DryRun) -Stack $addRows -Ports $null
         return @{ code = 0; payload = $payload }
     }
 
@@ -4870,8 +4908,9 @@ Usage:
   phpup.ps1                          interactive dashboard
   phpup.ps1 status [-Fast] [-Json]   report stack state
   phpup.ps1 start|stop|restart       control services (idempotent)
-  phpup.ps1 switch [-To <target>] [-Path <dir>] [-DryRun] [-List] [-Json]
-                                     hand ports 80/3306 to a foreign stack (XAMPP) or back
+  phpup.ps1 switch [-To <target>] [-Path <dir>] [-DryRun] [-List] [-Add] [-Json]
+                                     hand ports 80/3306 to a foreign stack (XAMPP) or back;
+                                     -Add -Path <dir> registers one without switching
   phpup.ps1 version                  print version
   phpup.ps1 help                     this text
 
@@ -5011,7 +5050,7 @@ function Invoke-CliVerb {
                 $script:CliExitCode = 2
                 return
             }
-            $result = Invoke-CliSwitch -To $To -Path $SwitchPath -DryRun:$DryRun -List:$List -Json:$Json -Quiet:$Quiet
+            $result = Invoke-CliSwitch -To $To -Path $SwitchPath -DryRun:$DryRun -List:$List -Add:$Add -Json:$Json -Quiet:$Quiet
             if ($Json) { Write-CliJson $result.payload }
             elseif (-not $Quiet) { Write-CliSwitchHuman $result.payload }
             $script:CliExitCode = $result.code

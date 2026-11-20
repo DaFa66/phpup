@@ -102,6 +102,13 @@ The `switch` verb reaches macOS and Linux, and live testing against a real XAMPP
 
 ### macOS/Linux (phpup.sh)
 
+### Added
+
+- **`switch --add --path <dir>`** registers a foreign root without touching the ports or services,
+  so a GUI can list several XAMPP installs before the user chooses one. `--dry-run` reports the
+  alias and writes nothing; a path that is not a stack exits 2 and leaves the registry alone.
+  `phpup.ps1` gains the same `-Add` flag.
+
 ### Fixed
 
 - **The switch fixes are covered now, and three rough edges are gone** — `foreign_exe_running`
