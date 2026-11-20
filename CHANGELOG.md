@@ -57,6 +57,15 @@ back. Windows first; the macOS and Linux mapping (`/Applications/XAMPP/xamppfile
   rebuilds its object from scratch, so without this any unrelated save would have silently
   dropped the registry and the handover state with it.
 
+### Fixed
+
+- **A pre-release install no longer passes as the matching stable** — with 8.6.0 RC7 installed
+  and the 8.6.0 final released, `u` answered "Stack is up to date" and `I` skipped PHP, because
+  the version parse drops the suffix and both sides read as 8.6.0. `u`, `I` and the fu menu now
+  treat a final release as newer than its own alpha/beta/RC, while a pre-release of a *newer*
+  branch is left alone. In `fu` the series row reads `8.6.0 (newer) — current: 8.6.0 RC7`, the
+  stable variant sorts above the RC it supersedes, and the installed RC keeps its `(current)`.
+
 ---
 
 ### macOS / Linux (phpup.sh)

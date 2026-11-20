@@ -128,6 +128,22 @@ function Test-PhpIsPreRelease([string]$label) {
     return ($label -match ' (RC\d+|alpha\d+|beta\d+)$')
 }
 
+function Test-PhpOutdated([string]$CurrentVer, [string]$CurrentLabel, [string]$LatestVer) {
+# $true when a stable PHP release should replace what is installed.
+# [version] cannot hold a suffix, so an installed 8.6.0RC7 and the 8.6.0 final
+# compare EQUAL, which made `u` report "Stack is up to date" while an RC was
+# installed and the final release was out. Same numeric + pre-release installed
+# means the final release still wins; a pre-release of a NEWER branch (8.7.0
+# RC1 against 8.6.0) stays put, because the stable is genuinely older.
+    if (-not $CurrentVer -or -not $LatestVer) { return $false }
+    try {
+        if ([version]$LatestVer -gt [version]$CurrentVer) { return $true }
+        return (([version]$LatestVer -eq [version]$CurrentVer) -and (Test-PhpIsPreRelease $CurrentLabel))
+    } catch {
+        return $false
+    }
+}
+
 function Get-MariaDbVersion {
     if (Test-MariaDbInstalled) {
         $exe = if (Test-Path "$MARIADB_PATH\bin\mariadbd.exe") { "$MARIADB_PATH\bin\mariadbd.exe" } else { "$MARIADB_PATH\bin\mysqld.exe" }
@@ -187,7 +203,7 @@ function Test-PartialStack {
     return ($present -gt 0) -and -not (Test-StackComplete)
 }
 
-function Get-VersionTag([string]$candidate, [string]$installed) {
+function Get-VersionTag([string]$candidate, [string]$installed, [switch]$InstalledPreRelease, [switch]$CandidatePreRelease) {
 # Tag a candidate version relative to the installed one: " (newer)" yellow,
 # " (older)" dark gray, " (current)" green. Returns @{ Tag; Color } — or
 # @{ Tag = ''; Color = 'Cyan' } when either side is unparseable/absent.
@@ -195,6 +211,11 @@ function Get-VersionTag([string]$candidate, [string]$installed) {
     try {
         if ([version]$candidate -gt [version]$installed) { return @{ Tag = ' (newer)'; Color = 'Yellow' } }
         if ([version]$candidate -lt [version]$installed) { return @{ Tag = ' (older)'; Color = 'DarkGray' } }
+        # Equal numerically. [version] drops the suffix, so an installed 8.6.0RC7
+        # and the 8.6.0 final both land here. The final is the newer build; the
+        # RC itself, when it is the installed one, still reads current.
+        if ($InstalledPreRelease -and -not $CandidatePreRelease) { return @{ Tag = ' (newer)'; Color = 'Yellow' } }
+        if ($CandidatePreRelease -and -not $InstalledPreRelease) { return @{ Tag = ' (older)'; Color = 'DarkGray' } }
         return @{ Tag = ' (current)'; Color = 'Green' }
     }
     catch { return @{ Tag = ''; Color = 'Cyan' } }
@@ -253,11 +274,14 @@ function Get-PhpZipLabel([string]$filename) {
 
 function Get-PhpPreReleaseRank($pv) {
 # Release-cycle rank for sorting same-numeric-version builds:
-# stable (1) < alpha (2) < beta (3) < RC (4) — newest wins on a tie.
+# stable (5) > RC (4) > beta (3) > alpha (2) — newest wins on a tie.
+# The stable comes out on top because 8.6.0 final is NEWER than 8.6.0RC7; the
+# old stable=1 order labelled a series "8.6.0 RC7" while the final was cached
+# beside it, and hid the build the user actually wanted behind the sub-menu.
     if ($pv.Label -match ' RC')   { return 4 }
     if ($pv.Label -match ' beta') { return 3 }
     if ($pv.Label -match ' alpha'){ return 2 }
-    return 1
+    return 5
 }
 
 # ---- Config Persistence --------------------------------------
@@ -2370,7 +2394,9 @@ function Invoke-InstallWebStack {
 
         $installedApacheVer  = Get-ApacheVersion
         $installedPhpVer     = Get-PhpVersion
+        $installedPhpLabel   = Get-PhpVersionLabel
         $installedMariadbVer = Get-MariaDbVersion
+        $installedPhpShown   = if ($installedPhpLabel) { $installedPhpLabel } else { $installedPhpVer }
 
         # Replacing a component that a running service has memory-mapped fails on
         # Windows with a NON-terminating error: the write is skipped, the extract
@@ -2382,8 +2408,10 @@ function Invoke-InstallWebStack {
         # built against came from different builds. Apache then refused to serve
         # and the update looked like an Apache failure.
         # MariaDB already stops and wipes for this exact reason; Apache and PHP must too.
+        $phpStale      = Test-PhpOutdated $installedPhpVer $installedPhpLabel $resolvedPhpVer
+
         $replaceApache = -not ($installedApacheVer -and $resolvedApacheVer -and ([version]$resolvedApacheVer -le [version]$installedApacheVer))
-        $replacePhp    = -not ($installedPhpVer    -and $resolvedPhpVer    -and ([version]$resolvedPhpVer    -le [version]$installedPhpVer))
+        $replacePhp    = -not ($installedPhpVer    -and $resolvedPhpVer    -and ([version]$resolvedPhpVer    -le [version]$installedPhpVer) -and -not $phpStale)
         if ($replaceApache -or $replacePhp) {
             Stop-WebStackServices
             Start-Sleep -Seconds 1
@@ -2397,10 +2425,10 @@ function Invoke-InstallWebStack {
             Invoke-DownloadAndExtract $apacheUrl  $APACHE_PATH  "Apache"
         }
 
-        if ($installedPhpVer -and $resolvedPhpVer -and ([version]$resolvedPhpVer -le [version]$installedPhpVer)) {
-            Write-Ok "PHP $installedPhpVer already installed — skipping download"
+        if ($installedPhpVer -and $resolvedPhpVer -and ([version]$resolvedPhpVer -le [version]$installedPhpVer) -and -not $phpStale) {
+            Write-Ok "PHP $installedPhpShown already installed — skipping download"
         } else {
-            if ($installedPhpVer) { Write-Info "PHP $installedPhpVer -> $resolvedPhpVer" }
+            if ($installedPhpVer) { Write-Info "PHP $installedPhpShown -> $resolvedPhpVer" }
             Remove-Tree $PHP_PATH
             Invoke-DownloadAndExtract $phpUrl     $PHP_PATH     "PHP"
         }
@@ -2630,16 +2658,19 @@ function Invoke-UpdateWebStack {
     # Get installed versions
     $currentApacheVer  = Get-ApacheVersion
     $currentPhpVer     = Get-PhpVersion
+    $currentPhpLabel   = Get-PhpVersionLabel
     $currentMariadbVer = Get-MariaDbVersion
     $currentPmaVer     = Get-PhpMyAdminVersion
+    $currentPhpShown   = if ($currentPhpLabel) { $currentPhpLabel } else { $currentPhpVer }
 
     # Compare and build outdated list
     $outdated = @()
     if ($currentApacheVer -and $latestApacheVer -and ([version]$latestApacheVer -gt [version]$currentApacheVer)) {
         $outdated += "Apache  ($currentApacheVer -> $latestApacheVer)"
     }
-    if ($currentPhpVer -and $latestPhpVer -and ([version]$latestPhpVer -gt [version]$currentPhpVer)) {
-        $outdated += "PHP     ($currentPhpVer -> $latestPhpVer)"
+    $phpOutdated = Test-PhpOutdated $currentPhpVer $currentPhpLabel $latestPhpVer
+    if ($phpOutdated) {
+        $outdated += "PHP     ($currentPhpShown -> $latestPhpVer)"
     }
     if ($currentMariadbVer -and $latestMariadbVer -and ([version]$latestMariadbVer -gt [version]$currentMariadbVer)) {
         $outdated += "MariaDB ($currentMariadbVer -> $latestMariadbVer)"
@@ -2652,7 +2683,7 @@ function Invoke-UpdateWebStack {
     if ($outdated.Count -eq 0) {
         Write-Ok "Stack is up to date. Nothing to update."
         Write-Info "  Apache:     $currentApacheVer"
-        Write-Info "  PHP:        $currentPhpVer"
+        Write-Info "  PHP:        $currentPhpShown"
         Write-Info "  MariaDB:    $currentMariadbVer"
         Write-Info "  phpMyAdmin: $currentPmaVer"
         return
@@ -2671,7 +2702,7 @@ function Invoke-UpdateWebStack {
     }
 
     $needsApache  = ($currentApacheVer -and $latestApacheVer -and ([version]$latestApacheVer -gt [version]$currentApacheVer))
-    $needsPhp     = ($currentPhpVer -and $latestPhpVer -and ([version]$latestPhpVer -gt [version]$currentPhpVer))
+    $needsPhp     = $phpOutdated
     $needsMariadb = ($currentMariadbVer -and $latestMariadbVer -and ([version]$latestMariadbVer -gt [version]$currentMariadbVer))
     $needsPma     = ($currentPmaVer -and $latestPmaVer -and ($currentPmaVer -ne 'unknown') -and ([version]$latestPmaVer -gt [version]$currentPmaVer))
 
@@ -2743,8 +2774,14 @@ function Show-PhpSwitchMenu {
 #   @{ Chosen = $true; Version = '8.2.33'; Download = 'https://...'; PruneOld = 'C:\...\8.2.32.zip' } — download then install
     param(
         [object[]]$PhpVersions,
-        [string]$Installed
+        [string]$Installed,
+        [string]$InstalledLabel = ''
     )
+
+    # [version] cannot hold a pre-release suffix: an installed 8.6.0RC7 reads as
+    # 8.6.0, so anything deciding "current" must also know the build was an RC.
+    $installedPre = [bool]($InstalledLabel -and (Test-PhpIsPreRelease $InstalledLabel))
+    $installedShown = if ($InstalledLabel) { $InstalledLabel } else { $Installed }
 
     # 1. Resolve latest stable per series (online only; offline = cached-only hints)
     $minSeries = [version]'8.2'
@@ -2904,19 +2941,20 @@ function Show-PhpSwitchMenu {
         }
         else {
             # Tag relative to the newest cached patch
+            $rowPre = [bool]($r.Label -and (Test-PhpIsPreRelease ([string]$r.Label)))
             if ($Installed) {
-                $vt = Get-VersionTag $r.Version $Installed
+                $vt = Get-VersionTag $r.Version $Installed -InstalledPreRelease:$installedPre -CandidatePreRelease:$rowPre
                 $tag = $vt.Tag; $tagColor = $vt.Color
             }
             # The installed build lives in this series but is not the newest
             # cached patch — keep the "current" visible in the list.
             if ($Installed -and (Get-PhpSeries $Installed) -eq $r.Series) {
                 try {
-                    if ([version]$r.Version -eq [version]$Installed) {
+                    if (([version]$r.Version -eq [version]$Installed) -and ($rowPre -eq $installedPre)) {
                         $tag = " (current)"; $tagColor = "Green"
                     }
                     elseif ($tag -notmatch 'current') {
-                        $tag += " — current: $Installed"
+                        $tag += " — current: $installedShown"
                     }
                 } catch { }
             }
@@ -2958,7 +2996,7 @@ function Show-PhpSwitchMenu {
 
     # 8b. Multiple variants in this series → sub-menu
     if ($row.Variants -gt 1) {
-        $sub = Show-PhpVariantSubMenu -Series $row.Series -Variants @($seriesMap[$row.Series]) -LatestVersion $row.Latest -LatestUrl $row.LatestUrl -Installed $Installed
+        $sub = Show-PhpVariantSubMenu -Series $row.Series -Variants @($seriesMap[$row.Series]) -LatestVersion $row.Latest -LatestUrl $row.LatestUrl -Installed $Installed -InstalledLabel $InstalledLabel
         if (-not $sub) { return $null }
         return $sub
     }
@@ -2978,10 +3016,12 @@ function Show-PhpSwitchMenu {
         # fall through → use existing
     }
 
-    # Selecting the already-installed build is a no-op
+    # Selecting the already-installed build is a no-op — provided it is the SAME
+    # build: a cached 8.6.0 final is a real change when 8.6.0RC7 is installed.
     if ($Installed) {
         try {
-            if ([version]$row.Version -eq [version]$Installed) {
+            $rowPre = [bool]($row.Label -and (Test-PhpIsPreRelease ([string]$row.Label)))
+            if (([version]$row.Version -eq [version]$Installed) -and ($rowPre -eq $installedPre)) {
                 Write-Info "$($row.Version) is already installed — no changes made."
                 return $null
             }
@@ -3012,7 +3052,7 @@ function Show-PhpVariantList {
         $tag = ""
         $tagColor = "Cyan"
         if ($Installed) {
-            $vt = Get-VersionTag $v.Version $Installed
+            $vt = Get-VersionTag $v.Version $Installed -InstalledPreRelease:$installedPre -CandidatePreRelease:([bool]($v.Label -and (Test-PhpIsPreRelease ([string]$v.Label))))
             $tag = $vt.Tag; $tagColor = $vt.Color
         }
         Write-Host "  [$($i + 1)] $vLabel" -NoNewline -ForegroundColor Cyan
@@ -3049,8 +3089,11 @@ function Show-PhpVariantSubMenu {
         [object[]]$Variants,
         [string]$LatestVersion,
         [string]$LatestUrl,
-        [string]$Installed
+        [string]$Installed,
+        [string]$InstalledLabel = ''
     )
+
+    $installedPre = [bool]($InstalledLabel -and (Test-PhpIsPreRelease $InstalledLabel))
 
     $sorted = @($Variants | Sort-Object @{ Expression = { [version]$_.Version }; Descending = $true }, @{ Expression = { Get-PhpPreReleaseRank $_ }; Descending = $true })
 
@@ -3148,10 +3191,12 @@ function Show-PhpVariantSubMenu {
 
         $target = $sorted[$idx]
 
-        # Selecting the already-installed build is a no-op
+        # Selecting the already-installed build is a no-op — same build only:
+        # the 8.6.0 final is a change when 8.6.0RC7 is what is installed.
         if ($Installed) {
             try {
-                if ([version]$target.Version -eq [version]$Installed) {
+                $targetPre = [bool]($target.Label -and (Test-PhpIsPreRelease ([string]$target.Label)))
+                if (([version]$target.Version -eq [version]$Installed) -and ($targetPre -eq $installedPre)) {
                     Write-Info "$($target.Version) is already installed — no changes made."
                     return $null
                 }
@@ -3263,6 +3308,7 @@ function Invoke-ForcedUpdate {
     # Get installed versions
     $currentApacheVer  = Get-ApacheVersion
     $currentPhpVer     = Get-PhpVersion
+    $currentPhpLabel   = Get-PhpVersionLabel
     $currentMariadbVer = Get-MariaDbVersion
     $currentPmaVer     = Get-PhpMyAdminVersion
 
@@ -3309,7 +3355,7 @@ function Invoke-ForcedUpdate {
     # --- PHP: series-aware version switching (loop: variant deletes refresh
     # the listing, since the cache changed under us) ---
     while ($true) {
-        $phpMenu = Show-PhpSwitchMenu -PhpVersions $phpVersions -Installed $currentPhpVer
+        $phpMenu = Show-PhpSwitchMenu -PhpVersions $phpVersions -Installed $currentPhpVer -InstalledLabel $currentPhpLabel
         if ($phpMenu -and $phpMenu.Refresh) {
             # A variant was deleted from the cache — re-scan and re-show the menu
             $phpVersions = @(Get-CachedPhpVersions)
