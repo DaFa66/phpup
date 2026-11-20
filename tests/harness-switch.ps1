@@ -233,8 +233,19 @@ function Reset-Harness {
 Write-Host ""
 Write-Host "1. Foreign stack detection"
 Reset-Harness
-$real = Test-ForeignStack -Path 'C:\xampp'
-Check ($null -ne $real) 'C:\xampp is recognised as a switchable stack'
+# A fixture, not the host: the gate has to be honest on a clean runner, where
+# no XAMPP is installed. Test-ForeignStack only looks for footprints in a tree.
+$fxroot = Join-Path $script:SCRATCH 'XAMPP'
+foreach ($rel in @('apache\bin\httpd.exe', 'mysql\bin\mysqld.exe', 'php\php.exe',
+                   'mysql\bin\mysqladmin.exe', 'apache\conf\httpd.conf', 'mysql\bin\my.ini')) {
+    $full = Join-Path $fxroot $rel
+    $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $full)
+    $null = New-Item -ItemType File -Force -Path $full
+}
+$null = New-Item -ItemType Directory -Force -Path (Join-Path $fxroot 'htdocs')
+
+$real = Test-ForeignStack -Path $fxroot
+Check ($null -ne $real) 'a XAMPP-shaped tree is recognised'
 if ($real) {
     Check ($real.kind -eq 'xampp') 'kind is xampp'
     Check ($real.apache -like '*\apache\bin\httpd.exe') 'apache binary resolved'
