@@ -43,7 +43,8 @@ PYEOF
 WANTED="detect_foreign_stack foreign_alias_for foreign_registry_lines foreign_registry_field
 foreign_registry_set foreign_registry_clear_state port_listener_pid process_path_for_pid
 port_owner_kind foreign_listener_paths stop_foreign_stack foreign_versions switch_json_array
-switch_ports_json switch_stack_json emit_switch_payload json_escape jstr jbool"
+switch_ports_json switch_stack_json emit_switch_payload json_escape jstr jbool
+foreign_exe_running foreign_daemon_running brew_services"
 LOADED=0
 for fn in $WANTED; do
     body=$(extract_fn "$fn") || { echo "ABORT: could not extract $fn"; exit 1; }
@@ -95,7 +96,16 @@ lsof() {
     [[ -n "$pid" ]] && printf '%s\n' "$pid"
     return 0
 }
-ps() { [[ "${1:-}" == "-p" ]] && path_for "${2:-}"; }
+ps() {
+    if [[ "${1:-}" == "-axo" && "${2:-}" == "args=" ]]; then
+        [[ -n "$FAKE_ARGS" ]] && printf '%s\n' "$FAKE_ARGS"
+        return 0
+    fi
+    [[ "${1:-}" == "-p" ]] && path_for "${2:-}"
+}
+BREW_CALLS=""
+brew() { BREW_CALLS="$BREW_CALLS|$*"; return 0; }
+FAKE_ARGS=""
 path_for() {
     case "$1" in
         5001) printf '%s' "$XROOT/xamppfiles/bin/httpd" ;;
@@ -121,6 +131,7 @@ print_err() { :; }
 reset_state() {
     LISTENING="80 3306"; PID80=5001; PID3306=5002; PID80_OVERRIDE=""
     KILLED=""; SUDO_CALLS=""; ACTIVE_OWNER_RC=1
+    FAKE_ARGS=""; BREW_CALLS=""; BREW_PREFIX=""
     FOREIGN_ROOT=""; FOREIGN_KIND=""; FOREIGN_APACHE=""; FOREIGN_MYSQL=""
     FOREIGN_PHP=""; FOREIGN_HTDOCS=""; FOREIGN_UNTOUCHABLE=""
     FV_APACHE=""; FV_MARIADB=""; FV_PHP=""
@@ -130,14 +141,25 @@ reset_state() {
 # ======================================================================
 echo "1. Foreign stack detection"
 reset_state
-if detect_foreign_stack "$XROOT"; then
+# A filesystem without an exec bit (MSYS with noacl, some network mounts) cannot make
+# the fixture below look runnable, so those checks would fail for a host reason rather
+# than a code reason. Probe once and say so, instead of reporting a false failure.
+EXEC_OK=0
+_probe=$(mktemp -d)
+: > "$_probe/x"; chmod +x "$_probe/x" 2>/dev/null
+[[ -x "$_probe/x" ]] && EXEC_OK=1
+rm -rf "$_probe"
+if [[ $EXEC_OK -eq 1 ]] && detect_foreign_stack "$XROOT"; then
     ok "classic XAMPP root recognised"
     check '[[ "$FOREIGN_KIND" == "xampp" ]]' "kind is xampp"
     check '[[ "$FOREIGN_APACHE" == "$XROOT/xamppfiles/bin/apachectl" ]]' "apachectl resolved"
     check '[[ "$FOREIGN_MYSQL" == "$XROOT/xamppfiles/bin/mysql.server" ]]' "mysql.server resolved"
     check '[[ "$FOREIGN_HTDOCS" == "$XROOT/xamppfiles/htdocs" ]]' "htdocs resolved"
-else
+elif [[ $EXEC_OK -eq 1 ]]; then
     bad "classic XAMPP root recognised"
+else
+    echo "  [SKIP] XAMPP tree checks: this filesystem does not carry an exec bit"
+    echo "         (run the suite on macOS or Linux to exercise them; CI does)"
 fi
 check '! detect_foreign_stack "$TMP/XAMPP-VM.app"' "XAMPP-VM (no xamppfiles) is refused"
 check '! detect_foreign_stack "$TMP/nothing-here"' "a missing path is refused"
@@ -216,6 +238,61 @@ fi
 check 'printf "%s" "$payload" | grep -q "\"changed\":true"' "changed flag present"
 check 'printf "%s" "$payload" | grep -q "\"steps\":\[" ' "steps array present"
 check 'printf "%s" "$payload" | grep -q "\\\\\""' "quotes are escaped inside strings"
+
+# ======================================================================
+echo ""
+echo "7. A listener we cannot see is still attributable (macOS: Apache runs as root)"
+reset_state
+LISTENING="80"; PID80=5004
+check '[[ "$(port_owner_kind 80 "$XROOT")" == "unknown" ]]' \
+    "invisible listener, no matching daemon: unknown"
+FAKE_ARGS="$XROOT/xamppfiles/bin/httpd -k start"
+check '[[ "$(port_owner_kind 80 "$XROOT")" == "foreign" ]]' \
+    "invisible listener, httpd running: foreign"
+FAKE_ARGS="/usr/bin/tail -f $XROOT/xamppfiles/bin/httpd"
+check '[[ "$(port_owner_kind 80 "$XROOT")" == "unknown" ]]' \
+    "a tail that mentions the binary is not a daemon"
+FAKE_ARGS="$XROOT/xamppfiles/bin/httpd-other -k start"
+check '[[ "$(port_owner_kind 80 "$XROOT")" == "unknown" ]]' \
+    "a prefix-similar binary is not a match"
+
+LISTENING="3306"; PID3306=5004
+FAKE_ARGS="$XROOT/xamppfiles/sbin/mysqld"
+check '[[ "$(port_owner_kind 3306 "$XROOT")" == "foreign" ]]' \
+    "mysqld in sbin/ (macOS layout) is recognised"
+FAKE_ARGS="$XROOT/xamppfiles/bin/mysqld"
+check '[[ "$(port_owner_kind 3306 "$XROOT")" == "foreign" ]]' \
+    "mysqld in bin/ (older layout) is recognised"
+FAKE_ARGS="$TMP/OtherStack/xamppfiles/sbin/mysqld"
+check '[[ "$(port_owner_kind 3306 "$XROOT")" == "unknown" ]]' \
+    "another root's daemon is not credited to this stack"
+
+# ======================================================================
+echo ""
+echo "8. brew services is asked as the invoking user"
+reset_state
+brew_services start mariadb
+check '[[ "$BREW_CALLS" == *"services start mariadb"* ]]' \
+    "the verb and formula reach brew services"
+check '[[ "$BREW_CALLS" != *"|sudo"* ]]' \
+    "no sudo on the already-unprivileged path"
+
+# ======================================================================
+echo ""
+echo "9. Foreign MySQL version, wherever the binary lives"
+if [[ $EXEC_OK -eq 1 ]]; then
+    reset_state
+    mkdir -p "$TMP/FV/xamppfiles/sbin"
+    printf '#!/bin/sh\necho "mysqld  Ver 10.4.32-MariaDB for osx10.15 on x86_64"\n' \
+        > "$TMP/FV/xamppfiles/sbin/mysqld"
+    chmod +x "$TMP/FV/xamppfiles/sbin/mysqld"
+    FOREIGN_ROOT="$TMP/FV"; FOREIGN_KIND="xampp"
+    foreign_versions
+    check '[[ "$FV_MARIADB" == "10.4.32" ]]' \
+        "mysqld in sbin/ reports its version"
+else
+    echo "  [SKIP] sbin/ mysqld probe: this filesystem does not carry an exec bit"
+fi
 
 echo ""
 echo "RESULT: $PASS passed, $FAIL failed"

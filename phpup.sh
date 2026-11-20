@@ -288,18 +288,23 @@ brew_services() {
     # switch may legitimately be invoked through sudo for the port and stop work — so
     # drop back to SUDO_USER instead of failing. Every caller used to discard stderr,
     # which is why the only symptom was "services did not start".
+    # The binary is resolved absolutely: after `sudo -u user -H env -u SUDO_*` the PATH
+    # is the invoking shell's, which is not guaranteed to hold brew under cron or a
+    # sudoers secure_path.
+    local brew_bin="brew"
+    [[ -x "${BREW_PREFIX:-}/bin/brew" ]] && brew_bin="${BREW_PREFIX}/bin/brew"
     if [[ $EUID -eq 0 ]]; then
         if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
             # Scrub the SUDO_* markers: brew services reads them and puts the job in
             # the user/ domain instead of the gui/ one it uses for a normal user.
             sudo -u "$SUDO_USER" -H env -u SUDO_USER -u SUDO_UID -u SUDO_GID \
-                -u SUDO_COMMAND brew services "$@"
+                -u SUDO_COMMAND "$brew_bin" services "$@"
             return $?
         fi
         print_warn "brew services needs a normal user — skipping: brew services $*"
         return 1
     fi
-    brew services "$@"
+    "$brew_bin" services "$@"
 }
 
 # Resolve the ACTIVE Homebrew PHP formula from the linked binary:
@@ -1421,7 +1426,7 @@ start_services() {
         if [[ $PHP == 1 ]] && ! php_via_apache; then
             local brew_php_svc
             brew_php_svc=$(brew_active_php)
-            brew_services start "$brew_php_svc" 2>/dev/null
+            brew_services start "$brew_php_svc"
             for ((_i=0; _i<5; _i++)); do
                 stack_proc -f "(^|/)php-fpm" &>/dev/null && { print_ok "PHP-FPM started"; break; }
                 sleep 1
@@ -3854,7 +3859,7 @@ cmd_forced_update() {
         configure_php
 
         # Start services (the NEW php service = the target formula)
-        brew_services start "$target" 2>/dev/null
+        brew_services start "$target"
         sudo "${BREW_PREFIX}/bin/apachectl" restart 2>/dev/null
 
         detect_all
@@ -4120,27 +4125,35 @@ process_path_for_pid() {
     ps -p "$1" -o comm= 2>/dev/null | head -1
 }
 
+foreign_exe_running() {
+    # <path> — is a process running with this executable?
+    # The command line must START with the path: a `tail -f <path>` or a `grep <path>`
+    # mentions the file without running it, and pgrep -f counted both. ps hands the path
+    # to awk as data, so a directory containing regex metacharacters cannot break the
+    # match either (pgrep treated the path as an ERE).
+    local exe="$1"
+    [[ -n "$exe" ]] || return 1
+    ps -axo args= 2>/dev/null | awk -v p="$exe" '$0 == p || index($0, p " ") == 1 { found = 1 } END { exit !found }'
+}
+
 foreign_daemon_running() {
     # <root> <port> — is one of the foreign stack's own daemons alive?
     # Matched by the binary's PATH, because the owner may be a user we cannot see:
     # macOS runs Apache as root/daemon and MySQL as _mysql, so an unprivileged lsof
-    # reports a busy port with no owner at all.
-    local root="$1" port="$2" pat=""
+    # reports a busy port with no owner at all. Layouts differ: XAMPP on macOS keeps
+    # mysqld in sbin/ while other builds keep it in bin/.
+    local root="$1" port="$2" pat
     case "$port" in
-        80)   pat="${root}/xamppfiles/bin/httpd" ;;
-        3306) pat="${root}/xamppfiles/sbin/mysqld" ;;
+        80)
+            for pat in "${root}/xamppfiles/bin/httpd" "${root}/lampp/bin/httpd"; do
+                foreign_exe_running "$pat" && return 0
+            done ;;
+        3306)
+            for pat in "${root}/xamppfiles/sbin/mysqld" "${root}/xamppfiles/bin/mysqld" \
+                       "${root}/lampp/sbin/mysqld" "${root}/lampp/bin/mysqld"; do
+                foreign_exe_running "$pat" && return 0
+            done ;;
     esac
-    if [[ -n "$pat" ]] && pgrep -f -- "$pat" >/dev/null 2>&1; then return 0; fi
-    case "$port" in
-        3306) pat="${root}/xamppfiles/bin/mysqld" ;;
-        *)    pat="" ;;
-    esac
-    if [[ -n "$pat" ]] && pgrep -f -- "$pat" >/dev/null 2>&1; then return 0; fi
-    case "$port" in
-        80)   pat="${root}/lampp/bin/httpd" ;;
-        3306) pat="${root}/lampp/sbin/mysqld" ;;
-    esac
-    if [[ -n "$pat" ]] && pgrep -f -- "$pat" >/dev/null 2>&1; then return 0; fi
     return 1
 }
 

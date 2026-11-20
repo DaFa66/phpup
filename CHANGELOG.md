@@ -100,6 +100,25 @@ The `switch` verb reaches macOS and Linux, and live testing against a real XAMPP
 
 ## [Unreleased]
 
+### macOS/Linux (phpup.sh)
+
+### Fixed
+
+- **The switch fixes are covered now, and three rough edges are gone** — `foreign_exe_running`
+  replaces the `pgrep -f` probe: the command line must *start* with the executable, so a `tail -f`
+  or `grep` that merely mentions the path no longer counts as a running daemon, and a directory
+  containing regex metacharacters can no longer break the match. `brew_services` resolves the brew
+  binary absolutely, because after `sudo -u … env -u SUDO_*` the PATH is the invoking shell's and
+  is not guaranteed to hold brew under cron or a `secure_path`. The last two `brew services start`
+  calls (php-fpm, and the `fu` switch) no longer discard stderr, which was the exact pattern that
+  hid the original failure behind "One or more services did not start".
+- **`tests/harness-switch.sh` now exercises the handover logic** — 34 checks became 42 on a POSIX
+  host: an unreadable listener attributed to the stack by its own daemon, a `tail` mentioning the
+  binary deliberately not counted, `mysqld` found in `sbin/` or `bin/`, a foreign root not credited
+  to another stack, `brew services` receiving the verb and formula, and the `sbin/` version probe.
+  On a filesystem that cannot express an exec bit the exec-dependent checks report `[SKIP]` rather
+  than a false failure, so the suite is honest on Windows and complete on macOS and CI.
+
 ### Windows (phpup.ps1)
 
 Adds the `switch` verb: hand ports 80 and 3306 to an existing XAMPP install and take them
