@@ -164,6 +164,7 @@ Every verb accepts flags, so a GUI, tray app or CI job can drive phpup without t
 ```
 phpup status [--json] [--fast] [--watch N] [--quiet]
 phpup start|stop|restart [--json] [--quiet]
+phpup switch [--to <stack>] [--add --path <dir>] [--list] [--dry-run] [--json]
 phpup version
 phpup help
 ```
@@ -179,9 +180,32 @@ phpup help
 - The status schema is versioned (`schema: 1`), always fully populated — unknown values are
   `null`, never omitted — and additive only.
 
-`install`, `update`, `delete`, `switch` and `doctor` are reserved for v2, once they have
-non-interactive modes. The full contract — schema, stream rules, semantics — is in
+`install`, `update`, `delete` and `doctor` are reserved for v2, once they have non-interactive
+modes. `switch` is implemented now: released on macOS/Linux (1.3.2), on Windows still unreleased.
+The full contract — schema, stream rules, semantics — is in
 [`docs/CLI.md`](docs/CLI.md).
+
+### Handing the ports to XAMPP and back
+
+Older projects often live in XAMPP. `switch` stops whichever stack owns ports 80 and 3306 and
+starts the other, so both can stay installed and neither has to be uninstalled to use the other:
+
+```
+phpup switch --add --path C:\xampp      # register a root, ports untouched
+phpup switch --to xampp                 # phpup stops, XAMPP starts
+phpup switch --to phpup                 # and back again
+phpup switch                            # who owns 80/3306 right now
+```
+
+Registered roots live in `foreign_stacks.tsv` beside the stack, and more than one is normal: your
+main install, a second drive, and a renamed 7.4 build that has to keep its own folder to run.
+
+**Nothing is migrated.** While XAMPP holds the ports it serves XAMPP's `htdocs` and XAMPP's
+database; when phpup takes them back it serves `www/` and phpup's own schemas again. An app that
+seems to vanish after a switch is that design working, not a lost database. Refusals are
+deliberate too: no shared data directory (a newer server opening an older datadir upgrades it one
+way, irreversibly), no writes inside the other stack, and no guessing which stack when more than
+one is registered. Detail: [`docs/CLI.md`](docs/CLI.md#13-switch-stack-handover).
 
 ## How Version Resolution Works
 
