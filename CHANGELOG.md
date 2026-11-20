@@ -134,6 +134,11 @@ back. Windows first; the macOS and Linux mapping (`/Applications/XAMPP/xamppfile
 
 ### Added
 
+- **The panel can switch stacks** — a STACKS block under the cards lists the registered XAMPP
+  roots, hands ports 80/3306 to one with `Switch to`, takes them back with `Return to phpup`, and
+  registers further installs from a path field through `switch --add`. Port owners are shown with
+  their PIDs, a rejected path stays in the field with the reason beside it, and a failed switch
+  never leaves the block claiming it does not know who holds the ports.
 - **`switch` hands the ports to another stack and takes them back** — for users whose older
   projects live in XAMPP, phpup can now shut its own stack down, release 80 and 3306, start
   the named XAMPP root, and later reverse it. `--to <alias>`, `--path <root>`, `--list`,

@@ -5,6 +5,7 @@
 //! one-shot `start|stop|restart --json` calls for actions.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -221,10 +222,91 @@ pub struct ActionResult {
     pub errors: Vec<String>,
 }
 
+// ------------------------------------------------------------ switch payload
+
+/// A registered root phpup can hand ports 80/3306 to. Named "foreign" in the
+/// contract because it is not phpup's own install.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ForeignStack {
+    #[serde(default)]
+    pub alias: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    #[allow(dead_code)] // "xampp" | "custom"; the panel shows alias and path
+    pub kind: String,
+}
+
+/// One port in the switch payload. Deliberately not `PortInfo`: that name is
+/// already the status stream's record (port/listening/ours), and the two
+/// payloads describe a port differently.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SwitchPort {
+    /// "phpup" | "foreign" | "other" | "unknown" | "free".
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub owner: Option<String>,
+}
+
+/// The ports map tolerates a malformed entry: losing the whole payload would
+/// hide the errors[] text exactly when the switch failed and the user needs it.
+fn ports_lenient<'de, D>(d: D) -> Result<Option<HashMap<String, SwitchPort>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(value.and_then(|v| serde_json::from_value(v).ok()))
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SwitchPayload {
+    #[serde(default, deserialize_with = "bool_or_false")]
+    pub ok: bool,
+    #[serde(default)]
+    pub code: Option<String>,
+    /// Target alias. JSON null on phpup.sh, "" on phpup.ps1, so it must stay
+    /// optional: a bare String makes every Unix payload unparseable.
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default, deserialize_with = "bool_or_false")]
+    pub changed: bool,
+    #[serde(default, deserialize_with = "bool_or_false")]
+    pub dry_run: bool,
+    #[serde(default, deserialize_with = "null_vec")]
+    pub stack: Vec<ForeignStack>,
+    #[serde(default, deserialize_with = "ports_lenient")]
+    pub ports: Option<HashMap<String, SwitchPort>>,
+    #[serde(default, deserialize_with = "null_vec")]
+    pub steps: Vec<String>,
+    #[serde(default, deserialize_with = "null_vec")]
+    pub warnings: Vec<String>,
+    #[serde(default, deserialize_with = "null_vec")]
+    pub errors: Vec<String>,
+}
+
+impl SwitchPayload {
+    pub fn port(&self, port: &str) -> Option<&SwitchPort> {
+        self.ports.as_ref().and_then(|m| m.get(port))
+    }
+
+    /// First thing worth showing the user: an error, else the code.
+    pub fn first_error(&self) -> Option<String> {
+        self.errors
+            .iter()
+            .find(|e| !e.trim().is_empty())
+            .cloned()
+            .or_else(|| self.code.clone())
+    }
+}
+
 // ------------------------------------------------------------------ events
 
 pub enum Event {
     Status(Box<Status>),
+    /// A `switch` invocation finished and produced a payload. Boxed: the
+    /// payload is several times larger than any other variant.
+    Switch(Box<SwitchPayload>),
     /// One line of human output from phpup (its stderr channel).
     Log(String),
     /// The elevated instance is starting, so this one should shut down.
@@ -644,6 +726,89 @@ impl Backend {
             }
         });
     }
+
+    /// Run `switch <args> --json`.
+    ///
+    /// `switch` is read-modify-write rather than a lifecycle verb: a plain call
+    /// with no arguments is the snapshot the Stacks block renders, so the same
+    /// path serves listing, adding and handing the ports over.
+    pub fn spawn_switch(&self, args: Vec<String>, tx: Sender<Event>) {
+        let script = self.script.clone();
+        thread::spawn(move || {
+            let mut extra = args;
+            extra.push("--json".to_string());
+            let mut cmd = build_command(&script, "switch", &extra);
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(Event::Failed(format!("switch could not run: {e}")));
+                    return;
+                }
+            };
+
+            // Same stderr handling as spawn_action, so a refused switch explains
+            // itself in the console pane rather than vanishing.
+            let stderr_reader = child.stderr.take().map(|err| {
+                let tx_err = tx.clone();
+                thread::spawn(move || {
+                    for line in BufReader::new(err).lines() {
+                        match line {
+                            Ok(l) => {
+                                if tx_err.send(Event::Log(l)).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                })
+            });
+
+            match child.wait_with_output() {
+                Ok(o) => {
+                    if let Some(handle) = stderr_reader {
+                        let _ = handle.join();
+                    }
+                    let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+                    let trimmed = stdout.trim();
+                    // Exit 2/4/5 still carry a payload with ok=false and errors;
+                    // those are answers, not parse failures.
+                    match serde_json::from_str::<SwitchPayload>(trimmed) {
+                        Ok(payload) => {
+                            let _ = tx.send(Event::Switch(Box::new(payload)));
+                        }
+                        Err(e) => {
+                            let exit = o.status.code().unwrap_or(-1);
+                            let raw = if trimmed.is_empty() {
+                                format!("no payload on stdout (exit {exit})")
+                            } else {
+                                format!("exit {exit}: {}", first_line(trimmed))
+                            };
+                            let _ = tx.send(Event::Failed(format!(
+                                "switch: unreadable payload ({e}) — {raw}"
+                            )));
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Failed(format!("switch failed: {e}")));
+                }
+            }
+        });
+    }
+}
+
+/// Long JSON on one line would flood the console; the head is enough to see
+/// what went wrong.
+fn first_line(text: &str) -> String {
+    let line = text.lines().next().unwrap_or("").trim();
+    if line.chars().count() > 200 {
+        let head: String = line.chars().take(200).collect();
+        format!("{head}…")
+    } else {
+        line.to_string()
+    }
 }
 
 pub fn channel_pair() -> (Sender<Event>, Receiver<Event>) {
@@ -899,5 +1064,64 @@ pub fn relaunch_panel(pending: Option<&str>) -> Result<(), String> {
     {
         let _ = pending;
         Err("not supported on this platform".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Windows shape, verbatim from `phpup.ps1 switch --json`.
+    const WIN: &str = r#"{"schema":1,"ok":true,"code":null,"action":"switch","to":"","dry_run":false,"changed":false,"stack":[{"alias":"xampp","path":"C:\\xampp","kind":"xampp"}],"ports":{"80":{"state":"phpup","owner":"httpd (PID 45268)"},"3306":{"state":"phpup","owner":"mariadbd (PID 33504)"}},"steps":[],"warnings":[],"errors":[]}"#;
+
+    /// Unix shape: `to`, `stack`, `ports`, `code` and `errors` all arrive null.
+    /// This is the shape that broke every parse when `to` was a bare String.
+    const UNIX: &str = r#"{"schema":1,"ok":false,"code":null,"action":"switch","to":null,"dry_run":false,"changed":false,"stack":null,"ports":null,"steps":null,"warnings":null,"errors":null}"#;
+
+    #[test]
+    fn windows_payload_parses() {
+        let p: SwitchPayload = serde_json::from_str(WIN).expect("windows payload");
+        assert!(p.ok);
+        assert_eq!(p.to.as_deref(), Some(""));
+        assert_eq!(p.stack.len(), 1);
+        assert_eq!(p.stack[0].alias, "xampp");
+        assert_eq!(p.stack[0].path, r"C:\xampp");
+        assert_eq!(p.port("80").map(|x| x.state.as_str()), Some("phpup"));
+        assert_eq!(p.port("3306").and_then(|x| x.owner.as_deref()), Some("mariadbd (PID 33504)"));
+        assert!(p.errors.is_empty());
+    }
+
+    #[test]
+    fn unix_payload_nulls_parse() {
+        let p: SwitchPayload = serde_json::from_str(UNIX).expect("unix payload");
+        assert!(!p.ok);
+        assert_eq!(p.to, None);
+        assert!(p.stack.is_empty());
+        assert!(p.ports.is_none());
+        assert!(p.steps.is_empty());
+        assert!(p.warnings.is_empty());
+        assert!(p.errors.is_empty());
+        assert!(p.code.is_none());
+    }
+
+    #[test]
+    fn missing_fields_default() {
+        let p: SwitchPayload = serde_json::from_str(r#"{"ok":null}"#).expect("sparse payload");
+        assert!(!p.ok);
+        assert!(p.stack.is_empty());
+        assert!(p.ports.is_none());
+        assert!(p.errors.is_empty());
+    }
+
+    /// A switch that fails still has to surface its errors: a bad ports entry
+    /// must cost the ports map, not the whole payload.
+    #[test]
+    fn broken_ports_entry_keeps_errors() {
+        let json = r#"{"ok":false,"code":"usage","to":null,"ports":{"80":"nonsense"},"errors":["'C:\\nope' is not a stack phpup can switch to"]}"#;
+        let p: SwitchPayload = serde_json::from_str(json).expect("payload with broken ports");
+        assert!(!p.ok);
+        assert!(p.ports.is_none());
+        assert_eq!(p.code.as_deref(), Some("usage"));
+        assert_eq!(p.first_error().as_deref(), Some("'C:\\nope' is not a stack phpup can switch to"));
     }
 }

@@ -45,7 +45,7 @@ fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(if elevated { "phpup — as administrator" } else { "phpup" })
         .with_app_id("phpup-panel")
-        .with_inner_size([980.0, 700.0])
+        .with_inner_size([980.0, 860.0])
         .with_min_inner_size([760.0, 520.0]);
     if let Some(icon) = assets::window_icon() {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
@@ -223,6 +223,17 @@ struct App {
     tx: Sender<Event>,
     rx: Receiver<Event>,
     status: Option<Status>,
+    /// Last `switch --json` payload: registered roots plus port ownership.
+    switch: Option<backend::SwitchPayload>,
+    switch_error: Option<String>,
+    switch_busy: bool,
+    /// The in-flight switch was `--add`, so a success clears the path field.
+    switch_adding: bool,
+    /// True while the payload in flight came from a user action rather than the
+    /// snapshot, so a `--add` (which answers with `ports: null`) is followed by a
+    /// fresh read instead of leaving the block on "unknown".
+    switch_acted: bool,
+    new_stack_path: String,
     last_error: Option<String>,
     last_seen: Option<Instant>,
     action: Option<&'static str>,
@@ -279,6 +290,12 @@ impl App {
             tx,
             rx,
             status: None,
+            switch: None,
+            switch_error: None,
+            switch_busy: false,
+            switch_adding: false,
+            switch_acted: false,
+            new_stack_path: String::new(),
             last_error: None,
             last_seen: None,
             action: None,
@@ -354,6 +371,12 @@ impl App {
 
     /// Resolve the script and start the status stream.
     fn attach(&mut self) {
+        // A re-attach may point at a different script: nothing about the old
+        // stack list survives it.
+        self.switch = None;
+        self.switch_error = None;
+        self.switch_busy = false;
+        self.switch_adding = false;
         match backend::resolve_script(self.settings.source, self.settings.script.as_ref()) {
             Ok(path) => {
                 self.script_input = path.display().to_string();
@@ -367,6 +390,11 @@ impl App {
                     Ok(version) => {
                         let be = Backend::new(path, self.settings.interval);
                         be.spawn_watch(self.tx.clone());
+                        // The Stacks block lists registered roots from this
+                        // snapshot; without it the section has nothing to show
+                        // until the user asks for a switch.
+                        be.spawn_switch(Vec::new(), self.tx.clone());
+                        self.switch_busy = true;
                         self.push_log(format!(
                             "phpup {version}: {} [{}], polling every {}s",
                             be.script.display(),
@@ -432,6 +460,26 @@ impl App {
                 on_off(s.components.mariadb.running())
             ));
         }
+    }
+
+    /// Hand one `switch` invocation to the CLI. Serialised on purpose: switch is
+    /// read-modify-write, so two in flight would race over the same state.
+    fn run_switch(&mut self, args: Vec<String>) {
+        if self.switch_busy {
+            return;
+        }
+        let Some(be) = &self.backend else { return };
+        be.spawn_switch(args.clone(), self.tx.clone());
+        self.switch_busy = true;
+        self.switch_error = None;
+        self.switch_acted = true;
+        self.switch_adding = matches!(args.first().map(String::as_str), Some("--add"));
+        let mut line = String::from("> switch");
+        for a in &args {
+            line.push(' ');
+            line.push_str(a);
+        }
+        self.push_log(line);
     }
 
     fn drain(&mut self) {
@@ -541,6 +589,53 @@ impl App {
                         },
                     });
                 }
+                Event::Switch(payload) => {
+                    self.switch_busy = false;
+                    let acted = std::mem::replace(&mut self.switch_acted, false);
+                    if payload.ok {
+                        // Only a successful *action* clears the message; the snapshot
+                        // that follows it is always ok, and would wipe the very error
+                        // the user is still reading.
+                        if acted {
+                            self.switch_error = None;
+                        }
+                        // Only clear what the user typed if phpup actually
+                        // registered it; a rejected path has to stay editable.
+                        if self.switch_adding {
+                            self.new_stack_path.clear();
+                        }
+                    } else {
+                        self.switch_error =
+                            payload.first_error().or_else(|| Some("switch failed".to_string()));
+                    }
+                    self.switch_adding = false;
+                    self.push_log(switch_summary(&payload));
+                    // Warnings and steps are the only account of what phpup did;
+                    // the Stacks block shows state, the console shows the work.
+                    for w in payload.warnings.iter().filter(|w| !w.trim().is_empty()) {
+                        self.push_log(format!("  warning: {w}"));
+                    }
+                    for step in payload.steps.iter().filter(|s| !s.trim().is_empty()) {
+                        self.push_log(format!("  {step}"));
+                    }
+                    // A payload without ports (an --add answers with ports:null because
+                    // it never probes) must not wipe what the block is already showing.
+                    let mut payload = payload;
+                    if payload.ports.is_none() {
+                        if let Some(prev) = &self.switch {
+                            payload.ports = prev.ports.clone();
+                        }
+                    }
+                    self.switch = Some(*payload);
+                    // An --add answers with ports:null because it never probes. Re-read
+                    // the snapshot so a successful registration cannot leave the block
+                    // sitting on "unknown", and so --to lands with fresh owners.
+                    if acted {
+                        if let Some(be) = &self.backend {
+                            be.spawn_switch(Vec::new(), self.tx.clone());
+                        }
+                    }
+                }
                 Event::Relaunched(res) => match res {
                     Ok(()) => {
                         self.push_log("elevated instance is starting; closing this one".to_string());
@@ -551,6 +646,14 @@ impl App {
                 Event::Log(line) => self.push_log(line),
                 Event::Failed(msg) => {
                     self.action = None;
+                    // A switch that never produced JSON is finished as far as
+                    // the UI is concerned; otherwise its buttons stay disabled
+                    // for the rest of the session.
+                    if self.switch_busy {
+                        self.switch_busy = false;
+                        self.switch_adding = false;
+                        self.switch_error = Some(msg.clone());
+                    }
                     self.push_log(format!("error: {msg}"));
                     self.last_error = Some(msg);
                 }
@@ -769,7 +872,7 @@ impl App {
 
         egui::Panel::bottom("console")
             .resizable(true)
-            .default_size(160.0)
+            .default_size(120.0)
             .min_size(88.0)
             .max_size(520.0)
             .frame(
@@ -1387,6 +1490,10 @@ impl App {
                                 ui.label(RichText::new("Waiting for phpup…").size(14.0).color(p.muted));
                             });
                         }
+
+                        // Directly under the cards and their links: switching
+                        // stacks must not need Settings opened first.
+                        self.stacks_block(ui, p);
                     });
             });
 
@@ -1448,6 +1555,110 @@ impl App {
         }
         if let Some(url) = open_url {
             backend::open_in_default_app(&url);
+        }
+    }
+
+    /// Stack handover: which root holds ports 80/3306, and the verbs to change
+    /// it. Lives in the main column rather than Settings — handing the ports
+    /// over is an action, not a preference.
+    fn stacks_block(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        // Nothing to say until the first snapshot lands (or it failed).
+        if self.switch.is_none() && !self.switch_busy && self.switch_error.is_none() {
+            return;
+        }
+
+        let busy = self.switch_busy;
+        let stacks: Vec<backend::ForeignStack> = self
+            .switch
+            .as_ref()
+            .map(|s| s.stack.clone())
+            .unwrap_or_default();
+        let (mut ports, foreign) = match self.switch.as_ref() {
+            Some(sw) => switch_port_line(sw),
+            None => ("Ports 80/3306: unknown".to_string(), false),
+        };
+        if busy {
+            ports.push_str("  ·  Refreshing…");
+        }
+
+        let mut queued: Option<Vec<String>> = None;
+        let mut dismiss = false;
+
+        ui.add_space(16.0);
+        section_label(ui, p, "STACKS");
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(ports).size(11.5).color(p.muted));
+            if foreign && verb_button(ui, p, "Return to phpup", !busy).clicked() {
+                queued = Some(vec!["--to".to_string(), "phpup".to_string()]);
+            }
+        });
+
+        // Above the list and the field on purpose: the console pane takes the
+        // bottom of this section in a small window, and an error painted below
+        // the add row was invisible exactly when it needed reading.
+        if let Some(err) = self.switch_error.clone() {
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("! {err}")).size(11.5).color(p.warn));
+                if plain_nav(ui, p, "Dismiss") {
+                    dismiss = true;
+                }
+            });
+        }
+
+        if stacks.is_empty() {
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new("No other stack registered yet.")
+                    .size(11.0)
+                    .color(p.muted),
+            );
+        }
+
+        for stack in &stacks {
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(&stack.alias).size(12.5).strong().color(p.text));
+                // The path is the widest thing on the row and the slide-out can
+                // leave ~300pt, so it truncates and keeps the whole thing on hover.
+                ui.add(
+                    egui::Label::new(RichText::new(&stack.path).size(11.0).color(p.muted))
+                        .truncate(),
+                )
+                .on_hover_text(&stack.path);
+                if verb_button(ui, p, "Switch to", !busy).clicked() {
+                    queued = Some(vec!["--to".to_string(), stack.alias.clone()]);
+                }
+            });
+        }
+
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_stack_path)
+                    .hint_text(r"C:\xampp")
+                    .desired_width(220.0)
+                    .font(egui::TextStyle::Small),
+            );
+            // Read after the edit: this frame's typing must count, otherwise a
+            // click in the same frame adds the path as it was before the keypress.
+            let typed = self.new_stack_path.trim().to_string();
+            let can_add = !busy && !typed.is_empty();
+            if verb_button(ui, p, "Add", can_add).clicked() && can_add {
+                queued = Some(vec![
+                    "--add".to_string(),
+                    "--path".to_string(),
+                    typed.clone(),
+                ]);
+            }
+        });
+
+        if dismiss {
+            self.switch_error = None;
+        }
+        if let Some(args) = queued {
+            self.run_switch(args);
         }
     }
 
@@ -1769,7 +1980,7 @@ impl eframe::App for App {
             if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
                 let want = egui::vec2(
                     980.0_f32.min(monitor.x * 0.90),
-                    700.0_f32.min(monitor.y * 0.85),
+                    860.0_f32.min(monitor.y * 0.85),
                 );
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
             }
@@ -1855,6 +2066,72 @@ fn plain_nav(ui: &mut egui::Ui, p: &Palette, label: &str) -> bool {
             .corner_radius(CornerRadius::same(8)),
     )
     .clicked()
+}
+
+/// A verb. Only actions get button chrome in the panel; stacks, paths and
+/// aliases stay plain text so the row does not read as clickable.
+fn verb_button(ui: &mut egui::Ui, p: &Palette, label: &str, enabled: bool) -> egui::Response {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(
+            RichText::new(label)
+                .size(12.0)
+                .color(if enabled { p.text } else { p.muted }),
+        )
+        .fill(p.surface_2)
+        .corner_radius(CornerRadius::same(8)),
+    )
+}
+
+/// "Ports 80/3306: 80 phpup — httpd (PID 45268) · …", plus whether either port
+/// is held by something that is not phpup (which is when Return to phpup is the
+/// only useful verb).
+fn switch_port_line(sw: &backend::SwitchPayload) -> (String, bool) {
+    let mut parts: Vec<String> = Vec::new();
+    let mut foreign = false;
+    for port in ["80", "3306"] {
+        match sw.port(port) {
+            Some(info) => {
+                if info.state == "foreign" {
+                    foreign = true;
+                }
+                let state = if info.state.is_empty() {
+                    "unknown"
+                } else {
+                    info.state.as_str()
+                };
+                match info.owner.as_deref().filter(|o| !o.trim().is_empty()) {
+                    Some(owner) => parts.push(format!("{port} {state} — {owner}")),
+                    None => parts.push(format!("{port} {state}")),
+                }
+            }
+            None => parts.push(format!("{port} unknown")),
+        }
+    }
+    (format!("Ports 80/3306: {}", parts.join(" · ")), foreign)
+}
+
+/// One console line per switch. The ports line already carries the detail, so
+/// this only has to say what was asked and whether anything moved.
+fn switch_summary(payload: &backend::SwitchPayload) -> String {
+    if !payload.ok {
+        let why = payload
+            .first_error()
+            .unwrap_or_else(|| "failed".to_string());
+        return format!("switch: {why}");
+    }
+    let mut line = String::from("switch");
+    if let Some(to) = payload.to.as_deref().filter(|t| !t.trim().is_empty()) {
+        line.push_str(&format!(" -> {to}"));
+    }
+    if payload.dry_run {
+        line.push_str(" · dry run");
+    }
+    if payload.changed {
+        line.push_str(" · changed");
+    }
+    line.push_str(&format!(" · {}", switch_port_line(payload).0));
+    line
 }
 
 fn section_label(ui: &mut egui::Ui, p: &Palette, text: &str) {
