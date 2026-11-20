@@ -89,6 +89,15 @@ back. Windows first; the macOS and Linux mapping (`/Applications/XAMPP/xamppfile
   `ps`, `launchctl` and `systemctl` stubbed: detection (including the XAMPP-VM refusal), aliases,
   registry round trip, port classification, "kill only its own listeners", and payload JSON
   validity. Runs green on macOS bash 3.2.
+- **A pre-release build is labelled, and never offered as the latest stable** — the dashboard
+  PHP row now reads `8.6.0RC7 (pre-release)` in yellow, matching the Windows label, and
+  `latest_php_version()` skips `preview` candidates as well as alpha/beta/RC. One helper,
+  `php_is_prerelease`, decides both, so the marker and the search cannot drift apart. The update
+  decision itself is still the package manager's, which already orders a pre-release below its
+  final release.
+- **`tests/harness-prerelease.sh`** — 17 assertions against the real function bodies with the
+  package manager stubbed: detection across RC/beta/alpha/preview and Debian `~` forms, the
+  latest-stable search skipping each of them, and the dashboard label for both states.
 
 ---
 

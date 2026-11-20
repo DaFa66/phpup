@@ -1075,7 +1075,13 @@ show_dashboard() {
 
     printf "%-10s -----> " "PHP"
     if [[ $PHP == 1 ]]; then
-        printf "${GREEN}%s${RESET}\n" "$PHP_VERSION"
+        # A pre-release is not the stable release its number implies, so say so
+        # here too, the way the Windows dashboard does.
+        if php_is_prerelease "$PHP_VERSION"; then
+            printf "${YELLOW}%s (pre-release)${RESET}\n" "$PHP_VERSION"
+        else
+            printf "${GREEN}%s${RESET}\n" "$PHP_VERSION"
+        fi
     else
         printf "${RED}Not installed${RESET}\n"
     fi
@@ -3259,15 +3265,23 @@ apt_php_series() {
     fi
 }
 
+php_is_prerelease() {
+    # True for an alpha, beta, RC or preview build. One rule for every surface
+    # that has to tell a pre-release from the stable release it looks like, so
+    # the marker, the latest-stable search and any future caller cannot drift.
+    case "$1" in
+        *alpha*|*beta*|*RC*|*rc*|*preview*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 latest_php_version() {
     # Latest stable PHP version available via apt (e.g. 8.5), skipping pre-releases
     local version candidate latest=""
     for version in $(apt_php_series); do
         candidate=$(apt-cache policy "php${version}" 2>/dev/null | awk '/Candidate:/{print $2; exit}')
         [[ -n "$candidate" ]] || continue
-        case "$candidate" in
-            *alpha*|*beta*|*RC*|*rc*) continue ;;
-        esac
+        php_is_prerelease "$candidate" && continue
         latest="$version"
     done
     echo "$latest"
