@@ -1,6 +1,6 @@
 [package]
 name = "phpup-panel"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Desktop control panel for phpup"
 homepage = "https://phpup.org"

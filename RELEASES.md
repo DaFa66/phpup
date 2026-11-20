@@ -82,6 +82,8 @@ git push origin :refs/tags/v2.6.0-win :refs/tags/v1.4.0-nix
 
 | Tag | Date | Milestone |
 |---|---|---|
+| `v2.5.4-win` / `v1.3.3-nix` | 2026-11-21 | `switch --add` registers a stack without touching the ports; the switch payload is one shape on both platforms (`to` a string, `stack` an array); the handover logic is covered by the harness (34 → 42 checks on a POSIX host); `foreign_exe_running`, an absolute brew path and the last two silenced `brew services start` calls |
+| `panel-v0.2.0-beta-win` | 2026-11-21 | Stacks block: registered XAMPP roots with one-click handover of 80/3306 and back, and a path field that registers further installs |
 | `v1.3.2-nix` | 2026-11-20 | `switch` lands on macOS/Linux — hand 80/3306 to XAMPP and back, with the registry in `foreign_stacks.tsv`; live testing fixed attribution without root, `brew services` as the invoking user, a free-ports no-op, registry ownership after an elevated run, and the `sbin/mysqld` version probe |
 | `v2.5.3-win` | 2026-11-13 | `u` resolves the real latest PHP again (rebuild-suffixed releases hid 8.2–8.5), version parsing and the pinned fallback fixed, `fu` lists alpha/beta/RC builds from the QA index, `config.json` written without a BOM, `status` stops forking `php.exe` every poll |
 | `v2.5.2-win` | 2026-11-09 | PHP switching no longer aborts on a healthy staged tree under Windows PowerShell 5.1 (`$null` exit code read as a failure) |

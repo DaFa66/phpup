@@ -5,7 +5,7 @@ no Node toolchain.
 
 Project site: **[phpup.org](https://phpup.org)**.
 
-**Panel version 0.1.0, beta** — Windows x64. Tagged and downloadable as a pre-release.
+**Panel version 0.2.0, beta** — Windows x64. Tagged and downloadable as a pre-release.
 It is a beta: expect rough edges, and read the known limits in the release notes before
 trusting it with a stack you care about.
 
@@ -16,8 +16,8 @@ source of truth for installation, updates and version switching.
 
 ## Install from a release
 
-Download `phpup-panel-0.1.0-beta-win-x64.zip` from
-[Releases](https://github.com/DaFa66/phpup/releases/tag/panel-v0.1.0-beta-win), extract it, then run:
+Download `phpup-panel-0.2.0-beta-win-x64.zip` from
+[Releases](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.0-beta-win), extract it, then run:
 
 ```
 .\install.ps1              # installs into <install_path>\bin, default C:\phpup\bin
@@ -34,7 +34,7 @@ To build it yourself instead, see Build below.
 
 - Windows 10/11 (x64). The panel is Windows-first; it builds on macOS and Linux but service
   control and elevation are Windows paths today.
-- phpup 2.5.3+ for the CLI verbs. On an older `phpup.ps1` the panel says "not usable" and
+- phpup 2.5.4+ for the CLI verbs. On an older `phpup.ps1` the panel says "not usable" and
   waits rather than guessing.
 - To compile: Rust stable and the MSVC linker from Visual Studio Build Tools.
 

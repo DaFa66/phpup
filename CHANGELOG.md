@@ -98,9 +98,9 @@ The `switch` verb reaches macOS and Linux, and live testing against a real XAMPP
 
 ---
 
-## [Unreleased]
+## [2.5.4-win] / [1.3.3-nix] — 2026-11-21
 
-### macOS/Linux (phpup.sh)
+### macOS/Linux (phpup.sh v1.3.3)
 
 ### Added
 
@@ -126,7 +126,7 @@ The `switch` verb reaches macOS and Linux, and live testing against a real XAMPP
   On a filesystem that cannot express an exec bit the exec-dependent checks report `[SKIP]` rather
   than a false failure, so the suite is honest on Windows and complete on macOS and CI.
 
-### Windows (phpup.ps1)
+### Windows (phpup.ps1 v2.5.4)
 
 Adds the `switch` verb: hand ports 80 and 3306 to an existing XAMPP install and take them
 back. Windows first; the macOS and Linux mapping (`/Applications/XAMPP/xamppfiles`,
@@ -134,11 +134,6 @@ back. Windows first; the macOS and Linux mapping (`/Applications/XAMPP/xamppfile
 
 ### Added
 
-- **The panel can switch stacks** — a STACKS block under the cards lists the registered XAMPP
-  roots, hands ports 80/3306 to one with `Switch to`, takes them back with `Return to phpup`, and
-  registers further installs from a path field through `switch --add`. Port owners are shown with
-  their PIDs, a rejected path stays in the field with the reason beside it, and a failed switch
-  never leaves the block claiming it does not know who holds the ports.
 - **`switch` hands the ports to another stack and takes them back** — for users whose older
   projects live in XAMPP, phpup can now shut its own stack down, release 80 and 3306, start
   the named XAMPP root, and later reverse it. `--to <alias>`, `--path <root>`, `--list`,
@@ -401,14 +396,20 @@ out to the script for every action, so the scripts stay the source of truth.
 - **Tray visibility** depends on the Windows tray overflow area: if the icon is tucked
   behind the chevron the panel looks like it never started. Pin it to the tray.
 
-## [Unreleased]
+## [panel 0.2.0-beta-win] — 2026-11-21
 
-### Desktop panel (phpup-panel, unreleased)
+### Desktop panel (phpup-panel v0.2.0, beta)
 
-Improvements on top of `panel 0.1.0-beta`, not yet cut as a release. They bump no script version.
+Improvements on top of `panel 0.1.0-beta`, released as `panel 0.2.0-beta-win`. Panel releases bump
+no script version and ship as their own zip.
 
 #### Added
 
+- **Panel: Stacks** — the registered XAMPP roots, listed under the component cards, with
+  `Switch to` handing ports 80/3306 over and `Return to phpup` taking them back. A path field
+  registers further installs through `switch --add` without touching the ports, and each port is
+  shown with its owner and PID. A rejected path stays in the field with the reason beside it,
+  and a failed switch never leaves the block claiming it does not know who holds the ports.
 - **Panel: start in the tray at launch** - Settings -> Window. On, the panel starts with no
   window and no taskbar button, tray icon only, which is what an autostart launch wants. Off
   by default, so the window opens. Uses the same `Visible(false)` path as the close button and
@@ -428,6 +429,10 @@ Improvements on top of `panel 0.1.0-beta`, not yet cut as a release. They bump n
 
 #### Changed
 
+- **Panel: the window opens taller, and the console starts smaller** - 980x860 (still clamped to
+  85% of the monitor) with the console at 120pt instead of 160pt, so the Stacks block, its error
+  line and the path field all fit above the console on a 1080p screen. At the old 700pt height
+  the block sat below the fold.
 - **Panel: Settings manages boot behaviour only** - the service rows no longer carry their own
   Start/Stop. `Start` / `Restart` / `Stop` above the cards control the running processes;
   `Auto` / `Disabled` control the service registration. Two meanings of "stop" on one screen
@@ -1508,6 +1513,8 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**2.5.4-win**](#254-win--133-nix--2026-11-21) | 2026-11-21 | `switch` reaches Windows and gains `--add`, which registers a stack without touching the ports; the switch payload is one shape on both platforms; a pre-release install no longer passes as the matching stable |
+| [**panel 0.2.0-beta**](#panel-020-beta-win--2026-11-21) | 2026-11-21 | Stacks block: registered XAMPP roots, one-click handover of 80/3306 and back, add-a-root by path; taller window, smaller console default |
 | [**2.5.3-win**](#253-win--2026-11-13) | 2026-11-13 | `u` resolves the real latest PHP again (rebuild suffixes hid 8.2–8.5); version parsing and the pinned fallback fixed; `fu` lists alpha/beta/RC builds from the QA index; `config.json` written without a BOM; `status` stops forking `php.exe` every poll |
 | [**2.5.2-win**](#252-win--2026-11-09) | 2026-11-09 | PHP switching no longer aborts on a healthy staged tree under Windows PowerShell 5.1 (`$null` exit code read as a failure) |
 | [**2.5.1-win**](#251-win--131-nix--2026-11-01) | 2026-11-01 | Sessions moved to a stack-owned store out of the Windows temp directory; PHP on Windows can make HTTPS requests at all (OpenSSL 4 + CA bundle); streamed install path fixed; `fu` stages and verifies a PHP switch instead of deleting first, and lists every supported PHP series; `u` stops claiming success when the stack stays down |
@@ -1539,6 +1546,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**1.3.3-nix**](#254-win--133-nix--2026-11-21) | 2026-11-21 | `switch --add` registers a stack without touching the ports; the switch payload is one shape on both platforms; the handover logic is covered by the harness (34 → 42 checks on a POSIX host) |
 | [**1.3.2-nix**](#132-nix--2026-11-20) | 2026-11-20 | `switch` hands the ports to XAMPP and back on macOS/Linux; a foreign stack is attributable without root; `brew services` runs as the invoking user; the registry remembers the stack and survives an elevated run |
 | [**1.3.1-nix**](#251-win--131-nix--2026-11-01) | 2026-11-01 | Sessions moved into the stack (`~/phpup/sessions`) on brew, apt and MacPorts; streamed installs report their version; dashboards readable on dark and light terminals; `u` stops claiming success when the stack stays down; apt update no longer blocks on a dpkg conffile prompt |
 | [**1.3.0-nix**](#250-win--130-nix--2026-10-22) | 2026-10-22 | Machine-readable CLI (`status`/`start`/`stop`/`restart`), `--json`, `--watch`, documented exit codes |

@@ -5,14 +5,14 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-11-20
-#  Version: 1.3.2
+#  Date: 2026-11-21
+#  Version: 1.3.3
 # ============================================================
 
 # ---- Config -------------------------------------------------
 REMOTE_URL='https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh'
 # Runtime version (the script is usually streamed, so no file to grep).
-PHPUP_VERSION="1.3.2"
+PHPUP_VERSION="1.3.3"
 BASE_DIR="${HOME}/phpup"
 DOC_ROOT="${BASE_DIR}/www"
 LOGS_DIR="${BASE_DIR}/logs"

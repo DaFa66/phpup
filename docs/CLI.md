@@ -5,9 +5,10 @@ drive phpup without the interactive dashboard.
 
 Non-goal: a daemon, a socket API, or a rewrite of the install/update engine.
 
-**Status:** implemented — `phpup.ps1` 2.5.3 on Windows and `phpup.sh` 1.3.2 on macOS/Linux.
-The `switch` verb (section 13) is released on macOS/Linux as of 1.3.2 and still unreleased on
-Windows. The Windows desktop panel in [`panel/`](../panel/README.md) consumes this
+**Status:** implemented — `phpup.ps1` 2.5.4 on Windows and `phpup.sh` 1.3.3 on macOS/Linux.
+The `switch` verb (section 13) is released on both platforms as of 2.5.4 and 1.3.3, including
+`--add` for registering a root without handing the ports over. The Windows desktop panel in
+[`panel/`](../panel/README.md) consumes this
 contract; it is the reason the contract exists.
 
 ---
@@ -51,14 +52,14 @@ Reserved for v2, do not alias these names: `install`, `update`, `delete`, `docto
 Both scripts answer `version`, and with `--json` they emit a single object and nothing else:
 
 ```json
-{ "schema": 1, "version": "2.5.3", "script": "ps1" }
+{ "schema": 1, "version": "2.5.4", "script": "ps1" }
 ```
 
 `script` is `ps1` on Windows and `sh` on macOS/Linux, so a caller can tell which
 implementation answered. The same pair appears as `phpup.version` and `phpup.script` in
 the `status` payload (section 6), and it is required on both scripts — consumers must not
 infer the running version from the components. Each interactive dashboard prints it in the
-banner beside the wordmark (`phpup v1.3.2`), and the desktop panel shows it in its About popup.
+banner beside the wordmark (`phpup v1.3.3`), and the desktop panel shows it in its About popup.
 
 ## 3. Flags
 
@@ -115,7 +116,7 @@ Rationale for 0 on `status` when the stack is absent: the probe succeeded, "abse
 {
   "schema": 1,
   "generated_at": "2026-10-20T12:34:56+11:00",
-  "phpup": { "version": "2.5.3", "script": "ps1" },
+  "phpup": { "version": "2.5.4", "script": "ps1" },
   "platform": {
     "os": "windows",
     "arch": "x86_64",
@@ -319,7 +320,7 @@ GUI cadence: run `--watch 2` (or 3) as the poll source and take a full `status -
 
 ## 10. Versioning and docs
 
-- `phpup.ps1` → **2.5.3**, `phpup.sh` → **1.3.2** (patch increments; the middle digit is
+- `phpup.ps1` → **2.5.4**, `phpup.sh` → **1.3.3** (patch increments; the middle digit is
   reserved for a feature milestone).
 - CHANGELOG entries, newest first.
 - README gains a short **Automation** section with the two invocation lines above.
@@ -360,8 +361,8 @@ GUI cadence: run `--watch 2` (or 3) as the poll source and take a full `status -
 
 ## 13. `switch` (stack handover)
 
-**Status:** implemented in `phpup.ps1` (Windows, unreleased) and `phpup.sh` (macOS, Linux,
-released in 1.3.2). `--to off` is not implemented on either script.
+**Status:** implemented in `phpup.ps1` (Windows) and `phpup.sh` (macOS, Linux), released in
+2.5.4 and 1.3.3. `--to off` is not implemented on either script.
 
 **Purpose:** hand ports 80 and 3306 to a foreign stack (XAMPP) and take them back, so a user
 can close phpup and work in the stack their older projects already live in. It moves port
