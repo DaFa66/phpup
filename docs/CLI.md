@@ -5,8 +5,9 @@ drive phpup without the interactive dashboard.
 
 Non-goal: a daemon, a socket API, or a rewrite of the install/update engine.
 
-**Status:** implemented — `phpup.ps1` 2.5.3 on Windows and `phpup.sh` 1.3.1 on macOS/Linux,
-both unreleased. The Windows desktop panel in [`panel/`](../panel/README.md) consumes this
+**Status:** implemented — `phpup.ps1` 2.5.3 on Windows and `phpup.sh` 1.3.2 on macOS/Linux.
+The `switch` verb (section 13) is released on macOS/Linux as of 1.3.2 and still unreleased on
+Windows. The Windows desktop panel in [`panel/`](../panel/README.md) consumes this
 contract; it is the reason the contract exists.
 
 ---
@@ -57,7 +58,7 @@ Both scripts answer `version`, and with `--json` they emit a single object and n
 implementation answered. The same pair appears as `phpup.version` and `phpup.script` in
 the `status` payload (section 6), and it is required on both scripts — consumers must not
 infer the running version from the components. Each interactive dashboard prints it in the
-banner beside the wordmark (`phpup v1.3.1`), and the desktop panel shows it in its About popup.
+banner beside the wordmark (`phpup v1.3.2`), and the desktop panel shows it in its About popup.
 
 ## 3. Flags
 
@@ -318,7 +319,7 @@ GUI cadence: run `--watch 2` (or 3) as the poll source and take a full `status -
 
 ## 10. Versioning and docs
 
-- `phpup.ps1` → **2.5.3**, `phpup.sh` → **1.3.1** (patch increments; the middle digit is
+- `phpup.ps1` → **2.5.3**, `phpup.sh` → **1.3.2** (patch increments; the middle digit is
   reserved for a feature milestone).
 - CHANGELOG entries, newest first.
 - README gains a short **Automation** section with the two invocation lines above.
@@ -359,8 +360,8 @@ GUI cadence: run `--watch 2` (or 3) as the poll source and take a full `status -
 
 ## 13. `switch` (stack handover)
 
-**Status:** implemented in `phpup.ps1` (Windows) and `phpup.sh` (macOS, Linux), both unreleased.
-`--to off` is not implemented on either script.
+**Status:** implemented in `phpup.ps1` (Windows, unreleased) and `phpup.sh` (macOS, Linux,
+released in 1.3.2). `--to off` is not implemented on either script.
 
 **Purpose:** hand ports 80 and 3306 to a foreign stack (XAMPP) and take them back, so a user
 can close phpup and work in the stack their older projects already live in. It moves port
@@ -415,6 +416,28 @@ act on it.
 - **Exit 1** when the handover ran but the target never started listening. The message names
   the likely causes (a UAC prompt, a port error) and says to start it by hand.
 - **`--dry-run` has no side effects at all**, including no service reads and no config write.
+
+### macOS and Linux
+
+- **The stack is identified by its directory, not a label.** `xamppfiles/xampp`,
+  `xamppfiles/bin/apachectl` and `xamppfiles/bin/mysql.server` must exist and be executable. A
+  directory without `xamppfiles` is treated as XAMPP-VM and refused: its stack lives inside a VM
+  and never binds the host's 3306.
+- **Startup uses the stack's own launcher.** macOS runs `xampp startapache|startmysql` (never bare
+  `start`, which also brings up ProFTPD) and disables any launchd agent whose command line
+  references the stack path, found by path because the labels are user-created and vary. Linux
+  drives `/opt/lampp` and records `systemctl is-enabled` for `apache2`/`mariadb`, so boot state is
+  restored rather than assumed.
+- **Attribution does not need root.** macOS runs Apache as root/`daemon` and MySQL as `_mysql`,
+  where an unprivileged `lsof` reports an ownerless listener; when the listener's path cannot be
+  read, the named stack is asked whether one of its own daemons is running, matched by binary
+  path. `--list` still prints `unknown` in the owner column for a root-owned listener — that is
+  the pid it cannot read, not an unattributed port.
+- **Registered stacks live in `~/phpup/foreign_stacks.tsv`** — one line per stack (`alias`, `path`,
+  `kind`, and the two saved boot-state columns). It is a separate file because `save_config()`
+  regenerates `config.json` wholesale on every install and update, which would drop the key.
+- **Handing over needs admin** for the service stop and the foreign stack's start, so run it in a
+  terminal where the password prompt can be answered.
 
 ### What `switch` will not do
 

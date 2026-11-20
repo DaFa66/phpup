@@ -5,14 +5,14 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-11-01
-#  Version: 1.3.1
+#  Date: 2026-11-20
+#  Version: 1.3.2
 # ============================================================
 
 # ---- Config -------------------------------------------------
 REMOTE_URL='https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh'
 # Runtime version (the script is usually streamed, so no file to grep).
-PHPUP_VERSION="1.3.1"
+PHPUP_VERSION="1.3.2"
 BASE_DIR="${HOME}/phpup"
 DOC_ROOT="${BASE_DIR}/www"
 LOGS_DIR="${BASE_DIR}/logs"
@@ -281,6 +281,25 @@ detect_mariadb() {
         MARIADB=0
         MARIADB_VERSION=""
     fi
+}
+
+brew_services() {
+    # `brew services` as the INVOKING user. Homebrew refuses to run as root, and the
+    # switch may legitimately be invoked through sudo for the port and stop work — so
+    # drop back to SUDO_USER instead of failing. Every caller used to discard stderr,
+    # which is why the only symptom was "services did not start".
+    if [[ $EUID -eq 0 ]]; then
+        if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+            # Scrub the SUDO_* markers: brew services reads them and puts the job in
+            # the user/ domain instead of the gui/ one it uses for a normal user.
+            sudo -u "$SUDO_USER" -H env -u SUDO_USER -u SUDO_UID -u SUDO_GID \
+                -u SUDO_COMMAND brew services "$@"
+            return $?
+        fi
+        print_warn "brew services needs a normal user — skipping: brew services $*"
+        return 1
+    fi
+    brew services "$@"
 }
 
 # Resolve the ACTIVE Homebrew PHP formula from the linked binary:
@@ -1383,7 +1402,7 @@ start_services() {
         fi
 
         if [[ $MARIADB == 1 ]]; then
-            brew services start mariadb 2>/dev/null
+            brew_services start mariadb
             local mariadb_started=0
             for ((_i=0; _i<5; _i++)); do
                 if { stack_proc -x mariadbd &>/dev/null || stack_proc -x mysqld &>/dev/null; }; then print_ok "MariaDB started"; mariadb_started=1; break; fi
@@ -1402,7 +1421,7 @@ start_services() {
         if [[ $PHP == 1 ]] && ! php_via_apache; then
             local brew_php_svc
             brew_php_svc=$(brew_active_php)
-            brew services start "$brew_php_svc" 2>/dev/null
+            brew_services start "$brew_php_svc" 2>/dev/null
             for ((_i=0; _i<5; _i++)); do
                 stack_proc -f "(^|/)php-fpm" &>/dev/null && { print_ok "PHP-FPM started"; break; }
                 sleep 1
@@ -1461,12 +1480,12 @@ stop_services() {
                 print_ok "Apache stopped"
             fi
         fi
-        [[ $MARIADB == 1 ]] && brew services stop mariadb
+        [[ $MARIADB == 1 ]] && brew_services stop mariadb
         stack_kill -x mysqld mariadbd
         # macOS serves PHP via mod_php INSIDE Apache — there is no standalone
         # FPM service in this stack, so do not drive (or kill) php-fpm.
         if [[ $PHP == 1 ]] && ! php_via_apache; then
-            brew services stop "$(brew_active_php)"
+            brew_services stop "$(brew_active_php)"
             stack_kill -f "(^|/)php-fpm"
         fi
     fi
@@ -2002,7 +2021,7 @@ configure_mariadb() {
     print_info "Configuring MariaDB..."
 
     # Start MariaDB to initialise data directory
-    brew services start mariadb 2>/dev/null
+    brew_services start mariadb
     sleep 3
 
     # Set blank root password with mysql_native_password plugin
@@ -2031,7 +2050,7 @@ configure_mariadb() {
         if [[ -d "$brew_datadir" ]] && [[ -n "$(ls -A "$brew_datadir" 2>/dev/null)" ]]; then
             datadir_populated=1
         fi
-        brew services stop mariadb 2>/dev/null
+        brew_services stop mariadb 2>/dev/null
         sleep 1
         if [[ $datadir_populated -eq 1 ]]; then
             local backup_dir
@@ -2041,7 +2060,7 @@ configure_mariadb() {
         else
             rm -rf "$brew_datadir" 2>/dev/null || true
         fi
-        brew services start mariadb 2>/dev/null
+        brew_services start mariadb
         sleep 5
         if mysql -u root -e "SELECT 1" &>/dev/null 2>&1; then
             mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
@@ -3795,7 +3814,7 @@ cmd_forced_update() {
 
         # Stop services (the ACTIVE php service — may be php@X.Y, not meta)
         sudo "${BREW_PREFIX}/bin/apachectl" stop 2>/dev/null
-        brew services stop "$(brew_active_php)" 2>/dev/null
+        brew_services stop "$(brew_active_php)" 2>/dev/null
 
         # Unlink any currently-linked PHP formula (meta or versioned), then
         # install + link the target — stream live so the user sees progress;
@@ -3835,7 +3854,7 @@ cmd_forced_update() {
         configure_php
 
         # Start services (the NEW php service = the target formula)
-        brew services start "$target" 2>/dev/null
+        brew_services start "$target" 2>/dev/null
         sudo "${BREW_PREFIX}/bin/apachectl" restart 2>/dev/null
 
         detect_all
@@ -3877,13 +3896,13 @@ check_restore_data() {
                 sudo chown -R _mysql:_mysql "$mariadb_data" 2>/dev/null || true
                 sudo "${PORT_PREFIX}/bin/port" load "${MARIADB_PORT}-server" 2>/dev/null
             else
-                brew services stop mariadb 2>/dev/null
+                brew_services stop mariadb 2>/dev/null
                 sleep 1
                 local mariadb_data="${BREW_PREFIX}/var/mysql"
                 rm -rf "$mariadb_data" 2>/dev/null || true
                 cp -r "$DATA_BACKUP_DIR" "$mariadb_data"
                 rm -rf "$DATA_BACKUP_DIR" 2>/dev/null || true
-                brew services start mariadb 2>/dev/null
+                brew_services start mariadb
             fi
             sleep 2
             print_ok "Databases restored from backup"
@@ -4061,7 +4080,14 @@ foreign_registry_set() {
     {
         foreign_registry_lines | awk -F'\t' -v a="$alias" '$1!=a'
         printf '%s\t%s\t%s\t%s\t%s\n' "$alias" "$path" "$kind" "$sa" "$sm"
-    } > "$tmp" && mv "$tmp" "$FOREIGN_REGISTRY"
+    } > "$tmp" && mv "$tmp" "$FOREIGN_REGISTRY" || return 1
+    # An elevated switch must not leave the registry unreadable to the account that
+    # will read it next: mktemp creates it 600, so a root-owned copy locks the user
+    # out of their own config and every later `switch --to <alias>` says "Unknown
+    # target". Hand it back to whoever invoked the sudo.
+    if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        chown "$SUDO_USER" "$FOREIGN_REGISTRY" 2>/dev/null || true
+    fi
 }
 
 foreign_registry_clear_state() {
@@ -4094,6 +4120,30 @@ process_path_for_pid() {
     ps -p "$1" -o comm= 2>/dev/null | head -1
 }
 
+foreign_daemon_running() {
+    # <root> <port> — is one of the foreign stack's own daemons alive?
+    # Matched by the binary's PATH, because the owner may be a user we cannot see:
+    # macOS runs Apache as root/daemon and MySQL as _mysql, so an unprivileged lsof
+    # reports a busy port with no owner at all.
+    local root="$1" port="$2" pat=""
+    case "$port" in
+        80)   pat="${root}/xamppfiles/bin/httpd" ;;
+        3306) pat="${root}/xamppfiles/sbin/mysqld" ;;
+    esac
+    if [[ -n "$pat" ]] && pgrep -f -- "$pat" >/dev/null 2>&1; then return 0; fi
+    case "$port" in
+        3306) pat="${root}/xamppfiles/bin/mysqld" ;;
+        *)    pat="" ;;
+    esac
+    if [[ -n "$pat" ]] && pgrep -f -- "$pat" >/dev/null 2>&1; then return 0; fi
+    case "$port" in
+        80)   pat="${root}/lampp/bin/httpd" ;;
+        3306) pat="${root}/lampp/sbin/mysqld" ;;
+    esac
+    if [[ -n "$pat" ]] && pgrep -f -- "$pat" >/dev/null 2>&1; then return 0; fi
+    return 1
+}
+
 port_owner_kind() {
     # phpup | foreign | other | unknown | free
     local port="$1" root="$2" pid path
@@ -4107,8 +4157,15 @@ port_owner_kind() {
     if port_owner_active "$port"; then printf 'phpup'; return; fi
 
     pid=$(port_listener_pid "$port")
-    [[ -z "$pid" ]] && { printf 'unknown'; return; }
-    path=$(process_path_for_pid "$pid")
+    path=""
+    [[ -n "$pid" ]] && path=$(process_path_for_pid "$pid")
+
+    # Only when the listener is genuinely invisible: ask the named stack whether one
+    # of its own daemons is up. Without this the reverse switch could never attribute
+    # a foreign root-owned stack and refused with exit 5 before doing anything.
+    if [[ -z "$path" && -n "$root" ]] && foreign_daemon_running "$root" "$port"; then
+        printf 'foreign'; return
+    fi
     [[ -z "$path" ]] && { printf 'unknown'; return; }
 
     if [[ -n "$root" ]]; then
@@ -4135,10 +4192,15 @@ foreign_versions() {
         out=$("${FOREIGN_ROOT}/xamppfiles/bin/httpd" -v 2>/dev/null | head -1)
         FV_APACHE=$(printf '%s' "$out" | sed -n 's/.*Apache\/\([0-9.]*\).*/\1/p')
     fi
-    if [[ -x "${FOREIGN_ROOT}/xamppfiles/bin/mysqld" ]]; then
-        out=$("${FOREIGN_ROOT}/xamppfiles/bin/mysqld" --version 2>/dev/null | head -1)
+    # XAMPP ships mysqld in sbin/ on macOS and in bin/ on other layouts — check both,
+    # otherwise the foreign stack's MySQL version silently reports as blank.
+    local mysqld_bin
+    for mysqld_bin in "${FOREIGN_ROOT}/xamppfiles/bin/mysqld" "${FOREIGN_ROOT}/xamppfiles/sbin/mysqld"; do
+        [[ -x "$mysqld_bin" ]] || continue
+        out=$("$mysqld_bin" --version 2>/dev/null | head -1)
         FV_MARIADB=$(printf '%s' "$out" | sed -n 's/.*Ver \([0-9.]*\)-MariaDB.*/\1/p')
-    fi
+        break
+    done
     if [[ -x "$FOREIGN_PHP" ]]; then
         FV_PHP=$("$FOREIGN_PHP" -r 'echo PHP_VERSION;' 2>/dev/null | head -1)
     fi
@@ -4908,19 +4970,26 @@ cmd_cli_switch_to_foreign() {
         switch_fail 5 port_conflict "Port(s)$blocked held by something phpup cannot attribute. Nothing was stopped."
         return
     fi
-    if [[ -z "$phpup_ports" ]]; then
+    # Nothing of OURS is holding the ports. If the foreign stack has them, there is
+    # nothing to do; if they are simply free, fall through and start the foreign
+    # stack — reporting "already held" there was a no-op that left both stacks down.
+    if [[ -z "$phpup_ports" ]] && { [[ "$kind80" == "foreign" ]] || [[ "$kind3306" == "foreign" ]]; }; then
         SW_OK=1; SW_CHANGED=0; SW_STEPS="ports already held by $alias"
         if [[ $CLI_JSON == 1 ]]; then emit_switch_payload; else switch_human_ports; printf 'Ports are already held by %s.\n' "$alias" >&3; fi
         CLI_EXIT=0; return
     fi
 
-    SW_STEPS="stop phpup apache and mariadb"
-    if [[ $USE_APT == 1 ]]; then SW_STEPS="$SW_STEPS
+    if [[ -n "$phpup_ports" ]]; then
+        SW_STEPS="stop phpup apache and mariadb"
+        if [[ $USE_APT == 1 ]]; then SW_STEPS="$SW_STEPS
 disable apache2 and mariadb at boot"; fi
-    if [[ $OSTYPE == darwin* ]]; then SW_STEPS="$SW_STEPS
+        if [[ $OSTYPE == darwin* ]]; then SW_STEPS="$SW_STEPS
 disable any launchd agent pointing at $FOREIGN_ROOT"; fi
-    SW_STEPS="$SW_STEPS
+        SW_STEPS="$SW_STEPS
 start $alias apache and mariadb"
+    else
+        SW_STEPS="ports were free — start $alias apache and mariadb"
+    fi
     SW_WARN="The foreign stack is not managed by phpup, so after a reboot nothing will be listening until it is started again."
 
     if [[ $CLI_DRY == 1 ]]; then
@@ -4990,6 +5059,11 @@ cmd_cli_switch_to_phpup() {
     fi
 
     alias=$(foreign_alias_for "$FOREIGN_ROOT")
+    # Remember the stack that just held the ports, so the next `switch --to <alias>`
+    # needs no --path. Harmless when it is already registered.
+    if ! foreign_registry_lines | awk -F'\t' -v p="$FOREIGN_ROOT" '$2 == p { f = 1 } END { exit !f }'; then
+        foreign_registry_set "$alias" "$FOREIGN_ROOT" "$FOREIGN_KIND" "" ""
+    fi
     SW_TO="phpup"
     SW_STACK=$(switch_stack_json "$alias")
 

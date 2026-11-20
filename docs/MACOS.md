@@ -171,6 +171,31 @@ Pressing **D**:
 
 Config files live in the Homebrew prefix and are wiped on uninstall — that's brew's normal behaviour. phpup re-generates them on reinstall, so there's nothing to back up.
 
+## Switching Between Stacks (`switch`)
+
+If older projects of yours live in XAMPP, `switch` hands ports 80 and 3306 to it and takes them
+back later. It moves port ownership and nothing else:
+
+```bash
+phpup switch --to xampp --path /Applications/XAMPP   # first use: registers the stack, hands over
+phpup switch --to xampp                              # later: the alias is remembered
+phpup switch --to phpup                              # take the ports back
+phpup switch --list                                  # who owns 80/3306, what is registered
+phpup switch --to xampp --dry-run                    # print the plan, change nothing
+```
+
+It asks for your password once, because stopping phpup's stack and starting XAMPP's both need
+admin.
+
+**It never touches XAMPP's files or its data.** Your projects stay in `xamppfiles/htdocs` and
+their databases stay in XAMPP's own data directory — a newer MariaDB opening an older data
+directory is a one-way upgrade, so there is deliberately no shared or migrated data. While XAMPP
+holds the ports its Apache and MySQL serve your work; when phpup takes them back, `~/phpup/www`
+and phpup's MariaDB do. Registered stacks are remembered in `~/phpup/foreign_stacks.tsv`.
+
+A directory without `xamppfiles` is treated as XAMPP-VM and refused — that build keeps its stack
+inside a VM and never binds the host's 3306.
+
 ## After Installation
 
 | Question                    | Answer                                 |

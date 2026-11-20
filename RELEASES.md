@@ -8,7 +8,7 @@ and fixes move the last digit.
 - `phpup.ps1` (Windows) and `phpup.sh` (macOS/Linux) are versioned independently, tagged with
   the `-win` and `-nix` suffixes. Both move together at release time, each keeping its own numbers.
 - **Last digit — patch.** Bug fixes, corrections and small behaviour changes. Most releases are
-  these: `2.5.2` → `2.5.3`, `1.3.1` → `1.3.2`.
+  these: `2.5.3` → `2.5.4`, `1.3.2` → `1.3.3`.
 - **Middle digit — feature milestone.** A release that genuinely adds a capability worth calling
   out: a new backend, a cross-series PHP upgrade, platform parity, a new component.
 - **First digit — structural.** Rebrand, breaking change, or a platform dropped.
@@ -70,6 +70,7 @@ git push origin :refs/tags/v2.6.0-win :refs/tags/v1.4.0-nix
 
 | Tag | Date | Milestone |
 |---|---|---|
+| `v1.3.2-nix` | 2026-11-20 | `switch` lands on macOS/Linux — hand 80/3306 to XAMPP and back, with the registry in `foreign_stacks.tsv`; live testing fixed attribution without root, `brew services` as the invoking user, a free-ports no-op, registry ownership after an elevated run, and the `sbin/mysqld` version probe |
 | `v2.5.3-win` | 2026-11-13 | `u` resolves the real latest PHP again (rebuild-suffixed releases hid 8.2–8.5), version parsing and the pinned fallback fixed, `fu` lists alpha/beta/RC builds from the QA index, `config.json` written without a BOM, `status` stops forking `php.exe` every poll |
 | `v2.5.2-win` | 2026-11-09 | PHP switching no longer aborts on a healthy staged tree under Windows PowerShell 5.1 (`$null` exit code read as a failure) |
 | `v2.5.1-win` / `v1.3.1-nix` | 2026-11-01 | Sessions in a stack-owned store on both platforms, Windows HTTPS fixed (OpenSSL 4 + CA bundle), `fu` stages and verifies PHP switches and offers every supported series |

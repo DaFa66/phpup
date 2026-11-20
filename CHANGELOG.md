@@ -18,6 +18,86 @@ overview of every release.
 
 ---
 
+## [1.3.2-nix] — 2026-11-20
+
+### macOS/Linux (phpup.sh v1.3.2)
+
+*Previous platform update: [1.3.1-nix](#251-win--131-nix--2026-11-01).*
+
+The `switch` verb reaches macOS and Linux, and live testing against a real XAMPP install on an Intel Mac turned up five defects in the handover path — most of them only visible when the stack on the other side runs as a different user.
+
+### Added
+
+- **`switch` hands the ports to another stack and takes them back** — same verb, same payload and
+  same exit codes as Windows. macOS drives XAMPP's own `xampp startapache|startmysql` (never bare
+  `start`, which also brings up ProFTPD) and disables any launchd agent that references the stack's
+  path, found by path rather than by label because the labels are user-created and vary. Linux
+  drives `/opt/lampp` and records `systemctl is-enabled` for `apache2`/`mariadb` so the handover can
+  disable them at boot and restore them afterwards. A directory without `xamppfiles` is treated as
+  XAMPP-VM and refused: its stack lives inside a VM and never binds the host's 3306.
+- **The registry is its own file** (`~/phpup/foreign_stacks.tsv`) rather than a key in `config.json`,
+  because `save_config()` regenerates `config.json` wholesale on every install and update, which
+  would drop anything added there. One line per stack; the boot state a handover released lives in
+  the last two columns and is cleared when the ports are handed back.
+- **Port ownership trusts `port_owner_active()` before any listener path** — on macOS Apache runs as
+  root (invisible to an unprivileged `lsof`) and the MariaDB binary sits in the brew prefix, not
+  under `~/phpup`, so path matching alone reported phpup's own stack as `other`. Stopping a foreign
+  stack still only kills listeners whose executable path is provably under the named root.
+- **`tests/harness-switch.sh`** — 32 assertions against the real function bodies with `sudo`, `lsof`,
+  `ps`, `launchctl` and `systemctl` stubbed: detection (including the XAMPP-VM refusal), aliases,
+  registry round trip, port classification, "kill only its own listeners", and payload JSON
+  validity. Runs green on macOS bash 3.2.
+- **A pre-release build is labelled, and never offered as the latest stable** — the dashboard
+  PHP row now reads `8.6.0RC7 (pre-release)` in yellow, matching the Windows label, and
+  `latest_php_version()` skips `preview` candidates as well as alpha/beta/RC. One helper,
+  `php_is_prerelease`, decides both, so the marker and the search cannot drift apart. The update
+  decision itself is still the package manager's, which already orders a pre-release below its
+  final release.
+- **`tests/harness-prerelease.sh`** — 17 assertions against the real function bodies with the
+  package manager stubbed: detection across RC/beta/alpha/preview and Debian `~` forms, the
+  latest-stable search skipping each of them, and the dashboard label for both states.
+- **The update list now carries the versions** — `u` used to print brew's default names only
+  (`httpd`, `mariadb`, `php`), so you could see that something was outdated but not what it would
+  become. The list now reads `httpd 2.4.69_1 -> 2.4.71`, which also makes a revision-only rebuild
+  (`php 8.5.12 -> 8.5.12_1`) readable and puts a major jump (`mariadb 12.3.3 -> 13.0.2_1`) in front
+  of you before you answer the prompt.
+- **`brew_stable_version`** now owns the `"stable"` parse shared by the newest-PHP-alias lookup and
+  the update switch message, and survives both brew's pretty-printed JSON and a compact blob.
+- **`tests/harness-brew.sh`** — 12 assertions covering the version formatting, the
+  revision-only case, the unparsable-line fallback, and the PHP line enumeration in both the
+  current metadata and the post-8.6.0 shape. Brew is stubbed, so it runs on Linux CI too.
+
+### Fixed
+
+- **A foreign stack can be attributed without root** — `switch --to phpup` refused with exit 5
+  ("Port(s) held by something phpup cannot attribute") before stopping anything, because
+  `port_owner_kind()` fell back to an unprivileged `lsof`, and macOS runs Apache as
+  root/`daemon` and MySQL as `_mysql`, so both listeners read as ownerless. When the listener
+  path cannot be read at all, the named stack is now asked whether one of its own daemons is
+  running, matched by binary path (`xamppfiles/bin/httpd`, `xamppfiles/sbin/mysqld`,
+  `/opt/lampp/...`). A readable path that lands outside the stack still reports `other`
+  rather than being assumed foreign.
+- **`brew services` runs as the invoking user, not as root** — an elevated switch started
+  MariaDB with `brew services start mariadb`, which Homebrew refuses as root, and every caller
+  discarded stderr, so the only symptom was "One or more services did not start — see the
+  messages above" with no messages. A `brew_services` helper drops to `SUDO_USER` with the
+  `SUDO_*` markers scrubbed, which also keeps the job in the `gui/` domain instead of the
+  `user/` one brew picks when it detects sudo. The blanket `2>/dev/null` on the start calls is
+  gone.
+- **A free pair of ports is no longer reported as already held** — with 80 and 3306 free, the
+  forward switch printed `Ports are already held by xampp` and did nothing, leaving both
+  stacks down. It now starts the foreign stack, and the plan line says so.
+- **The registry survives an elevated run, and remembers the stack** — `foreign_registry_set()`
+  writes through `mktemp`, so a root-run left `~/phpup/foreign_stacks.tsv` owned by root at
+  `0600`; the next unprivileged switch hit "Permission denied", read an empty registry and
+  would have answered "Unknown target". The file is handed back to `SUDO_USER` after writing.
+  The reverse switch also registers the stack it just switched from, so the next
+  `switch --to xampp` needs no `--path`.
+- **XAMPP's MySQL version is read from `sbin/`** — XAMPP on macOS ships `mysqld` in `sbin`,
+  not `bin`, so the foreign stack reported a blank MySQL version. Both paths are checked.
+
+---
+
 ## [Unreleased]
 
 ### Windows (phpup.ps1)
@@ -65,49 +145,6 @@ back. Windows first; the macOS and Linux mapping (`/Applications/XAMPP/xamppfile
   treat a final release as newer than its own alpha/beta/RC, while a pre-release of a *newer*
   branch is left alone. In `fu` the series row reads `8.6.0 (newer) — current: 8.6.0 RC7`, the
   stable variant sorts above the RC it supersedes, and the installed RC keeps its `(current)`.
-
----
-
-### macOS / Linux (phpup.sh)
-
-- **`switch` hands the ports to another stack and takes them back** — same verb, same payload and
-  same exit codes as Windows. macOS drives XAMPP's own `xampp startapache|startmysql` (never bare
-  `start`, which also brings up ProFTPD) and disables any launchd agent that references the stack's
-  path, found by path rather than by label because the labels are user-created and vary. Linux
-  drives `/opt/lampp` and records `systemctl is-enabled` for `apache2`/`mariadb` so the handover can
-  disable them at boot and restore them afterwards. A directory without `xamppfiles` is treated as
-  XAMPP-VM and refused: its stack lives inside a VM and never binds the host's 3306.
-- **The registry is its own file** (`~/phpup/foreign_stacks.tsv`) rather than a key in `config.json`,
-  because `save_config()` regenerates `config.json` wholesale on every install and update, which
-  would drop anything added there. One line per stack; the boot state a handover released lives in
-  the last two columns and is cleared when the ports are handed back.
-- **Port ownership trusts `port_owner_active()` before any listener path** — on macOS Apache runs as
-  root (invisible to an unprivileged `lsof`) and the MariaDB binary sits in the brew prefix, not
-  under `~/phpup`, so path matching alone reported phpup's own stack as `other`. Stopping a foreign
-  stack still only kills listeners whose executable path is provably under the named root.
-- **`tests/harness-switch.sh`** — 32 assertions against the real function bodies with `sudo`, `lsof`,
-  `ps`, `launchctl` and `systemctl` stubbed: detection (including the XAMPP-VM refusal), aliases,
-  registry round trip, port classification, "kill only its own listeners", and payload JSON
-  validity. Runs green on macOS bash 3.2.
-- **A pre-release build is labelled, and never offered as the latest stable** — the dashboard
-  PHP row now reads `8.6.0RC7 (pre-release)` in yellow, matching the Windows label, and
-  `latest_php_version()` skips `preview` candidates as well as alpha/beta/RC. One helper,
-  `php_is_prerelease`, decides both, so the marker and the search cannot drift apart. The update
-  decision itself is still the package manager's, which already orders a pre-release below its
-  final release.
-- **`tests/harness-prerelease.sh`** — 17 assertions against the real function bodies with the
-  package manager stubbed: detection across RC/beta/alpha/preview and Debian `~` forms, the
-  latest-stable search skipping each of them, and the dashboard label for both states.
-- **The update list now carries the versions** — `u` used to print brew's default names only
-  (`httpd`, `mariadb`, `php`), so you could see that something was outdated but not what it would
-  become. The list now reads `httpd 2.4.69_1 -> 2.4.71`, which also makes a revision-only rebuild
-  (`php 8.5.12 -> 8.5.12_1`) readable and puts a major jump (`mariadb 12.3.3 -> 13.0.2_1`) in front
-  of you before you answer the prompt.
-- **`brew_stable_version`** now owns the `"stable"` parse shared by the newest-PHP-alias lookup and
-  the update switch message, and survives both brew's pretty-printed JSON and a compact blob.
-- **`tests/harness-brew.sh`** — 12 assertions covering the version formatting, the
-  revision-only case, the unparsable-line fallback, and the PHP line enumeration in both the
-  current metadata and the post-8.6.0 shape. Brew is stubbed, so it runs on Linux CI too.
 
 ---
 
@@ -1471,6 +1508,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**1.3.2-nix**](#132-nix--2026-11-20) | 2026-11-20 | `switch` hands the ports to XAMPP and back on macOS/Linux; a foreign stack is attributable without root; `brew services` runs as the invoking user; the registry remembers the stack and survives an elevated run |
 | [**1.3.1-nix**](#251-win--131-nix--2026-11-01) | 2026-11-01 | Sessions moved into the stack (`~/phpup/sessions`) on brew, apt and MacPorts; streamed installs report their version; dashboards readable on dark and light terminals; `u` stops claiming success when the stack stays down; apt update no longer blocks on a dpkg conffile prompt |
 | [**1.3.0-nix**](#250-win--130-nix--2026-10-22) | 2026-10-22 | Machine-readable CLI (`status`/`start`/`stop`/`restart`), `--json`, `--watch`, documented exit codes |
 | [**1.2.7-nix**](#127-nix--2026-09-13) | 2026-09-13 | `fu` version-switch menu: stderr stream contract, 1-based selection, unlink guard |
