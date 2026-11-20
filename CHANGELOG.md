@@ -111,6 +111,10 @@ The `switch` verb reaches macOS and Linux, and live testing against a real XAMPP
 
 ### Fixed
 
+- **`stack` is an array in every branch of `switch --json`** — the handover paths assigned a single
+  resolved stack object while `--list` and `--add` assigned an array, so the field had two shapes
+  and a client obeying the documented one failed on exactly the payload that carried the reason
+  the switch had not run.
 - **The switch fixes are covered now, and three rough edges are gone** — `foreign_exe_running`
   replaces the `pgrep -f` probe: the command line must *start* with the executable, so a `tail -f`
   or `grep` that merely mentions the path no longer counts as a running daemon, and a directory
@@ -165,6 +169,10 @@ back. Windows first; the macOS and Linux mapping (`/Applications/XAMPP/xamppfile
 
 ### Fixed
 
+- **`stack` is an array in every branch of `switch --json`.** The handover paths built a single
+  resolved stack object while the list paths built an array, so the same field had two shapes and
+  a client obeying the documented one choked on exactly the payload that carried the reason it had
+  failed. The emitter now wraps whichever it is handed.
 - **A pre-release install no longer passes as the matching stable** — with 8.6.0 RC7 installed
   and the 8.6.0 final released, `u` answered "Stack is up to date" and `I` skipped PHP, because
   the version parse drops the suffix and both sides read as 8.6.0. `u`, `I` and the fu menu now
@@ -406,10 +414,13 @@ no script version and ship as their own zip.
 #### Added
 
 - **Panel: Stacks** — the registered XAMPP roots, listed under the component cards, with
-  `Switch to` handing ports 80/3306 over and `Return to phpup` taking them back. A path field
-  registers further installs through `switch --add` without touching the ports, and each port is
-  shown with its owner and PID. A rejected path stays in the field with the reason beside it,
-  and a failed switch never leaves the block claiming it does not know who holds the ports.
+  `Switch to` handing ports 80/3306 over and `Return to phpup` taking them back. `Browse…`
+  registers further installs through `switch --add` with the native folder picker, without
+  touching the ports, and each port is shown with its owner and PID. A rejected path stays in
+  the field with the reason beside it, and a failed switch never leaves the block claiming it
+  does not know who holds the ports. A handover stops and starts services, which Windows refuses
+  without Administrator, so an exit-4 answer offers `Run as administrator` and repeats the same
+  call elevated rather than making the user restart the panel.
 - **Panel: start in the tray at launch** - Settings -> Window. On, the panel starts with no
   window and no taskbar button, tray icon only, which is what an autostart launch wants. Off
   by default, so the window opens. Uses the same `Visible(false)` path as the close button and

@@ -12,6 +12,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 tray-icon = "0.24"
+# Native folder picker for registering a stack. Windows uses IFileDialog through
+# windows-sys; the GTK/portal backends are not needed, so no default features.
+rfd = { version = "0.15", default-features = false }
 
 [profile.release]
 opt-level = 2

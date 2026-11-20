@@ -259,6 +259,28 @@ where
     Ok(value.and_then(|v| serde_json::from_value(v).ok()))
 }
 
+/// `stack` arrives as an array from the list branches (`switch`, `switch --add`,
+/// `switch --list`) and as a single object from the handover branches of
+/// phpup.ps1 2.5.4 and phpup.sh 1.3.3. Both shapes are in the wild, so accept
+/// either: refusing the object turned a perfectly good "elevation required"
+/// payload into "unreadable payload" and hid the reason from the user.
+fn stack_list<'de, D>(d: D) -> Result<Vec<ForeignStack>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Shape {
+        Many(Vec<ForeignStack>),
+        One(Box<ForeignStack>),
+    }
+    Ok(match Option::<Shape>::deserialize(d)? {
+        Some(Shape::Many(v)) => v,
+        Some(Shape::One(s)) => vec![*s],
+        None => Vec::new(),
+    })
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct SwitchPayload {
     #[serde(default, deserialize_with = "bool_or_false")]
@@ -273,7 +295,7 @@ pub struct SwitchPayload {
     pub changed: bool,
     #[serde(default, deserialize_with = "bool_or_false")]
     pub dry_run: bool,
-    #[serde(default, deserialize_with = "null_vec")]
+    #[serde(default, deserialize_with = "stack_list")]
     pub stack: Vec<ForeignStack>,
     #[serde(default, deserialize_with = "ports_lenient")]
     pub ports: Option<HashMap<String, SwitchPort>>,
@@ -771,23 +793,13 @@ impl Backend {
                         let _ = handle.join();
                     }
                     let stdout = String::from_utf8_lossy(&o.stdout).to_string();
-                    let trimmed = stdout.trim();
-                    // Exit 2/4/5 still carry a payload with ok=false and errors;
-                    // those are answers, not parse failures.
-                    match serde_json::from_str::<SwitchPayload>(trimmed) {
+                    let exit = o.status.code().unwrap_or(-1);
+                    match parse_switch_payload(&stdout, exit) {
                         Ok(payload) => {
                             let _ = tx.send(Event::Switch(Box::new(payload)));
                         }
-                        Err(e) => {
-                            let exit = o.status.code().unwrap_or(-1);
-                            let raw = if trimmed.is_empty() {
-                                format!("no payload on stdout (exit {exit})")
-                            } else {
-                                format!("exit {exit}: {}", first_line(trimmed))
-                            };
-                            let _ = tx.send(Event::Failed(format!(
-                                "switch: unreadable payload ({e}) — {raw}"
-                            )));
+                        Err(msg) => {
+                            let _ = tx.send(Event::Failed(msg));
                         }
                     }
                 }
@@ -811,8 +823,115 @@ fn first_line(text: &str) -> String {
     }
 }
 
+/// One parser for a switch payload, whether it arrived on a pipe or in a file.
+///
+/// Exit 2/4/5 still carry a payload with `ok: false` and `errors`; those are
+/// answers. Only text that is not JSON at all is a parse failure, and it has to
+/// name the exit code and the head of the text or the console shows nothing.
+fn parse_switch_payload(stdout: &str, exit: i32) -> Result<SwitchPayload, String> {
+    // Out-File can prepend a BOM; serde_json rejects it as an unexpected char.
+    let trimmed = stdout.trim().trim_start_matches('\u{feff}');
+    match serde_json::from_str::<SwitchPayload>(trimmed) {
+        Ok(payload) => Ok(payload),
+        Err(e) => {
+            let raw = if trimmed.is_empty() {
+                format!("no payload on stdout (exit {exit})")
+            } else {
+                format!("exit {exit}: {}", first_line(trimmed))
+            };
+            Err(format!("switch: unreadable payload ({e}) — {raw}"))
+        }
+    }
+}
+
 pub fn channel_pair() -> (Sender<Event>, Receiver<Event>) {
     channel()
+}
+
+/// Run `switch <args> --json` elevated and read the payload back.
+///
+/// A handover stops and starts registered services, so Windows answers exit 4
+/// `elevation_required` without Administrator. Elevate the one command rather
+/// than the panel, for the reasons the lifecycle verbs already follow: no extra
+/// console window, no second tray icon. `Start-Process` cannot hand back an
+/// elevated child's stdout, so a generated wrapper writes the JSON to a temp file
+/// and the panel reads that.
+#[cfg(windows)]
+pub fn spawn_switch_elevated(script: PathBuf, args: Vec<String>, tx: Sender<Event>) {
+    thread::spawn(move || {
+        let mut arg_list = args;
+        arg_list.push("--json".to_string());
+
+        let q = |s: &str| format!("'{}'", s.replace('\'', "''"));
+        let dir = std::env::temp_dir();
+        let stamp = std::process::id();
+        let out = dir.join(format!("phpup-switch-{stamp}.json"));
+        let wrapper = dir.join(format!("phpup-switch-{stamp}.ps1"));
+        let _ = std::fs::remove_file(&out);
+
+        let call = std::iter::once("switch".to_string())
+            .chain(arg_list.iter().cloned())
+            .map(|a| q(&a))
+            .collect::<Vec<_>>()
+            .join(" ");
+        // Invoke through `-File`, the same way the panel calls the script
+        // everywhere else. A direct `& script switch --to xampp` binds `--to` as a
+        // parameter name and dies with "A positional parameter cannot be found",
+        // because the script's own argument parser never sees it.
+        let body = format!(
+            "& 'powershell.exe' -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {} {call} \
+             | Out-File -FilePath {} -Encoding utf8\r\nexit $LASTEXITCODE\r\n",
+            q(&script.display().to_string()),
+            q(&out.display().to_string())
+        );
+        if let Err(e) = std::fs::write(&wrapper, body) {
+            let _ = tx.send(Event::Failed(format!("switch could not elevate: {e}")));
+            return;
+        }
+
+        let shell = format!(
+            "$p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden \
+             -Wait -PassThru -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',{}; \
+             exit $p.ExitCode",
+            q(&wrapper.display().to_string())
+        );
+        let status = Command::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-WindowStyle")
+            .arg("Hidden")
+            .arg("-Command")
+            .arg(shell)
+            .status();
+
+        let text = std::fs::read_to_string(&out).unwrap_or_default();
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&wrapper);
+
+        match status {
+            Ok(s) if s.success() => match parse_switch_payload(&text, 0) {
+                Ok(payload) => {
+                    let _ = tx.send(Event::Switch(Box::new(payload)));
+                }
+                Err(msg) => {
+                    let _ = tx.send(Event::Failed(msg));
+                }
+            },
+            // Declining UAC is an answer, not a crash: say so plainly.
+            _ => {
+                let _ = tx.send(Event::Failed("switch: elevation was declined".to_string()));
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+pub fn spawn_switch_elevated(script: PathBuf, args: Vec<String>, tx: Sender<Event>) {
+    // The Unix scripts sudo internally, so there is nothing to elevate here.
+    let _ = (script, args);
+    let _ = tx.send(Event::Failed(
+        "switch: elevation is not needed on this platform".to_string(),
+    ));
 }
 
 /// Run one lifecycle verb elevated, without spawning a second panel.
@@ -1102,6 +1221,47 @@ mod tests {
         assert!(p.warnings.is_empty());
         assert!(p.errors.is_empty());
         assert!(p.code.is_none());
+    }
+
+    /// The payload Windows sent when a handover needed Administrator: `stack` is
+    /// a single object here, not an array. This failed with "invalid type: map,
+    /// expected a sequence", so the panel said "unreadable payload" and never
+    /// showed the reason — verbatim from the console, truncated at the same place.
+    const WIN_ELEVATION: &str = r#"{"schema":1,"ok":false,"code":"elevation_required","action":"switch","to":"xampp","dry_run":false,"changed":false,"stack":{"alias":"xampp","path":"D:\\xampp","kind":"xampp","apache":{"version":"2.4.58","port":80}},"ports":null,"steps":[],"warnings":[],"errors":["Handing over registered services needs Administrator rights."]}"#;
+
+    #[test]
+    fn windows_elevation_payload_with_a_single_stack_object_parses() {
+        let p: SwitchPayload = serde_json::from_str(WIN_ELEVATION).expect("elevation payload");
+        assert!(!p.ok);
+        assert_eq!(p.code.as_deref(), Some("elevation_required"));
+        assert_eq!(p.stack.len(), 1);
+        assert_eq!(p.stack[0].alias, "xampp");
+        assert_eq!(p.stack[0].path, r"D:\xampp");
+        assert!(p
+            .first_error()
+            .expect("the reason survives")
+            .contains("Administrator"));
+        assert!(p.port("80").is_none(), "ports were null, so show none");
+    }
+
+    #[test]
+    fn a_stack_object_and_a_stack_array_agree() {
+        let one: SwitchPayload = serde_json::from_str(r#"{"stack":{"alias":"a","path":"C:\\a"}}"#)
+            .expect("single object");
+        let many: SwitchPayload = serde_json::from_str(r#"{"stack":[{"alias":"a","path":"C:\\a"}]}"#)
+            .expect("array");
+        assert_eq!(one.stack.len(), many.stack.len());
+        assert_eq!(one.stack[0].alias, many.stack[0].alias);
+    }
+
+    /// `Out-File -Encoding utf8` writes a BOM, and serde_json rejects it as an
+    /// unexpected character. The elevated path reads the payload from such a file.
+    #[test]
+    fn a_utf8_bom_does_not_defeat_the_parser() {
+        let body = format!("\u{feff}{WIN}");
+        let p = parse_switch_payload(&body, 0).expect("bom tolerated");
+        assert!(p.ok);
+        assert_eq!(p.stack.len(), 1);
     }
 
     #[test]

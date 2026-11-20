@@ -43,10 +43,10 @@ To build it yourself instead, see Build below.
 - **Component cards** — Apache, PHP, MariaDB, phpMyAdmin: version, running state, PIDs,
   ports, SAPI and registered service names, refreshed from `status --watch`.
 - **Stacks** — the registered XAMPP roots, with `Switch to` handing ports 80/3306 over and
-  `Return to phpup` taking them back; a path field registers further installs through
-  `switch --add` without touching the ports. Needs a `phpup.ps1` that has `switch` (an older
-  or published build answers "Unknown command: switch", which the block reports rather than
-  hides).
+  `Return to phpup` taking them back; `Browse…` registers a further install through
+  `switch --add` using the native folder picker, without touching the ports. Needs a `phpup.ps1`
+  that has `switch` (an older or published build answers "Unknown command: switch", which the
+  block reports rather than hides).
 - **Start / Restart / Stop** above the cards, idempotent, repainting from each verb's own
   JSON. Disabled states are explicit (`idle`, `all_up`, `start_on`, `stop_on`) rather than
   greyed-out guesswork.

@@ -4298,6 +4298,11 @@ function New-SwitchPayload {
         $Stack,
         $Ports
     )
+    # `stack` is always an array in the payload, whichever branch produced it: the
+    # list branches hand in rows, the handover branches hand in one resolved stack.
+    # A client parsing one shape must not have to know which branch it called.
+    $stackList = @()
+    if ($null -ne $Stack) { $stackList = @($Stack) }
     return [ordered]@{
         schema   = $script:STATUS_SCHEMA
         ok       = $Ok
@@ -4306,7 +4311,7 @@ function New-SwitchPayload {
         to       = $To
         dry_run  = $DryRun
         changed  = $Changed
-        stack    = $Stack
+        stack    = $stackList
         ports    = $Ports
         steps    = @($Steps)
         warnings = @($Warnings)

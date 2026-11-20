@@ -4975,7 +4975,9 @@ cmd_cli_switch_to_foreign() {
     fi
 
     SW_TO="$alias"
-    SW_STACK=$(switch_stack_json "$alias")
+    # `stack` is an array in every branch: the registry list already is one, and a
+    # single resolved stack is wrapped so a client never meets two shapes.
+    SW_STACK="[$(switch_stack_json "$alias")]"
 
     local kind80 kind3306 phpup_ports="" blocked=""
     kind80=$(port_owner_kind 80 "$FOREIGN_ROOT")
@@ -5085,7 +5087,7 @@ cmd_cli_switch_to_phpup() {
         foreign_registry_set "$alias" "$FOREIGN_ROOT" "$FOREIGN_KIND" "" ""
     fi
     SW_TO="phpup"
-    SW_STACK=$(switch_stack_json "$alias")
+    SW_STACK="[$(switch_stack_json "$alias")]"
 
     local kind80 kind3306 foreign_ports="" blocked=""
     kind80=$(port_owner_kind 80 "$FOREIGN_ROOT")

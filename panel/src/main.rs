@@ -233,6 +233,11 @@ struct App {
     /// snapshot, so a `--add` (which answers with `ports: null`) is followed by a
     /// fresh read instead of leaving the block on "unknown".
     switch_acted: bool,
+    /// Arguments of a switch that came back `elevation_required`, kept so the
+    /// "Run as administrator" button can repeat the exact same call.
+    switch_admin_args: Option<Vec<String>>,
+    /// Arguments of the last switch issued, for the same reason.
+    switch_last_args: Vec<String>,
     new_stack_path: String,
     last_error: Option<String>,
     last_seen: Option<Instant>,
@@ -295,6 +300,8 @@ impl App {
             switch_busy: false,
             switch_adding: false,
             switch_acted: false,
+            switch_admin_args: None,
+            switch_last_args: Vec::new(),
             new_stack_path: String::new(),
             last_error: None,
             last_seen: None,
@@ -473,8 +480,35 @@ impl App {
         self.switch_busy = true;
         self.switch_error = None;
         self.switch_acted = true;
+        self.switch_admin_args = None;
+        self.switch_last_args = args.clone();
         self.switch_adding = matches!(args.first().map(String::as_str), Some("--add"));
         let mut line = String::from("> switch");
+        for a in &args {
+            line.push(' ');
+            line.push_str(a);
+        }
+        self.push_log(line);
+    }
+
+    /// Repeat the last switch with Administrator.
+    ///
+    /// A handover stops and starts registered services, which Windows refuses
+    /// without an elevated token, so `switch --to <stack>` answers exit 4 from an
+    /// ordinary panel. Elevating just the command keeps the tray and the window
+    /// out of it; the UAC prompt is the one the user is being asked to accept.
+    fn run_switch_elevated(&mut self) {
+        if self.switch_busy {
+            return;
+        }
+        let Some(args) = self.switch_admin_args.take() else { return };
+        let Some(be) = &self.backend else { return };
+        backend::spawn_switch_elevated(be.script.clone(), args.clone(), self.tx.clone());
+        self.switch_busy = true;
+        self.switch_acted = true;
+        self.switch_adding = false;
+        self.switch_last_args = args.clone();
+        let mut line = String::from("> switch (elevated)");
         for a in &args {
             line.push(' ');
             line.push_str(a);
@@ -607,6 +641,20 @@ impl App {
                     } else {
                         self.switch_error =
                             payload.first_error().or_else(|| Some("switch failed".to_string()));
+                    }
+                    // When the only thing missing is the elevated token, keep the
+                    // arguments so the block can offer to repeat the exact call.
+                    // Only a payload from a user action may change this: the
+                    // snapshot that follows every action is ok and would drop the
+                    // offer a second after it appeared.
+                    if acted {
+                        self.switch_admin_args = if payload.code.as_deref()
+                            == Some("elevation_required")
+                        {
+                            Some(self.switch_last_args.clone())
+                        } else {
+                            None
+                        };
                     }
                     self.switch_adding = false;
                     self.push_log(switch_summary(&payload));
@@ -1583,6 +1631,7 @@ impl App {
 
         let mut queued: Option<Vec<String>> = None;
         let mut dismiss = false;
+        let mut elevate = false;
 
         ui.add_space(16.0);
         section_label(ui, p, "STACKS");
@@ -1601,6 +1650,13 @@ impl App {
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(format!("! {err}")).size(11.5).color(p.warn));
+                // Exit 4 is the one failure the user can fix from here: repeat the
+                // same call with an elevated token.
+                if self.switch_admin_args.is_some()
+                    && verb_button(ui, p, "Run as administrator", !busy).clicked()
+                {
+                    elevate = true;
+                }
                 if plain_nav(ui, p, "Dismiss") {
                     dismiss = true;
                 }
@@ -1637,10 +1693,28 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.new_stack_path)
-                    .hint_text(r"C:\xampp")
-                    .desired_width(220.0)
+                    .hint_text(r"D:\xampp")
+                    .desired_width(190.0)
                     .font(egui::TextStyle::Small),
             );
+            // Typing a Windows path from memory is the wrong ergonomic: pick the
+            // folder, and add it in the same click. Microsoft's own XAMPP docs
+            // disagree about which folder to name, so the dialog asks for the root
+            // and phpup decides whether it is a stack.
+            if verb_button(ui, p, "Browse…", !busy).clicked() {
+                if let Some(dir) = rfd::FileDialog::new()
+                    .set_title("Choose the stack root (the folder holding apache and mysql)")
+                    .pick_folder()
+                {
+                    let picked = dir.display().to_string();
+                    self.new_stack_path = picked.clone();
+                    queued = Some(vec![
+                        "--add".to_string(),
+                        "--path".to_string(),
+                        picked,
+                    ]);
+                }
+            }
             // Read after the edit: this frame's typing must count, otherwise a
             // click in the same frame adds the path as it was before the keypress.
             let typed = self.new_stack_path.trim().to_string();
@@ -1656,6 +1730,10 @@ impl App {
 
         if dismiss {
             self.switch_error = None;
+            self.switch_admin_args = None;
+        }
+        if elevate {
+            self.run_switch_elevated();
         }
         if let Some(args) = queued {
             self.run_switch(args);
