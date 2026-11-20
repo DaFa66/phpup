@@ -1,0 +1,45 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nix:
+    name: nix / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS matters: its /bin/bash is 3.2, the oldest shell phpup.sh must run on.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shell version
+        run: bash --version | head -1
+
+      - name: gate
+        run: bash tests/run-all.sh
+
+  windows:
+    name: windows / ${{ matrix.ps }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ps: PowerShell 7
+            cmd: pwsh -NoProfile -File tests/run-all.ps1
+          - ps: Windows PowerShell 5.1
+            cmd: powershell -NoProfile -ExecutionPolicy Bypass -File tests/run-all.ps1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: gate
+        shell: cmd
+        run: ${{ matrix.cmd }}
