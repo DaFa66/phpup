@@ -59,6 +59,7 @@ else
     run_suite tests/harness-switch.sh
 fi
 run_suite tests/harness-prerelease.sh
+run_suite tests/harness-brew.sh
 
 echo ""
 printf 'RESULT: %d gates, %d failed, %d suites, %d skipped\n' \

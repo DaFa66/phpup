@@ -98,6 +98,16 @@ back. Windows first; the macOS and Linux mapping (`/Applications/XAMPP/xamppfile
 - **`tests/harness-prerelease.sh`** — 17 assertions against the real function bodies with the
   package manager stubbed: detection across RC/beta/alpha/preview and Debian `~` forms, the
   latest-stable search skipping each of them, and the dashboard label for both states.
+- **The update list now carries the versions** — `u` used to print brew's default names only
+  (`httpd`, `mariadb`, `php`), so you could see that something was outdated but not what it would
+  become. The list now reads `httpd 2.4.69_1 -> 2.4.71`, which also makes a revision-only rebuild
+  (`php 8.5.12 -> 8.5.12_1`) readable and puts a major jump (`mariadb 12.3.3 -> 13.0.2_1`) in front
+  of you before you answer the prompt.
+- **`brew_stable_version`** now owns the `"stable"` parse shared by the newest-PHP-alias lookup and
+  the update switch message, and survives both brew's pretty-printed JSON and a compact blob.
+- **`tests/harness-brew.sh`** — 12 assertions covering the version formatting, the
+  revision-only case, the unparsable-line fallback, and the PHP line enumeration in both the
+  current metadata and the post-8.6.0 shape. Brew is stubbed, so it runs on Linux CI too.
 
 ---
 

@@ -345,10 +345,37 @@ brew_php_lines() {
 # typed '8.5' selects the newest line.
 brew_newest_php_alias() {
     local line
-    line=$(brew info --json=v2 php 2>/dev/null | sed -n 's/.*"stable": "\([0-9][0-9.]*\)".*/\1/p' | head -1)
+    line=$(brew_stable_version php)
     [[ -z "$line" ]] && line=$("${BREW_PREFIX}/opt/php/bin/php" -r 'echo PHP_VERSION;' 2>/dev/null)
     [[ -z "$line" ]] && return 1
     printf 'php@%s' "${line%.*}"
+}
+
+# Brew's advertised stable version for a formula, e.g. 8.5.12. Brew pretty-prints
+# its JSON ("stable": "8.5.12"); the loose pattern also survives a compact blob,
+# so a caller that re-serialises the metadata cannot silently break the parse.
+brew_stable_version() {
+    brew info --json=v2 "${1:-php}" 2>/dev/null \
+        | sed -n 's/.*"stable": *"\([0-9][0-9.]*\)".*/\1/p' | head -1
+}
+
+# Aligned "<formula>  <installed> -> <available>" lines for the update prompt.
+# Brew's plain output is names only, which says something changed but not what;
+# the verbose form is "<name> (<old>) < <new>", or "!= <new>" when only the
+# revision moved (a bottle rebuild of the same version).
+brew_outdated_lines() {
+    local raw line re
+    raw=$(brew outdated --formula --verbose "$@" 2>/dev/null)
+    [[ -z "$raw" ]] && return 0
+    re='^([^ ]+) \(([^)]+)\) [<>!=]+ (.*)$'
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        if [[ "$line" =~ $re ]]; then
+            printf '  %-12s %s -> %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+        else
+            printf '  %s\n' "$line"
+        fi
+    done <<< "$raw"
 }
 
 APT_PHP_BIN_CACHE=""
@@ -2957,7 +2984,7 @@ cmd_update() {
                 # Prefer brew's advertised stable version — u upgrades the meta
                 # keg, so that is what this run actually leaves behind.
                 local _avail
-                _avail=$(brew info --json=v2 php 2>/dev/null | sed -n 's/.*"stable": "\([0-9][0-9.]*\)".*/\1/p' | head -1)
+                _avail=$(brew_stable_version php)
                 [[ -n "$_avail" ]] && target_full="$_avail"
                 switch_msg="PHP ${active_full:-$active_line} → ${target_full:-$target_line} (moves onto the newest line)"
             fi
@@ -2967,9 +2994,9 @@ cmd_update() {
             # Switching lines — the outgoing formula is deliberately left at its
             # current patch (see the upgrade below), so do not advertise its
             # patch update here either.
-            outdated=$(brew outdated --formula httpd mariadb phpmyadmin "$php_target" 2>/dev/null)
+            outdated=$(brew_outdated_lines httpd mariadb phpmyadmin "$php_target")
         else
-            outdated=$(brew outdated --formula httpd mariadb "$active_php" phpmyadmin 2>/dev/null)
+            outdated=$(brew_outdated_lines httpd mariadb "$active_php" phpmyadmin)
         fi
 
         if [[ -z "$outdated" && -z "$switch_msg" ]]; then
