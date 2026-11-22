@@ -82,6 +82,7 @@ git push origin :refs/tags/v2.6.0-win :refs/tags/v1.4.0-nix
 
 | Tag | Date | Milestone |
 |---|---|---|
+| `panel-v0.2.2-beta-win` | 2026-11-23 | A remembered window position is verified against the current monitors before it is restored, and one that is off-screen is never written — the panel can no longer launch where it cannot be seen |
 | `v2.5.5-win` / `v1.3.4-nix` | 2026-11-22 | The handover refuses rather than half-committing: an unreadable service start type, a refused boot-disable or a failed registry write now stops the switch before phpup is touched; `sc.exe`-free process image paths (WMI off the polling path); `--remove`, alias ambiguity and `active_path` in the payload; one config write per handover |
 | `panel-v0.2.1-beta-win` | 2026-11-22 | Output pane takes the slack under the cards, a `Links` menu, `About` back in the header, green/red chips on all four cards, a refresh slider that actually re-polls, and a panel that reopens where it was left |
 | `v2.5.4-win` / `v1.3.3-nix` | 2026-11-21 | `switch --add` registers a stack without touching the ports; the switch payload is one shape on both platforms (`to` a string, `stack` an array); the handover logic is covered by the harness (34 → 42 checks on a POSIX host); `foreign_exe_running`, an absolute brew path and the last two silenced `brew services start` calls |

@@ -18,6 +18,28 @@ overview of every release.
 
 ---
 
+## [panel 0.2.2-beta-win] — 2026-11-23
+
+### Windows panel (Rust + egui, 0.2.2 beta)
+
+*Previous panel update: [panel 0.2.1-beta](#panel-021-beta-win--2026-11-22).*
+
+The window can no longer reopen somewhere it cannot be seen.
+
+### Fixed
+
+- **A remembered window position is checked against the monitors before it is honoured.**
+  Dragging the panel towards another screen could leave `panel.json` holding an x beyond the
+  edge of the leftmost monitor — `x: -4719` with that screen starting at `-2560` — and every
+  launch after it drew the window where nothing could be clicked: the process was running,
+  the tray icon was there, and the panel was invisible. Restoring a position now asks Windows
+  (`MonitorFromRect` with `MONITOR_DEFAULTTONULL`) whether any part of the window lands on a
+  screen, and requires at least a 120×120 corner of it to be there. If not, the position is
+  dropped and Windows places the window itself.
+- **A position that cannot be found again is never recorded.** The geometry mirror writes x/y
+  only while the window is reachable, so a drag that ends past the edge leaves the previous
+  good position on disk instead of making the next launch invisible.
+
 ## [2.5.5-win] / [1.3.4-nix] — 2026-11-22
 
 ### Windows (phpup.ps1 v2.5.5) and macOS/Linux (phpup.sh v1.3.4)
@@ -126,6 +148,54 @@ in the same two colours.
 - **Start, Restart and Stop are back on the body**, next to the cards they act on; About is
   back in the header. A menu hid both two clicks deep.
 - A refresh interval or script change no longer waits for a re-attach to take effect.
+
+## [panel 0.2.0-beta-win] — 2026-11-21
+
+### Desktop panel (phpup-panel v0.2.0, beta)
+
+Improvements on top of `panel 0.1.0-beta`, released as `panel 0.2.0-beta-win`. Panel releases bump
+no script version and ship as their own zip.
+
+#### Added
+
+- **Panel: Stacks** — the registered XAMPP roots, listed under the component cards, with
+  `Switch to` handing ports 80/3306 over and `Return to phpup` taking them back. `Browse…`
+  registers further installs through `switch --add` with the native folder picker, without
+  touching the ports, and each port is shown with its owner and PID. A rejected path stays in
+  the field with the reason beside it, and a failed switch never leaves the block claiming it
+  does not know who holds the ports. A handover stops and starts services, which Windows refuses
+  without Administrator, so an exit-4 answer offers `Run as administrator` and repeats the same
+  call elevated rather than making the user restart the panel.
+- **Panel: start in the tray at launch** - Settings -> Window. On, the panel starts with no
+  window and no taskbar button, tray icon only, which is what an autostart launch wants. Off
+  by default, so the window opens. Uses the same `Visible(false)` path as the close button and
+  is applied a few frames after launch, because a viewport command issued before the window is
+  mapped is dropped. Verified against the real UI window via `EnumWindows`, since
+  `MainWindowHandle` points at a hidden helper window and reports the wrong state.
+- **Panel: Start with Windows** - per-user `HKCU\...\Run` entry written with `reg.exe`, so it
+  needs no elevation and no scheduled task. The checkbox mirrors the registry rather than
+  storing its own copy, so it cannot disagree with what Windows does at sign-in. Off by
+  default.
+- **Panel: per-service startup type** - `Auto` / `Disabled` on each registered service,
+  applied with `sc.exe config <name> start=`. Only `sc.exe` is elevated, through
+  `Start-Process -Verb RunAs`.
+- **Panel: hover states** - buttons lighten, take an accent edge and grow slightly on hover.
+  Applied in `theme.rs`: the panel's explicit button fills had been suppressing egui's hover
+  fill, which is why hover did nothing visible.
+
+#### Changed
+
+- **Panel: the window opens taller, and the console starts smaller** - 980x860 (still clamped to
+  85% of the monitor) with the console at 120pt instead of 160pt, so the Stacks block, its error
+  line and the path field all fit above the console on a 1080p screen. At the old 700pt height
+  the block sat below the fold.
+- **Panel: Settings manages boot behaviour only** - the service rows no longer carry their own
+  Start/Stop. `Start` / `Restart` / `Stop` above the cards control the running processes;
+  `Auto` / `Disabled` control the service registration. Two meanings of "stop" on one screen
+  was confusing, and the process controls already existed.
+- **Panel: quick links moved beneath the component cards** - opening the Settings slide-out
+  narrows the content area and had been pushing localhost / phpinfo / phpMyAdmin / logs /
+  www folder into the Start-Restart-Stop buttons.
 
 ## [2.5.4-win] / [1.3.3-nix] — 2026-11-21
 
@@ -512,54 +582,6 @@ out to the script for every action, so the scripts stay the source of truth.
   `phpup - as administrator` in the title bar.
 - **Tray visibility** depends on the Windows tray overflow area: if the icon is tucked
   behind the chevron the panel looks like it never started. Pin it to the tray.
-
-## [panel 0.2.0-beta-win] — 2026-11-21
-
-### Desktop panel (phpup-panel v0.2.0, beta)
-
-Improvements on top of `panel 0.1.0-beta`, released as `panel 0.2.0-beta-win`. Panel releases bump
-no script version and ship as their own zip.
-
-#### Added
-
-- **Panel: Stacks** — the registered XAMPP roots, listed under the component cards, with
-  `Switch to` handing ports 80/3306 over and `Return to phpup` taking them back. `Browse…`
-  registers further installs through `switch --add` with the native folder picker, without
-  touching the ports, and each port is shown with its owner and PID. A rejected path stays in
-  the field with the reason beside it, and a failed switch never leaves the block claiming it
-  does not know who holds the ports. A handover stops and starts services, which Windows refuses
-  without Administrator, so an exit-4 answer offers `Run as administrator` and repeats the same
-  call elevated rather than making the user restart the panel.
-- **Panel: start in the tray at launch** - Settings -> Window. On, the panel starts with no
-  window and no taskbar button, tray icon only, which is what an autostart launch wants. Off
-  by default, so the window opens. Uses the same `Visible(false)` path as the close button and
-  is applied a few frames after launch, because a viewport command issued before the window is
-  mapped is dropped. Verified against the real UI window via `EnumWindows`, since
-  `MainWindowHandle` points at a hidden helper window and reports the wrong state.
-- **Panel: Start with Windows** - per-user `HKCU\...\Run` entry written with `reg.exe`, so it
-  needs no elevation and no scheduled task. The checkbox mirrors the registry rather than
-  storing its own copy, so it cannot disagree with what Windows does at sign-in. Off by
-  default.
-- **Panel: per-service startup type** - `Auto` / `Disabled` on each registered service,
-  applied with `sc.exe config <name> start=`. Only `sc.exe` is elevated, through
-  `Start-Process -Verb RunAs`.
-- **Panel: hover states** - buttons lighten, take an accent edge and grow slightly on hover.
-  Applied in `theme.rs`: the panel's explicit button fills had been suppressing egui's hover
-  fill, which is why hover did nothing visible.
-
-#### Changed
-
-- **Panel: the window opens taller, and the console starts smaller** - 980x860 (still clamped to
-  85% of the monitor) with the console at 120pt instead of 160pt, so the Stacks block, its error
-  line and the path field all fit above the console on a 1080p screen. At the old 700pt height
-  the block sat below the fold.
-- **Panel: Settings manages boot behaviour only** - the service rows no longer carry their own
-  Start/Stop. `Start` / `Restart` / `Stop` above the cards control the running processes;
-  `Auto` / `Disabled` control the service registration. Two meanings of "stop" on one screen
-  was confusing, and the process controls already existed.
-- **Panel: quick links moved beneath the component cards** - opening the Settings slide-out
-  narrows the content area and had been pushing localhost / phpinfo / phpMyAdmin / logs /
-  www folder into the Start-Restart-Stop buttons.
 
 ## [2.5.0-win] / [1.3.0-nix] — 2026-10-22
 
@@ -1633,6 +1655,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**panel 0.2.2-beta**](#panel-022-beta-win--2026-11-23) | 2026-11-23 | A remembered window position is verified against the current monitors before it is restored, and an unreachable one is never written back — the panel can no longer launch off-screen |
 | [**2.5.5-win**](#255-win--134-nix--2026-11-22) | 2026-11-22 | The handover refuses instead of half-committing (unreadable start type, refused boot-disable, failed registry write); `sc.exe`-free process image paths off the polling path; `--remove`, alias ambiguity refusal and `active_path` |
 | [**panel 0.2.1-beta**](#panel-021-beta-win--2026-11-22) | 2026-11-22 | Output pane takes the slack under the cards, `Links` menu, About back in the header, green/red chips on all four cards, a refresh slider that re-polls, window geometry remembered |
 | [**2.5.4-win**](#254-win--133-nix--2026-11-21) | 2026-11-21 | `switch` reaches Windows and gains `--add`, which registers a stack without touching the ports; the switch payload is one shape on both platforms; a pre-release install no longer passes as the matching stable |

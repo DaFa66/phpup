@@ -2,6 +2,7 @@
 
 mod assets;
 mod backend;
+mod screens;
 mod theme;
 
 use backend::{Backend, Component, Event, Source, Status};
@@ -51,7 +52,13 @@ fn main() -> eframe::Result<()> {
         Some(win) => {
             viewport = viewport.with_inner_size([win.w, win.h]);
             if let (Some(x), Some(y)) = (win.x, win.y) {
-                viewport = viewport.with_position([x, y]);
+                // Only while that spot still exists: a monitor unplugged, a
+                // docking change or a drag that ended past the edge leaves an
+                // x/y that draws the panel where nothing can be clicked. No
+                // position at all is a window Windows places for us.
+                if screens::position_is_reachable(x, y, win.w, win.h) {
+                    viewport = viewport.with_position([x, y]);
+                }
             }
             if win.maximized {
                 viewport = viewport.with_maximized(true);
@@ -340,6 +347,9 @@ struct App {
     /// Verb to run once an elevated relaunch completes.
     pending_verb: Option<String>,
     title_applied: bool,
+    /// One-shot: the position on disk was checked against the monitors once the
+    /// real DPI scale was known.
+    pos_checked: bool,
     /// One-shot: honours Settings::start_in_tray in the first few frames only.
     tray_start_applied: bool,
     /// Frames drawn so far; the tray start is deferred until the window is
@@ -422,6 +432,7 @@ impl App {
             elevated: backend::is_elevated(),
             pending_verb,
             title_applied: false,
+            pos_checked: false,
             tray_start_applied: false,
             frames_seen: 0,
             autostart: backend::autostart_enabled(),
@@ -464,6 +475,37 @@ impl App {
             app.push_log("tray icon unavailable on this desktop".to_string());
         }
         app
+    }
+
+    /// Second look at the restored position, now that the real DPI scale is
+    /// known.
+    ///
+    /// The check at load time compares the saved position, which egui keeps in
+    /// points, against monitor rectangles, which Windows reports in pixels. At
+    /// 100% that is the same number twice; at 150% it is not, and a position far
+    /// enough off can still pass. One frame in, the scale is known, so convert
+    /// and ask again — and if the window landed nowhere, bring it back rather
+    /// than leaving the user with a process, a tray icon and no window.
+    fn rescue_window(&mut self, ctx: &egui::Context) {
+        if self.pos_checked {
+            return;
+        }
+        self.pos_checked = true;
+        let info = ctx.input(|i| i.viewport().clone());
+        let Some(rect) = info.outer_rect else {
+            return;
+        };
+        let px = ctx.pixels_per_point();
+        if screens::position_is_reachable(
+            rect.min.x * px,
+            rect.min.y * px,
+            rect.width() * px,
+            rect.height() * px,
+        ) {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(80.0, 80.0)));
+        self.push_log("the saved window position was off screen; moved the panel back".to_string());
     }
 
     fn push_log(&mut self, line: String) {
@@ -1930,8 +1972,13 @@ impl App {
                 self.win.h = rect.height();
             }
             if let Some(rect) = info.outer_rect {
-                self.win.x = Some(rect.min.x);
-                self.win.y = Some(rect.min.y);
+                // Never record a spot that cannot be found again: a drag that
+                // ends past the edge of the last monitor would otherwise make
+                // the next launch invisible. The previous good position stays.
+                if screens::position_is_reachable(rect.min.x, rect.min.y, self.win.w, self.win.h) {
+                    self.win.x = Some(rect.min.x);
+                    self.win.y = Some(rect.min.y);
+                }
             }
         }
         self.settings.window = Some(self.win);
@@ -2285,6 +2332,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.drain();
+        self.rescue_window(&ctx);
         self.track_window(&ctx);
         // The ports change outside the panel too: a switch run from a terminal,
         // a stack started by hand. Polling the snapshot is the only way the block

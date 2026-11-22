@@ -120,7 +120,7 @@ toolchain. It reads the CLI contract below and drives the same verbs, so the scr
 single source of truth for installation, updates and version switching.
 
 **Download:** Windows x64 zip with `install.ps1`:
-[phpup panel 0.2.1 beta](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.1-beta-win).
+[phpup panel 0.2.1 beta](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.2-beta-win).
 It is a pre-release, so GitHub keeps it out of the *Latest* slot; that link, or
 **Releases -> show more**, is the way in.
 
@@ -157,7 +157,7 @@ schtasks /Create /TN "phpup panel" /TR "\"C:\phpup\bin\phpup-panel.exe\"" /SC ON
 ```
 
 The panel is at **0.2.1 beta**, downloadable from
-[Releases](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.1-beta-win). Full build notes,
+[Releases](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.2-beta-win). Full build notes,
 settings and troubleshooting: [`panel/README.md`](panel/README.md).
 
 ## Scripted use (CLI)

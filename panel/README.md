@@ -65,7 +65,9 @@ To build it yourself instead, see Build below.
   slider takes effect at once: the status stream is restarted at the new rate instead of
   waiting for the panel to re-attach.
 - **Window geometry** — size, position and maximised state are saved to `panel.json` as you
-  resize, and restored on the next launch.
+  resize, and restored on the next launch. A position is only restored while it still lands on
+  a screen, and a position that cannot be reached is never written, so a monitor change or a
+  drag past the edge cannot make the next launch invisible.
 - **Service startup type** — per registered service, `Auto` or `Disabled`, applied with
   `sc.exe config <name> start=`. Settings owns boot behaviour only; `Start` / `Restart` /
   `Stop` above the cards are the process controls.

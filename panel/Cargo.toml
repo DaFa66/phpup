@@ -1,6 +1,6 @@
 [package]
 name = "phpup-panel"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Desktop control panel for phpup"
 homepage = "https://phpup.org"
@@ -23,6 +23,7 @@ rfd = { version = "0.15", default-features = false }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
