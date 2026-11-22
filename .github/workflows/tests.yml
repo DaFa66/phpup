@@ -43,3 +43,33 @@ jobs:
       - name: gate
         shell: cmd
         run: ${{ matrix.cmd }}
+
+  # The control panel is shipped as a binary, so nothing above touches it: the
+  # off-screen window bug reached a release with every gate green. Release
+  # profile, not debug, because that is the build that goes into the zip.
+  panel:
+    name: panel / windows-latest
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: panel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: rust version
+        run: rustc --version; cargo --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            panel/target
+          key: panel-${{ runner.os }}-${{ hashFiles('panel/Cargo.lock') }}
+          restore-keys: panel-${{ runner.os }}-
+
+      - name: unit tests
+        run: cargo test --release --locked
+
+      - name: release build
+        run: cargo build --release --locked
