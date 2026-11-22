@@ -45,8 +45,20 @@ fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(if elevated { "phpup — as administrator" } else { "phpup" })
         .with_app_id("phpup-panel")
-        .with_inner_size([980.0, 860.0])
         .with_min_inner_size([760.0, 520.0]);
+    match settings.window {
+        // Reopen where it was left, not at a size chosen on the developer's screen.
+        Some(win) => {
+            viewport = viewport.with_inner_size([win.w, win.h]);
+            if let (Some(x), Some(y)) = (win.x, win.y) {
+                viewport = viewport.with_position([x, y]);
+            }
+            if win.maximized {
+                viewport = viewport.with_maximized(true);
+            }
+        }
+        None => viewport = viewport.with_inner_size([980.0, 860.0]),
+    }
     if let Some(icon) = assets::window_icon() {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
@@ -78,6 +90,18 @@ struct Settings {
     always_admin: bool,
     /// Start hidden in the tray: no window, no taskbar button, tray icon only.
     start_in_tray: bool,
+    /// Where the window was when it was last closed. Reopening at a fixed
+    /// 980x860 throws away whatever the user sized it to.
+    window: Option<WindowBox>,
+}
+
+#[derive(Clone, Copy)]
+struct WindowBox {
+    w: f32,
+    h: f32,
+    x: Option<f32>,
+    y: Option<f32>,
+    maximized: bool,
 }
 
 impl Default for Settings {
@@ -86,10 +110,11 @@ impl Default for Settings {
             theme: ThemePref::System,
             source: Source::Github,
             script: None,
-            interval: 2,
+            interval: 5,
             zoom: 0.0,
             always_admin: false,
             start_in_tray: false,
+            window: None,
         }
     }
 }
@@ -115,6 +140,16 @@ impl Settings {
             zoom: Option<f32>,
             always_admin: Option<bool>,
             start_in_tray: Option<bool>,
+            window: Option<RawWindow>,
+        }
+        #[derive(serde::Deserialize)]
+        struct RawWindow {
+            w: f32,
+            h: f32,
+            x: Option<f32>,
+            y: Option<f32>,
+            #[serde(default)]
+            maximized: bool,
         }
         let Some(path) = Self::path() else {
             return Self::default();
@@ -127,10 +162,17 @@ impl Settings {
                 theme: raw.theme.as_deref().map(ThemePref::from_str).unwrap_or(ThemePref::System),
                 source: raw.source.as_deref().map(Source::from_str).unwrap_or(Source::Github),
                 script: raw.script,
-                interval: raw.interval.unwrap_or(2).clamp(1, 10),
+                interval: raw.interval.unwrap_or(5).clamp(2, 10),
                 zoom: raw.zoom.unwrap_or(0.0),
                 always_admin: raw.always_admin.unwrap_or(false),
                 start_in_tray: raw.start_in_tray.unwrap_or(false),
+                window: raw.window.map(|w| WindowBox {
+                    w: w.w.max(760.0),
+                    h: w.h.max(520.0),
+                    x: w.x,
+                    y: w.y,
+                    maximized: w.maximized,
+                }),
             },
             Err(_) => Self::default(),
         }
@@ -149,6 +191,13 @@ impl Settings {
             "zoom": self.zoom,
             "always_admin": self.always_admin,
             "start_in_tray": self.start_in_tray,
+            "window": self.window.map(|w| serde_json::json!({
+                "w": w.w,
+                "h": w.h,
+                "x": w.x,
+                "y": w.y,
+                "maximized": w.maximized,
+            })),
         });
         let _ = std::fs::write(path, serde_json::to_string_pretty(&body).unwrap_or_default());
     }
@@ -229,15 +278,48 @@ struct App {
     switch_busy: bool,
     /// The in-flight switch was `--add`, so a success clears the path field.
     switch_adding: bool,
-    /// True while the payload in flight came from a user action rather than the
-    /// snapshot, so a `--add` (which answers with `ports: null`) is followed by a
-    /// fresh read instead of leaving the block on "unknown".
-    switch_acted: bool,
     /// Arguments of a switch that came back `elevation_required`, kept so the
     /// "Run as administrator" button can repeat the exact same call.
     switch_admin_args: Option<Vec<String>>,
     /// Arguments of the last switch issued, for the same reason.
     switch_last_args: Vec<String>,
+    /// When the in-flight switch started, so a call that never reports back can
+    /// be given up on instead of pinning the block on "Refreshing…" for ever.
+    switch_started: Option<Instant>,
+    /// Last time the block re-read the snapshot on its own timer.
+    switch_last_poll: Option<Instant>,
+    /// A snapshot is in flight. It is a whole phpup run — port probes, service
+    /// queries — so on a slow machine it can take longer than the interval. The
+    /// panel spawned one every five seconds regardless, and the runs piled up
+    /// until Windows itself became unresponsive. One at a time, always.
+    switch_poll_inflight: bool,
+    /// The snapshot has failed in a way that will not heal by asking again (a
+    /// script with no `switch` verb, for instance). Polling stops for the session.
+    switch_poll_failed: bool,
+    /// Window geometry, mirrored into the settings every frame so any later save
+    /// (a theme change, say) cannot write the size away.
+    win: WindowBox,
+    /// Last geometry written to disk, and when. Closing to the tray does not
+    /// run `Drop`, so the size has to be persisted as it changes rather than
+    /// only on exit.
+    /// Heights measured last frame: the stack strip and the card column. The
+    /// console is then given whatever is left, so slack lands in the log pane
+    /// instead of as dead space under the cards.
+    strip_h: f32,
+    body_h: f32,
+    /// What the cards need when nothing squeezes them. `content_size` reports the
+    /// clipped height once the body is short, so a plain reading would ratchet the
+    /// body smaller every frame and clip the cards for good.
+    body_need: f32,
+    /// Frames left in which the console is pinned to its floor so the cards can
+    /// report their real height. `content_size` never exceeds the viewport, so a
+    /// squeezed body cannot measure itself.
+    calibrate: u8,
+    win_saved: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
+    win_saved_at: Option<std::time::Instant>,
+    /// Port ownership as last written to the console, so the line appears when
+    /// it changes rather than every poll.
+    ports_logged: String,
     new_stack_path: String,
     last_error: Option<String>,
     last_seen: Option<Instant>,
@@ -289,6 +371,14 @@ impl App {
             style.spacing.button_padding = Vec2::new(12.0, 7.0);
         });
 
+        let window0 = settings.window.unwrap_or(WindowBox {
+            w: 980.0,
+            h: 860.0,
+            x: None,
+            y: None,
+            maximized: false,
+        });
+
         let mut app = Self {
             settings,
             backend: None,
@@ -299,9 +389,20 @@ impl App {
             switch_error: None,
             switch_busy: false,
             switch_adding: false,
-            switch_acted: false,
             switch_admin_args: None,
             switch_last_args: Vec::new(),
+            switch_started: None,
+            switch_last_poll: None,
+            switch_poll_inflight: false,
+            switch_poll_failed: false,
+            win: window0,
+            strip_h: 0.0,
+            body_h: 0.0,
+            body_need: 0.0,
+            calibrate: 12,
+            win_saved: None,
+            win_saved_at: None,
+            ports_logged: String::new(),
             new_stack_path: String::new(),
             last_error: None,
             last_seen: None,
@@ -399,9 +500,9 @@ impl App {
                         be.spawn_watch(self.tx.clone());
                         // The Stacks block lists registered roots from this
                         // snapshot; without it the section has nothing to show
-                        // until the user asks for a switch.
+                        // until the user asks for a switch. It is a poll, so it
+                        // does not claim the busy flag: only an action does.
                         be.spawn_switch(Vec::new(), self.tx.clone());
-                        self.switch_busy = true;
                         self.push_log(format!(
                             "phpup {version}: {} [{}], polling every {}s",
                             be.script.display(),
@@ -478,8 +579,8 @@ impl App {
         let Some(be) = &self.backend else { return };
         be.spawn_switch(args.clone(), self.tx.clone());
         self.switch_busy = true;
+        self.switch_started = Some(Instant::now());
         self.switch_error = None;
-        self.switch_acted = true;
         self.switch_admin_args = None;
         self.switch_last_args = args.clone();
         self.switch_adding = matches!(args.first().map(String::as_str), Some("--add"));
@@ -505,7 +606,7 @@ impl App {
         let Some(be) = &self.backend else { return };
         backend::spawn_switch_elevated(be.script.clone(), args.clone(), self.tx.clone());
         self.switch_busy = true;
-        self.switch_acted = true;
+        self.switch_started = Some(Instant::now());
         self.switch_adding = false;
         self.switch_last_args = args.clone();
         let mut line = String::from("> switch (elevated)");
@@ -514,6 +615,83 @@ impl App {
             line.push_str(a);
         }
         self.push_log(line);
+        // The "needs Administrator rights" message was the reason this button
+        // existed; once the button has been pressed it is out of date, and a
+        // stale warning sitting next to a switch that is running reads as a failure.
+        self.switch_error = None;
+        self.push_log("  waiting for the consent prompt".to_string());
+    }
+
+    /// Re-read the switch snapshot on a timer, and give up on a call that never
+    /// reports back.
+    ///
+    /// Everything the block shows can be changed by something else — a terminal,
+    /// the other stack's own control panel — so state is pulled rather than
+    /// assumed. A handover is also long enough that waiting for one event at the
+    /// end is the worst way to watch it; the watchdog means a spawn that never
+    /// returns costs one stale minute, not a session.
+    fn poll_switch(&mut self, ctx: &egui::Context) {
+        // One snapshot at a time, and rarely: each is a full phpup run. While the
+        // window is in the background there is no one to read the result anyway.
+        const FOCUSED: Duration = Duration::from_secs(20);
+        const IDLE: Duration = Duration::from_secs(60);
+        /// A snapshot that never comes back must not block the block forever.
+        const STUCK: Duration = Duration::from_secs(90);
+        if self.switch_poll_failed {
+            return;
+        }
+        // A handover that waits on a UAC prompt and then on Start-Service can
+        // take minutes: the observed run sat over a minute at the consent prompt
+        // before the services even started. Long enough to be patient, short
+        // enough that a genuinely lost call unlocks the buttons in this session.
+        const GIVE_UP: Duration = Duration::from_secs(180);
+
+        let now = Instant::now();
+        if self.switch_busy {
+            let stale = self
+                .switch_started
+                .map(|at| now.duration_since(at) > GIVE_UP)
+                .unwrap_or(false);
+            if stale {
+                self.switch_busy = false;
+                self.switch_started = None;
+                self.push_log(
+                    "  switch did not report back; re-reading the state".to_string(),
+                );
+                self.switch_last_poll = None;
+            } else {
+                // One thing at a time: the action's own payload lands next.
+                ctx.request_repaint_after(Duration::from_millis(600));
+                return;
+            }
+        }
+
+        if self.switch_poll_inflight {
+            let stuck = self
+                .switch_last_poll
+                .map(|at| now.duration_since(at) > STUCK)
+                .unwrap_or(true);
+            if stuck {
+                // Give up on it rather than spawning its replacement on top.
+                self.switch_poll_inflight = false;
+            } else {
+                return;
+            }
+        }
+
+        let every = if ctx.input(|i| i.focused) { FOCUSED } else { IDLE };
+        let due = self
+            .switch_last_poll
+            .map(|at| now.duration_since(at) >= every)
+            .unwrap_or(true);
+        if !due {
+            return;
+        }
+        if let Some(be) = &self.backend {
+            self.switch_last_poll = Some(now);
+            self.switch_poll_inflight = true;
+            be.spawn_switch(Vec::new(), self.tx.clone());
+        }
     }
 
     fn drain(&mut self) {
@@ -623,9 +801,19 @@ impl App {
                         },
                     });
                 }
-                Event::Switch(payload) => {
-                    self.switch_busy = false;
-                    let acted = std::mem::replace(&mut self.switch_acted, false);
+                Event::Switch {
+                    payload,
+                    from_action,
+                } => {
+                    // The backend says whether the user asked for this. A
+                    // snapshot that happens to be in flight when a button is
+                    // pressed must never stand in for the action's result.
+                    self.switch_poll_inflight = false;
+                    if from_action {
+                        self.switch_busy = false;
+                        self.switch_started = None;
+                    }
+                    let acted = from_action;
                     if payload.ok {
                         // Only a successful *action* clears the message; the snapshot
                         // that follows it is always ok, and would wipe the very error
@@ -657,7 +845,11 @@ impl App {
                         };
                     }
                     self.switch_adding = false;
-                    self.push_log(switch_summary(&payload));
+                    // Snapshots are silent: a line every few seconds would bury
+                    // the account of what the user actually did.
+                    if acted {
+                        self.push_log(switch_summary(&payload));
+                    }
                     // Warnings and steps are the only account of what phpup did;
                     // the Stacks block shows state, the console shows the work.
                     for w in payload.warnings.iter().filter(|w| !w.trim().is_empty()) {
@@ -674,7 +866,15 @@ impl App {
                             payload.ports = prev.ports.clone();
                         }
                     }
+                    let hint = self.switch.as_ref().and_then(switch_holder);
+                    let (ports_line, _) = switch_port_line(&payload, hint.as_deref());
                     self.switch = Some(*payload);
+                    // The ownership line belongs with the other diagnostics, not
+                    // above the stack list; it is written when it changes.
+                    if !ports_line.is_empty() && ports_line != self.ports_logged {
+                        self.ports_logged = ports_line.clone();
+                        self.push_log(format!("ports: {ports_line}"));
+                    }
                     // An --add answers with ports:null because it never probes. Re-read
                     // the snapshot so a successful registration cannot leave the block
                     // sitting on "unknown", and so --to lands with fresh owners.
@@ -694,6 +894,10 @@ impl App {
                 Event::Log(line) => self.push_log(line),
                 Event::Failed(msg) => {
                     self.action = None;
+                    self.switch_started = None;
+                    // The snapshot that was in flight is gone with it; without
+                    // this the block would wait for a payload that is never coming.
+                    self.switch_poll_inflight = false;
                     // A switch that never produced JSON is finished as far as
                     // the UI is concerned; otherwise its buttons stay disabled
                     // for the rest of the session.
@@ -701,8 +905,19 @@ impl App {
                         self.switch_busy = false;
                         self.switch_adding = false;
                         self.switch_error = Some(msg.clone());
+                        self.push_log(format!("error: {msg}"));
                     }
-                    self.push_log(format!("error: {msg}"));
+                    else if msg.starts_with("switch:") && !self.switch_poll_failed {
+                        // A snapshot against a phpup.ps1 with no `switch` verb
+                        // answers "help for usage" forever. Say it once and stop
+                        // asking: the console is not a place to repeat a fact.
+                        self.switch_poll_failed = true;
+                        self.push_log(format!("error: {msg}"));
+                        self.push_log(
+                            "  stack switching is off for this session: that phpup.ps1 has no `switch` verb"
+                                .to_string(),
+                        );
+                    }
                     self.last_error = Some(msg);
                 }
             }
@@ -744,8 +959,60 @@ impl App {
                         if filled_nav(ui, p, "Output").clicked() {
                             toggle_console = true;
                         }
+
                         if plain_nav(ui, p, "About") {
                             toggle_about = true;
+                        }
+
+                        // Links only: the three actions live on the body, next to
+                        // the cards they act on.
+                        let links = match &self.status {
+                            Some(st) => (
+                                st.urls.root.clone(),
+                                st.urls.phpinfo.clone(),
+                                st.urls.phpmyadmin.clone(),
+                                st.paths.logs.clone(),
+                                st.paths.www.clone(),
+                            ),
+                            None => (None, None, None, None, None),
+                        };
+                        let mut open_url: Option<String> = None;
+
+                        ui.menu_button(RichText::new("Links").size(12.0), |ui| {
+                            if let Some(url) = &links.0 {
+                                if ui.button("localhost").clicked() {
+                                    open_url = Some(url.clone());
+                                    ui.close();
+                                }
+                            }
+                            if let Some(url) = &links.1 {
+                                if ui.button("phpinfo").clicked() {
+                                    open_url = Some(url.clone());
+                                    ui.close();
+                                }
+                            }
+                            if let Some(url) = &links.2 {
+                                if ui.button("phpMyAdmin").clicked() {
+                                    open_url = Some(url.clone());
+                                    ui.close();
+                                }
+                            }
+                            if let Some(path) = &links.3 {
+                                if ui.button("logs").clicked() {
+                                    open_url = Some(path.clone());
+                                    ui.close();
+                                }
+                            }
+                            if let Some(path) = &links.4 {
+                                if ui.button("www folder").clicked() {
+                                    open_url = Some(path.clone());
+                                    ui.close();
+                                }
+                            }
+                        });
+
+                        if let Some(url) = open_url {
+                            backend::open_in_default_app(&url);
                         }
                     });
                 });
@@ -909,8 +1176,8 @@ impl App {
 
     /// The job log: everything phpup says on stderr, plus panel events. This
     /// is where install/update progress will stream once those verbs exist.
-    fn console(&mut self, ui: &mut egui::Ui, p: &Palette) {
-        let mut open = self.console_open;
+    fn console(&mut self, ui: &mut egui::Ui, p: &Palette, want: f32) {
+        let open = self.console_open;
         let mut clear = false;
         let mut copy = false;
         let mut toggle_pin = false;
@@ -918,17 +1185,31 @@ impl App {
         let lines: Vec<String> = std::mem::take(&mut self.log).into_iter().collect();
         let count = lines.len();
 
+        // Height is decided by the caller: whatever the cards and the stack
+        // strip do not need. A fixed pane left the slack under the cards, which
+        // reads as a layout bug rather than as space to type in.
+        // Not resizable: eframe restores the dragged size from the previous
+        // session, which fought the exact size computed here and left the gap
+        // under the cards intact no matter what the caller asked for.
+        // Plain show, not show_collapsible: the collapse animation interpolates the
+        // reserved height, and when repaints stop mid-slide the panel stays pinned
+        // at that fraction — which is what kept the log at ~120pt while the caller
+        // asked for the slack. Hidden is simply not drawn.
+        if !open {
+            self.log = lines.into_iter().collect();
+            return;
+        }
+        // exact_size sets both bounds. A following min_size() re-widens the range,
+        // which let the height persisted from an earlier session win — that is why
+        // the pane stayed at its old 120pt however much slack the caller passed.
         egui::Panel::bottom("console")
-            .resizable(true)
-            .default_size(120.0)
-            .min_size(88.0)
-            .max_size(520.0)
+            .exact_size(want.max(88.0))
             .frame(
                 Frame::group(ui.style())
                     .fill(p.surface)
                     .inner_margin(Margin::same(12)),
             )
-            .show_collapsible(ui, &mut open, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Output").size(12.0).strong().color(p.text));
                     ui.label(
@@ -986,6 +1267,7 @@ impl App {
 
     fn settings_panel(&mut self, ui: &mut egui::Ui, p: &Palette) {
         let mut dirty = false;
+        let mut interval_changed = false;
         let mut do_attach = false;
         let mut refresh = false;
         let mut elevate_now = false;
@@ -1422,6 +1704,7 @@ impl App {
                             .changed()
                         {
                             dirty = true;
+                            interval_changed = true;
                         }
                     });
             });
@@ -1460,9 +1743,26 @@ impl App {
                 }
             });
         }
+        if interval_changed {
+            self.restart_watch();
+        }
         if do_attach {
             self.attach();
         }
+    }
+
+    /// The watch child takes its interval as an argument, so a new rate means a
+    /// new process. Sliding the control used to rewrite the footer and nothing else.
+    fn restart_watch(&mut self) {
+        let interval = self.settings.interval;
+        let tx = self.tx.clone();
+        let Some(be) = self.backend.as_mut() else {
+            return;
+        };
+        be.interval = interval;
+        be.stop_watch();
+        be.spawn_watch(tx);
+        self.push_log(format!("polling every {interval}s"));
     }
 
     fn body(&mut self, ui: &mut egui::Ui, p: &Palette) {
@@ -1478,8 +1778,11 @@ impl App {
                     .inner_margin(Margin::same(18)),
             )
             .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
+                // [false, true]: full width, but only as tall as its contents —
+                // otherwise it reports the whole panel and the console can never
+                // claim the slack (the dead space under the cards).
+                let scrolled = egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
                         if let Some(verb) = self.admin_verb.clone() {
                             Frame::group(ui.style())
@@ -1539,10 +1842,16 @@ impl App {
                             });
                         }
 
-                        // Directly under the cards and their links: switching
-                        // stacks must not need Settings opened first.
-                        self.stacks_block(ui, p);
+                        // The stack switcher used to sit here, at the bottom of a
+                        // scrolling column, where its rows fell off the window edge.
+                        // It is a strip above the console now.
+                        ui.min_rect().height()
                     });
+                // The scroll content's height, not the panel's: `inner` is the
+                // panel-sized Ui (always full height), which is why the console
+                // could never claim the slack and the gap sat under the cards.
+                self.body_h = scrolled.content_size.y;
+                self.body_need = self.body_need.max(self.body_h);
             });
 
         if let Some(verb) = pending {
@@ -1606,10 +1915,68 @@ impl App {
         }
     }
 
-    /// Stack handover: which root holds ports 80/3306, and the verbs to change
-    /// it. Lives in the main column rather than Settings — handing the ports
-    /// over is an action, not a preference.
+    /// Mirror the live window geometry into the settings, so closing the panel
+    /// (or any later save) writes the size the user actually chose.
+    fn track_window(&mut self, ctx: &egui::Context) {
+        let info = ctx.input(|i| i.viewport().clone());
+        if info.maximized == Some(true) {
+            // A maximised window's inner_rect is the screen, not a size worth
+            // restoring as "normal"; keep the last normal size instead.
+            self.win.maximized = true;
+        } else {
+            self.win.maximized = false;
+            if let Some(rect) = info.inner_rect {
+                self.win.w = rect.width();
+                self.win.h = rect.height();
+            }
+            if let Some(rect) = info.outer_rect {
+                self.win.x = Some(rect.min.x);
+                self.win.y = Some(rect.min.y);
+            }
+        }
+        self.settings.window = Some(self.win);
+
+        let now_state = (self.win.w, self.win.h, self.win.x, self.win.y, self.win.maximized);
+        let due = self
+            .win_saved_at
+            .map(|t| t.elapsed() >= std::time::Duration::from_secs(2))
+            .unwrap_or(true);
+        if due && self.win_saved != Some(now_state) {
+            self.settings.save();
+            self.win_saved = Some(now_state);
+            self.win_saved_at = Some(std::time::Instant::now());
+        }
+    }
+
+    /// The stack switcher, as a strip directly above the console.
+    ///
+    /// It sits here because it is the one control that changes everything the
+    /// cards above report, and at the bottom of the scrolling column it fell off
+    /// the window edge as soon as anything pushed the content down.
+    fn stacks_strip(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let strip_h = egui::Panel::bottom("stacks_strip")
+            .resizable(false)
+            .frame(
+                Frame::NONE
+                    .fill(p.bg)
+                    .inner_margin(Margin::symmetric(18, 6))
+                    .stroke(Stroke::new(1.0, p.border)),
+            )
+            .show(ui, |ui| {
+                // The links line lives here now: directly above the switcher and
+                // sharing its rule, instead of floating at the bottom of a
+                // scrolling column with dead space beneath it.
+                self.stacks_block(ui, p);
+            })
+            .response
+            .rect
+            .height();
+        self.strip_h = strip_h;
+    }
+
     fn stacks_block(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        // Registering and handing over roots. Lives outside Settings because
+        // handing the ports over is an action, not a preference.
         // Nothing to say until the first snapshot lands (or it failed).
         if self.switch.is_none() && !self.switch_busy && self.switch_error.is_none() {
             return;
@@ -1621,25 +1988,60 @@ impl App {
             .as_ref()
             .map(|s| s.stack.clone())
             .unwrap_or_default();
-        let (mut ports, foreign) = match self.switch.as_ref() {
-            Some(sw) => switch_port_line(sw),
-            None => ("Ports 80/3306: unknown".to_string(), false),
+        let holder_path = self.switch.as_ref().and_then(|sw| {
+            // The recorded path is evidence. A matching alias is only a guess:
+            // two roots named "xampp" is exactly how the wrong stack got named.
+            if let Some(p) = sw.active_path.as_ref().filter(|p| !p.trim().is_empty()) {
+                return Some(p.clone());
+            }
+            let holder = switch_holder(sw)?;
+            let matches: Vec<&backend::ForeignStack> =
+                sw.stack.iter().filter(|s| s.alias == holder).collect();
+            if matches.len() == 1 {
+                Some(matches[0].path.clone())
+            } else {
+                None
+            }
+        });
+        let foreign = match self.switch.as_ref() {
+            Some(sw) => {
+                let (_, foreign) = switch_port_line(sw, None);
+                // The recorded handover is evidence even when the payload could
+                // not attribute the listener; either is enough to offer the way back.
+                foreign || sw.active.as_deref().is_some_and(|a| !a.trim().is_empty())
+            }
+            None => false,
         };
-        if busy {
-            ports.push_str("  ·  Refreshing…");
-        }
 
         let mut queued: Option<Vec<String>> = None;
         let mut dismiss = false;
         let mut elevate = false;
 
         ui.add_space(16.0);
-        section_label(ui, p, "STACKS");
-
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(ports).size(11.5).color(p.muted));
+            section_label(ui, p, "STACKS");
+            // Adding a root is a folder choice, not a path to type: the picker
+            // validates and registers in one click, so there is no field to get
+            // wrong and nothing to press Add on afterwards.
+            if verb_button(ui, p, "Browse…", !busy).clicked() {
+                if let Some(dir) = rfd::FileDialog::new()
+                    .set_title("Choose the stack root (the folder holding apache and mysql)")
+                    .pick_folder()
+                {
+                    let picked = dir.display().to_string();
+                    queued = Some(vec!["--add".to_string(), "--path".to_string(), picked]);
+                }
+            }
             if foreign && verb_button(ui, p, "Return to phpup", !busy).clicked() {
-                queued = Some(vec!["--to".to_string(), "phpup".to_string()]);
+                let mut args = vec!["--to".to_string(), "phpup".to_string()];
+                if let Some(path) = &holder_path {
+                    args.push("--path".to_string());
+                    args.push(path.clone());
+                }
+                queued = Some(args);
+            }
+            if busy {
+                ui.label(RichText::new("refreshing…").size(10.5).color(p.muted));
             }
         });
 
@@ -1684,49 +2086,24 @@ impl App {
                 )
                 .on_hover_text(&stack.path);
                 if verb_button(ui, p, "Switch to", !busy).clicked() {
-                    queued = Some(vec!["--to".to_string(), stack.alias.clone()]);
+                    // By path: two roots can share the alias "xampp", and the
+                    // script refuses an ambiguous alias rather than guessing.
+                    queued = Some(vec![
+                        "--to".to_string(),
+                        stack.alias.clone(),
+                        "--path".to_string(),
+                        stack.path.clone(),
+                    ]);
+                }
+                if plain_nav(ui, p, "Remove") {
+                    queued = Some(vec![
+                        "--remove".to_string(),
+                        "--path".to_string(),
+                        stack.path.clone(),
+                    ]);
                 }
             });
         }
-
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_stack_path)
-                    .hint_text(r"D:\xampp")
-                    .desired_width(190.0)
-                    .font(egui::TextStyle::Small),
-            );
-            // Typing a Windows path from memory is the wrong ergonomic: pick the
-            // folder, and add it in the same click. Microsoft's own XAMPP docs
-            // disagree about which folder to name, so the dialog asks for the root
-            // and phpup decides whether it is a stack.
-            if verb_button(ui, p, "Browse…", !busy).clicked() {
-                if let Some(dir) = rfd::FileDialog::new()
-                    .set_title("Choose the stack root (the folder holding apache and mysql)")
-                    .pick_folder()
-                {
-                    let picked = dir.display().to_string();
-                    self.new_stack_path = picked.clone();
-                    queued = Some(vec![
-                        "--add".to_string(),
-                        "--path".to_string(),
-                        picked,
-                    ]);
-                }
-            }
-            // Read after the edit: this frame's typing must count, otherwise a
-            // click in the same frame adds the path as it was before the keypress.
-            let typed = self.new_stack_path.trim().to_string();
-            let can_add = !busy && !typed.is_empty();
-            if verb_button(ui, p, "Add", can_add).clicked() && can_add {
-                queued = Some(vec![
-                    "--add".to_string(),
-                    "--path".to_string(),
-                    typed.clone(),
-                ]);
-            }
-        });
 
         if dismiss {
             self.switch_error = None;
@@ -1746,7 +2123,7 @@ impl App {
         p: &Palette,
         status: &Status,
         pending: &mut Option<&'static str>,
-        open_url: &mut Option<String>,
+        _open_url: &mut Option<String>,
     ) {
         // State, mode and registration live in the header as plain text now;
         // duplicating them here as pills made them read like buttons.
@@ -1821,7 +2198,8 @@ impl App {
 
         ui.add_space(16.0);
 
-        // Actions
+        // Actions on the body, not in a menu: they act on the cards below, and
+        // burying them two clicks deep made the panel feel read-only.
         ui.horizontal(|ui| {
             let idle = self.action.is_none();
             let all_up = status.all_running();
@@ -1863,13 +2241,6 @@ impl App {
             if ui.add_enabled(stop_on, stop).clicked() {
                 *pending = Some("stop");
             }
-
-            if let Some(verb) = self.action {
-                ui.add_space(6.0);
-                ui.spinner();
-                ui.label(RichText::new(format!("{verb}…")).size(12.0).color(p.muted));
-            }
-
         });
 
         ui.add_space(18.0);
@@ -1893,43 +2264,20 @@ impl App {
             });
         });
 
-        // Links sit under the cards: the settings slide-out narrows the content
-        // area, and on the action row they were pushed into the buttons.
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            if let Some(root) = &status.urls.root {
-                if ui.link(RichText::new("localhost").size(12.0)).clicked() {
-                    *open_url = Some(root.clone());
-                }
-                ui.add_space(6.0);
-            }
-            if let Some(info) = &status.urls.phpinfo {
-                if ui.link(RichText::new("phpinfo").size(12.0)).clicked() {
-                    *open_url = Some(info.clone());
-                }
-                ui.add_space(6.0);
-            }
-            if let Some(pma) = &status.urls.phpmyadmin {
-                if ui.link(RichText::new("phpMyAdmin").size(12.0)).clicked() {
-                    *open_url = Some(pma.clone());
-                }
-                ui.add_space(6.0);
-            }
-            if let Some(logs) = &status.paths.logs {
-                if ui.link(RichText::new("logs").size(12.0)).clicked() {
-                    *open_url = Some(logs.clone());
-                }
-                ui.add_space(6.0);
-            }
-            if let Some(www) = &status.paths.www {
-                if ui.link(RichText::new("www folder").size(12.0)).clicked() {
-                    *open_url = Some(www.clone());
-                }
-            }
-        });
+    }
+}
 
-        ui.add_space(18.0);
-
+impl Drop for App {
+    fn drop(&mut self) {
+        // Take the children with us. `status --watch` and any switch run are
+        // phpup processes; a panel that disappears must not leave them (and
+        // their conhosts) behind.
+        if let Some(be) = &self.backend {
+            be.shutdown();
+        }
+        // Reopen where this window was left.
+        self.settings.window = Some(self.win);
+        self.settings.save();
     }
 }
 
@@ -1937,6 +2285,11 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.drain();
+        self.track_window(&ctx);
+        // The ports change outside the panel too: a switch run from a terminal,
+        // a stack started by hand. Polling the snapshot is the only way the block
+        // can be right about state it did not create.
+        self.poll_switch(&ctx);
 
         // Windows does not decorate the title bar for elevated processes the way
         // it does for the UAC prompt, so say it plainly.
@@ -2041,11 +2394,36 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.push_log("hidden to tray — quit from the tray menu".to_string());
+            self.settings.window = Some(self.win);
+            self.settings.save();
         }
 
         self.header(ui, &p);
         self.footer(ui, &p);
-        self.console(ui, &p);
+        // Bottom panels are taken from the window edge in call order, so the
+        // console claims the bottom first and the stack strip lands directly
+        // above it — which is where the switcher belongs.
+        let avail = ui.available_height();
+        // First frame has no measurements: fall back to the old default rather
+        // than guessing a size from zero.
+        if self.calibrate > 0 {
+            self.calibrate -= 1;
+        }
+        let console_h = if self.calibrate > 0 || self.body_need <= 0.0 {
+            88.0
+        } else {
+            // The console gets whatever is left once the cards have what they
+            // asked for — never more, because a squeezed body clips the cards.
+            // `content_size` stops at the viewport, so the last few points of the
+            // second card row are invisible to the measurement; the floor covers
+            // them and keeps the pane from clipping the card detail lines.
+            const BODY_FLOOR: f32 = 340.0;
+            let body = self.body_need.max(BODY_FLOOR);
+            let slack = avail - self.strip_h - body;
+            slack.clamp(88.0, (avail * 0.60).max(88.0))
+        };
+        self.console(ui, &p, console_h);
+        self.stacks_strip(ui, &p);
         self.settings_panel(ui, &p);
         self.body(ui, &p);
         self.about_window(ui, &p);
@@ -2055,12 +2433,16 @@ impl eframe::App for App {
         // edge entirely.
         if !self.sized_once {
             self.sized_once = true;
+            // A remembered size is the user's decision; clamping it against this
+            // monitor would silently undo it every launch.
+            if self.settings.window.is_none() {
             if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
                 let want = egui::vec2(
                     980.0_f32.min(monitor.x * 0.90),
                     860.0_f32.min(monitor.y * 0.85),
                 );
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
+            }
             }
         }
 
@@ -2164,7 +2546,30 @@ fn verb_button(ui: &mut egui::Ui, p: &Palette, label: &str, enabled: bool) -> eg
 /// "Ports 80/3306: 80 phpup — httpd (PID 45268) · …", plus whether either port
 /// is held by something that is not phpup (which is when Return to phpup is the
 /// only useful verb).
-fn switch_port_line(sw: &backend::SwitchPayload) -> (String, bool) {
+/// Which stack is holding the ports, as far as this payload knows: the recorded
+/// handover first, then the single registered root.
+fn switch_holder(sw: &backend::SwitchPayload) -> Option<String> {
+    if let Some(a) = sw.active.clone().filter(|a| !a.trim().is_empty()) {
+        return Some(a);
+    }
+    let mut aliases = sw.stack.iter().map(|s| s.alias.clone());
+    let first = aliases.next()?;
+    if aliases.next().is_none() {
+        Some(first)
+    } else {
+        None
+    }
+}
+
+fn switch_port_line(sw: &backend::SwitchPayload, hint: Option<&str>) -> (String, bool) {
+    // Name the stack that holds the ports, not the word "foreign": phpup
+    // recorded who it handed them to, and a listener whose image path cannot be
+    // read is still identifiable by that record.
+    let holder = switch_holder(sw)
+        // A failed call answers with an empty stack list, so the last stack we
+        // knew about is better than calling it "another stack".
+        .or_else(|| hint.map(|h| h.to_string()));
+
     let mut parts: Vec<String> = Vec::new();
     let mut foreign = false;
     for port in ["80", "3306"] {
@@ -2173,20 +2578,20 @@ fn switch_port_line(sw: &backend::SwitchPayload) -> (String, bool) {
                 if info.state == "foreign" {
                     foreign = true;
                 }
-                let state = if info.state.is_empty() {
-                    "unknown"
-                } else {
-                    info.state.as_str()
+                let state = match info.state.as_str() {
+                    "foreign" => holder.clone().unwrap_or_else(|| "another stack".to_string()),
+                    "" => "unknown".to_string(),
+                    other => other.to_string(),
                 };
                 match info.owner.as_deref().filter(|o| !o.trim().is_empty()) {
-                    Some(owner) => parts.push(format!("{port} {state} — {owner}")),
+                    Some(owner) => parts.push(format!("{port} {state} ({owner})")),
                     None => parts.push(format!("{port} {state}")),
                 }
             }
             None => parts.push(format!("{port} unknown")),
         }
     }
-    (format!("Ports 80/3306: {}", parts.join(" · ")), foreign)
+    (parts.join(" · "), foreign)
 }
 
 /// One console line per switch. The ports line already carries the detail, so
@@ -2208,7 +2613,7 @@ fn switch_summary(payload: &backend::SwitchPayload) -> String {
     if payload.changed {
         line.push_str(" · changed");
     }
-    line.push_str(&format!(" · {}", switch_port_line(payload).0));
+    line.push_str(&format!(" · {}", switch_port_line(payload, None).0));
     line
 }
 
@@ -2249,11 +2654,15 @@ fn card(ui: &mut egui::Ui, p: &Palette, title: &str, comp: &Component, kind: Por
             ui.horizontal(|ui| {
                 ui.label(RichText::new(title).size(13.5).strong().color(p.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // Every card answers the same question — is this thing usable
+                    // right now — so every card gets the same two colours. PHP and
+                    // phpMyAdmin are not processes, so "ready" plays the part of
+                    // "running", and a missing component is as red as a stopped one.
                     let (text, colour) = match comp.running {
                         Some(true) => ("running", p.ok),
                         Some(false) => ("stopped", p.err),
-                        None if comp.installed => ("ready", p.muted),
-                        None => ("not installed", p.muted),
+                        None if comp.installed => ("ready", p.ok),
+                        None => ("not installed", p.err),
                     };
                     let (rect, _) = ui.allocate_exact_size(Vec2::splat(9.0), egui::Sense::hover());
                     ui.painter().circle_filled(rect.center(), 3.5, colour);

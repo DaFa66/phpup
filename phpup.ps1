@@ -4,8 +4,8 @@
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-11-21
-#  Version: 2.5.4
+#  Date: 2026-11-22
+#  Version: 2.5.5
 # =======================================================================
 
 param(
@@ -28,7 +28,8 @@ param(
     [Alias('dry-run')]
     [switch]$DryRun,           # report the plan, change nothing
     [switch]$List,             # list registered foreign stacks
-    [switch]$Add               # register a stack by -Path, leave the ports alone
+    [switch]$Add,              # register a stack by -Path, leave the ports alone
+    [switch]$Remove            # drop a stack from the registry by -Path
 )
 
 # ---- Config -----------------------------------------------------------
@@ -181,12 +182,39 @@ function Get-ProcessesByName {
     return $found
 }
 
+function Test-OwnProcessesRunning {
+    # True when at least one process with these names belongs to *this* stack.
+    # A name alone is not proof: XAMPP ships httpd.exe and mysqld.exe too, and
+    # counting them made the cards claim phpup was up while XAMPP held the ports.
+    # An unreadable image path falls back to the handover record: while a foreign
+    # stack holds the ports, an unreadable httpd is not ours.
+    param([string[]]$Names, [string]$ServiceName)
+    $svcPid = $null
+    if ($ServiceName -and (Test-ServicesInstalled)) { $svcPid = Get-ServicePid $ServiceName }
+    $foreignActive = Get-ForeignActive
+    foreach ($proc in @(Get-ProcessesByName -Names $Names)) {
+        # Our own service, identified by the SCM rather than by its image path.
+        if ($svcPid -and $proc.Id -eq $svcPid) { return $true }
+        $exe = Get-ProcessExePath -OwnerProcessId $proc.Id
+        if ($exe) {
+            if ($exe -like "$BASE\*") { return $true }
+            continue
+        }
+        # Unreadable image path (elevated process): a recorded handover, or a
+        # binary that exists under a registered stack's root, means it is not ours.
+        if ($foreignActive) { continue }
+        if (Get-ForeignStackForProcess -Name $proc.ProcessName) { continue }
+        return $true
+    }
+    return $false
+}
+
 function Test-ApacheRunning {
-    return (@(Get-ProcessesByName -Names @('httpd')).Count -gt 0)
+    return (Test-OwnProcessesRunning -Names @('httpd') -ServiceName $SERVICE_APACHE)
 }
 
 function Test-MariaDbRunning {
-    return (@(Get-ProcessesByName -Names @('mysqld', 'mariadbd')).Count -gt 0)
+    return (Test-OwnProcessesRunning -Names @('mysqld', 'mariadbd') -ServiceName $SERVICE_MARIADB)
 }
 
 function Test-StackComplete {
@@ -377,9 +405,17 @@ function Save-Config {
 
         # Foreign stack registry (switch verb). Omitted = preserve whatever is
         # already on disk, so the ~10 existing call sites cannot wipe it. Same
-        # rule as MinSeries, and for the same reason: this function rebuilds
+        # rule as MinSeries, and for the same reason: this function builds
         # the object from scratch.
-        [array]$ForeignStacks = $null
+        [array]$ForeignStacks = $null,
+
+        # Which foreign stack currently holds ports 80/3306, if any. Set on a
+        # successful handover and cleared on the way back; it is the only record
+        # that phpup's stack is *stopped on purpose* rather than missing.
+        [object]$ForeignActive = $null,
+
+        # Distinguishes "clear the marker" from "caller said nothing".
+        [switch]$ClearForeignActive
     )
 
     $configFile = Get-ConfigFilePath
@@ -446,6 +482,23 @@ function Save-Config {
         }
     }
     if ($foreign.Count -gt 0) { $config.foreign_stacks = $foreign }
+
+    # Active handover marker. Explicit clear > explicit value > whatever was on
+    # disk, so an unrelated Save-Config cannot claim the ports were handed over.
+    if ($ClearForeignActive) {
+        $active = $null
+    }
+    elseif ($null -ne $ForeignActive) {
+        $active = $ForeignActive
+    }
+    else {
+        if (-not $existingConfig) { $existingConfig = Get-Config }
+        $active = $null
+        if ($existingConfig -and $existingConfig.PSObject.Properties['foreign_active']) {
+            $active = $existingConfig.foreign_active
+        }
+    }
+    if ($active) { $config.foreign_active = $active }
 
     Write-Utf8File $configFile (($config | ConvertTo-Json -Depth 4) + "`r`n")
 
@@ -3782,7 +3835,7 @@ function Get-ForeignAlias {
 function Set-ForeignStacks {
     # Single writer for the registry, so Save-Config's preservation rule only
     # has to be right in one place.
-    param([array]$Stacks, $Config)
+    param([array]$Stacks, $Config, [object]$Active, [switch]$ClearActive)
     if (-not $Config) { $Config = Get-Config }
 
     $minSeries  = $null
@@ -3796,7 +3849,22 @@ function Set-ForeignStacks {
         $registered = [bool]$Config.services_registered
     }
     Save-Config -InstallPath $BASE -Versions $versions -PathEntries $pathEntries `
-                -ServicesRegistered:$registered -MinSeries $minSeries -ForeignStacks @($Stacks)
+                -ServicesRegistered:$registered -MinSeries $minSeries -ForeignStacks @($Stacks) `
+                -ForeignActive $Active -ClearForeignActive:$ClearActive
+}
+
+function Get-ForeignActive {
+    # The stack that currently holds ports 80/3306 because phpup put it there,
+    # or $null. Evidence, not inference: written by the handover, removed by the
+    # way back.
+    param($Config)
+    if (-not $Config) { $Config = Get-Config }
+    if (-not $Config) { return $null }
+    if (-not $Config.PSObject.Properties['foreign_active']) { return $null }
+    $active = $Config.foreign_active
+    if (-not $active) { return $null }
+    if (-not $active.path) { return $null }
+    return $active
 }
 
 function Register-ForeignStack {
@@ -3830,7 +3898,11 @@ function Set-ForeignHandoverState {
     # If the path is not registered yet, add it: losing this record silently
     # would leave phpup's services disabled after a reboot with nothing to
     # restore them from, which is the worst failure this feature can produce.
-    param([string]$Path, $Saved, $Config)
+    #
+    # It also carries who holds the ports, so a handover stays ONE config write:
+    # two writes meant the second one rebuilt the registry from whatever
+    # Get-Config returned and could drop the record the first had just written.
+    param([string]$Path, $Saved, [object]$Active, [switch]$ClearActive, $Config)
     $updated = @()
     $found = $false
     foreach ($entry in @(Get-ForeignStacks $Config)) {
@@ -3852,7 +3924,7 @@ function Set-ForeignHandoverState {
             saved_start = $Saved
         }
     }
-    Set-ForeignStacks -Stacks $updated -Config $Config
+    Set-ForeignStacks -Stacks $updated -Config $Config -Active $Active -ClearActive:$ClearActive
 }
 
 function Get-PortOwnerPid {
@@ -3863,33 +3935,90 @@ function Get-PortOwnerPid {
     return [int](($line.ToString().Trim() -split '\s+')[-1])
 }
 
+function Get-ProcessImagePath {
+    # QueryFullProcessImageNameW through kernel32. This replaces a
+    # Get-CimInstance Win32_Process fallback: WMI autoloads a module and asks a
+    # provider that, with a real-time scanner hooking it, can block for minutes.
+    # A blocked call wedged the whole `status --watch` process hard enough that
+    # taskkill reported success and the process lived on. A kernel32 call either
+    # answers or returns an error, and costs microseconds either way.
+    param([int]$ProcessId)
+    if (-not ('Phpup.Native' -as [type])) {
+        try {
+            Add-Type -Namespace Phpup -Name Native -ErrorAction Stop -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError = true)]
+public static extern IntPtr OpenProcess(int access, bool inherit, int pid);
+[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+public static extern bool QueryFullProcessImageName(IntPtr handle, int flags, System.Text.StringBuilder buffer, ref int size);
+[DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool CloseHandle(IntPtr handle);
+'@
+        }
+        catch { return $null }
+    }
+
+    $handle = [IntPtr]::Zero
+    try {
+        # 0x1000 = PROCESS_QUERY_LIMITED_INFORMATION: what a non-elevated caller
+        # is allowed to ask for, and all that is needed to read the image path.
+        $handle = [Phpup.Native]::OpenProcess(0x1000, $false, $ProcessId)
+        if ($handle -eq [IntPtr]::Zero) { return $null }
+        $buffer = New-Object System.Text.StringBuilder 1024
+        $size = $buffer.Capacity
+        if ([Phpup.Native]::QueryFullProcessImageName($handle, 0, $buffer, [ref]$size)) {
+            return $buffer.ToString()
+        }
+        return $null
+    }
+    catch { return $null }
+    finally {
+        if ($handle -ne [IntPtr]::Zero) { [void][Phpup.Native]::CloseHandle($handle) }
+    }
+}
+
 function Get-ProcessExePath {
     param([int]$OwnerProcessId)
     if (-not $OwnerProcessId) { return $null }
     $proc = Get-Process -Id $OwnerProcessId -ErrorAction SilentlyContinue
     if (-not $proc) { return $null }
+
+    $key = "$OwnerProcessId"
+    try { $key = "$OwnerProcessId`:$($proc.StartTime.Ticks)" } catch { }
+    if (-not $script:EXE_PATH_CACHE) { $script:EXE_PATH_CACHE = @{} }
+    if ($script:EXE_PATH_CACHE.ContainsKey($key)) { return $script:EXE_PATH_CACHE[$key] }
+
     $exe = $null
     try { $exe = $proc.ExecutablePath } catch { }
-
     if (-not $exe) {
-        # Process.ExecutablePath comes back EMPTY (not an exception) for some
-        # processes even when we are elevated. Observed on Windows 11 with
-        # XAMPP's httpd.exe and mysqld.exe: the listener is visible, the name is
-        # visible, the image path is not. CIM reads it with admin rights, so use
-        # it as the fallback. ~200-400ms including module autoload, and only
-        # paid when the cheap read fails.
-        try {
-            $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $OwnerProcessId" -ErrorAction Stop
-            if ($cim) { $exe = $cim.ExecutablePath }
-        }
-        catch { }
+        # ExecutablePath comes back EMPTY (not an exception) for some processes
+        # even when we are elevated — observed with XAMPP's httpd.exe and
+        # mysqld.exe. Ask the kernel directly instead of the WMI provider.
+        $exe = Get-ProcessImagePath -ProcessId $OwnerProcessId
     }
+
+    $script:EXE_PATH_CACHE[$key] = $exe
     return $exe
 }
 
 function Get-PortOwnerExe {
     param([int]$Port)
     return (Get-ProcessExePath -OwnerProcessId (Get-PortOwnerPid -Port $Port))
+}
+
+function Get-ForeignStackForProcess {
+    # Which registered stack owns a process by *name*, for the case where the
+    # image path cannot be read at all (elevated listener, unelevated caller).
+    # Grounded in the filesystem: the binary has to exist under that root.
+    param([string]$Name, $Config)
+    if (-not $Name) { return $null }
+    if (-not $Config) { $Config = Get-Config }
+    $exe = "$Name.exe"
+    foreach ($entry in @(Get-ForeignStacks $Config)) {
+        foreach ($candidate in @("$($entry.path)\apache\bin\$exe", "$($entry.path)\mysql\bin\$exe")) {
+            if (Test-Path $candidate) { return $entry }
+        }
+    }
+    return $null
 }
 
 function Get-PortOwnerKind {
@@ -3913,7 +4042,27 @@ function Get-PortOwnerKind {
     }
 
     $exe = Get-ProcessExePath -OwnerProcessId $ownerPid
-    if (-not $exe) { return 'unknown' }
+    if (-not $exe) {
+        # An elevated listener hides its image path even from CIM, which is
+        # exactly the state a handover leaves behind: the foreign stack is up,
+        # and the shell looking at it is not elevated. Consult the handover
+        # record, then the registry, before falling back to 'unknown' — which
+        # told the user nothing and disabled every button that could undo it.
+        $procName = $null
+        try { $procName = (Get-Process -Id $ownerPid -ErrorAction Stop).ProcessName } catch { }
+        if ($procName) {
+            $active = Get-ForeignActive
+            if ($active) {
+                $root = [string]$active.path
+                if ((Test-Path "$root\apache\bin\$procName.exe") -or (Test-Path "$root\mysql\bin\$procName.exe")) {
+                    return 'foreign'
+                }
+            }
+            $owner = Get-ForeignStackForProcess -Name $procName
+            if ($owner) { return 'foreign' }
+        }
+        return 'unknown'
+    }
     if ($exe -like "$BASE\*") { return 'phpup' }
     if ($ForeignRoot -and ($ForeignRoot.Length -gt 0) -and ($exe -like "$ForeignRoot\*")) { return 'foreign' }
     return 'other'
@@ -4083,13 +4232,21 @@ function Switch-ToForeign {
             $holder = Get-PortOwner -Port $port
             $holderPath = Get-PortOwnerExe -Port $port
             $holderAlias = $null
+            $holderRoot = $null
             if ($holderPath) {
                 foreach ($entry in @(Get-ForeignStacks (Get-Config))) {
-                    if ($holderPath -like "$($entry.path)\*") { $holderAlias = $entry.alias }
+                    if ($holderPath -like "$($entry.path)\*") {
+                        $holderAlias = $entry.alias
+                        $holderRoot = $entry.path
+                    }
                 }
             }
-            if ($holderAlias) {
-                $blocked += "port $port is held by $holderAlias ($holderPath); switch back to phpup first"
+            if ($holderRoot) {
+                $named = $(if ($Stack.path) { $Stack.path } else { 'the stack you named' })
+                $blocked += "port $port is held by $holderRoot, not $named; run: switch --to phpup --path $holderRoot"
+            }
+            elseif ($holderPath) {
+                $blocked += "port $port is held by $holderPath; switch back to phpup first"
             }
             else {
                 $blocked += "port $port is held by $holder"
@@ -4119,19 +4276,56 @@ function Switch-ToForeign {
     }
 
     $saved = Get-PhpupServiceStartTypes
+
+    # A start type that could not be read cannot be restored, and `$null` is
+    # indistinguishable from "the service does not exist". Refuse before anything
+    # is stopped: a refused switch leaves a working stack, a lost start type
+    # leaves phpup disabled forever with nothing on disk saying why.
+    $unreadable = @()
+    if (-not $saved.apache)  { $unreadable += $SERVICE_APACHE }
+    if (-not $saved.mariadb) { $unreadable += $SERVICE_MARIADB }
+    if ($unreadable.Count -gt 0) {
+        return @{ code = 1; changed = $false; steps = $steps; warnings = $warnings;
+                  error = "Could not read the current start type of $($unreadable -join ' and ') (sc.exe qc failed), so it could not be restored afterwards. Nothing was changed." }
+    }
+
+    # Disable before stopping, and check the result: this is the only thing that
+    # stops phpup's stack coming back on reboot alongside the one taking the
+    # ports. A silent failure here is a double listener after the next restart.
+    if (Test-ServicesInstalled) {
+        $notDisabled = @()
+        if (-not (Set-ServiceStartType $SERVICE_APACHE 'disabled'))  { $notDisabled += $SERVICE_APACHE }
+        if (-not (Set-ServiceStartType $SERVICE_MARIADB 'disabled')) { $notDisabled += $SERVICE_MARIADB }
+        if ($notDisabled.Count -gt 0) {
+            # Put back whatever did stick, so a refused handover is a no-op.
+            $null = Set-ServiceStartType $SERVICE_APACHE $saved.apache
+            $null = Set-ServiceStartType $SERVICE_MARIADB $saved.mariadb
+            return @{ code = 1; changed = $false; steps = $steps; warnings = $warnings;
+                      error = "Could not disable $($notDisabled -join ' and ') at boot; nothing was changed." }
+        }
+    }
+
+    # PATH is not part of the handover, by design: the switch moves ports and
+    # boot state, never the user's environment. Say where the binaries are
+    # instead, because `php -v` in a fresh shell still answers with phpup's.
+    $warnings += "PATH still resolves php and mysql to phpup; use $($Stack.path)\php\php.exe and $($Stack.path)\mysql\bin\mysql.exe while $($Stack.path) holds the ports."
+
     $null = Stop-WebStackServices 6>$null
 
-    if (Test-ServicesInstalled) {
-        $null = Set-ServiceStartType $SERVICE_APACHE 'disabled'
-        $null = Set-ServiceStartType $SERVICE_MARIADB 'disabled'
-    }
-    Set-ForeignHandoverState -Path $Stack.path -Saved $saved -Config (Get-Config)
+    Set-ForeignHandoverState -Path $Stack.path -Saved $saved -Active ([ordered]@{
+        alias = (Get-ForeignAlias $Stack.path)
+        path  = $Stack.path
+        since = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+    }) -Config (Get-Config)
 
     if (-not (Wait-PortState -Ports $ports -State 'free' -TimeoutSeconds 20)) {
         $held = @()
         foreach ($port in $ports) {
             if (Test-TcpPortListening -Port $port) { $held += "port $port held by $(Get-PortOwner -Port $port)" }
         }
+        # The marker was written with the record above; nothing was handed over,
+        # so take it back rather than claiming a stack holds ports it never got.
+        Set-ForeignHandoverState -Path $Stack.path -Saved $saved -ClearActive -Config (Get-Config)
         return @{ code = 5; changed = $false; steps = $steps; warnings = @(); error = "Ports did not fall: $($held -join '; ')" }
     }
 
@@ -4163,7 +4357,27 @@ function Switch-ToPhpup {
         $kind = Get-PortOwnerKind -Port $port -ForeignRoot $Stack.path
         $kinds += $kind
         if ($kind -eq 'other' -or $kind -eq 'unknown') {
-            $blocked += "port $port is held by $(Get-PortOwner -Port $port)"
+            # Another registered root may be holding it. Name that root and the
+            # command that would work: "held by httpd (PID n)" is not actionable,
+            # and C:\xampp / D:\xampp share the alias 'xampp', so a caller can
+            # easily name the wrong one.
+            $holder = Get-PortOwner -Port $port
+            $holderPath = Get-PortOwnerExe -Port $port
+            $holderRoot = $null
+            if ($holderPath) {
+                foreach ($entry in @(Get-ForeignStacks (Get-Config))) {
+                    if ($holderPath -like "$($entry.path)\*") { $holderRoot = $entry.path }
+                }
+            }
+            if ($holderRoot) {
+                $blocked += "port $port is held by $holderRoot, not $($Stack.path); run: switch --to phpup --path $holderRoot"
+            }
+            elseif ($holderPath) {
+                $blocked += "port $port is held by $holderPath; close it, then run switch --to phpup again"
+            }
+            else {
+                $blocked += "port $port is held by $holder"
+            }
         }
     }
     if ($blocked.Count -gt 0) {
@@ -4232,7 +4446,7 @@ function Switch-ToPhpup {
         return @{ code = 1; changed = $true; steps = $steps; warnings = $warnings; error = 'phpup did not come back on 80 and 3306. Run the dashboard to see which component failed.' }
     }
 
-    Set-ForeignHandoverState -Path $Stack.path -Saved $null -Config (Get-Config)
+    Set-ForeignHandoverState -Path $Stack.path -Saved $null -ClearActive -Config (Get-Config)
 
     $after = @()
     foreach ($port in $ports) {
@@ -4256,12 +4470,18 @@ function Resolve-SwitchTarget {
     }
 
     $stacks = @(Get-ForeignStacks $Config)
-    foreach ($entry in $stacks) {
-        if ($entry.alias -eq $To) {
-            $stack = Test-ForeignStack -Path $entry.path
-            if (-not $stack) { return @{ error = "Registered stack '$To' is gone from $($entry.path)." } }
-            return @{ stack = $stack; alias = $entry.alias }
-        }
+    # C:\xampp and D:\xampp are both aliased 'xampp'. Picking the first match
+    # silently hands the ports to whichever was registered first, which is how a
+    # request to switch back to phpup ended up naming the wrong root.
+    $hits = @($stacks | Where-Object { $_.alias -eq $To })
+    if ($hits.Count -gt 1) {
+        $paths = @($hits | ForEach-Object { $_.path })
+        return @{ error = "'$To' matches $($hits.Count) registered stacks: $($paths -join ', '). Pass --path to say which one." }
+    }
+    if ($hits.Count -eq 1) {
+        $stack = Test-ForeignStack -Path $hits[0].path
+        if (-not $stack) { return @{ error = "Registered stack '$To' is gone from $($hits[0].path)." } }
+        return @{ stack = $stack; alias = $hits[0].alias }
     }
 
     if ($stacks.Count -eq 0) {
@@ -4275,12 +4495,30 @@ function Resolve-RunningForeignStack {
     # Used by --to phpup, where the point is to stop whatever foreign stack is
     # actually holding the ports rather than whatever happens to be listed.
     param($Config)
+    # The handover record first: it survives an unelevated shell, where the
+    # image path of an elevated listener cannot be read at all.
+    $active = Get-ForeignActive $Config
+    if ($active) {
+        $recorded = Test-ForeignStack -Path $active.path
+        if ($recorded) { return $recorded }
+    }
     foreach ($port in @(3306, 80)) {
+        $ownerPid = Get-PortOwnerPid -Port $port
+        if (-not $ownerPid) { continue }
         $exe = Get-PortOwnerExe -Port $port
-        if (-not $exe) { continue }
-        foreach ($entry in @(Get-ForeignStacks $Config)) {
-            if ($exe -like "$($entry.path)\*") { return (Test-ForeignStack -Path $entry.path) }
+        if ($exe) {
+            foreach ($entry in @(Get-ForeignStacks $Config)) {
+                if ($exe -like "$($entry.path)\*") { return (Test-ForeignStack -Path $entry.path) }
+            }
+            continue
         }
+        # No readable image path (elevated listener, unelevated caller). Fall back
+        # to the process name against each registered root, which is how the port
+        # was attributed in the first place.
+        $procName = $null
+        try { $procName = (Get-Process -Id $ownerPid -ErrorAction Stop).ProcessName } catch { }
+        $entry = Get-ForeignStackForProcess -Name $procName -Config $Config
+        if ($entry) { return (Test-ForeignStack -Path $entry.path) }
     }
     return $null
 }
@@ -4303,12 +4541,21 @@ function New-SwitchPayload {
     # A client parsing one shape must not have to know which branch it called.
     $stackList = @()
     if ($null -ne $Stack) { $stackList = @($Stack) }
+    $holderRecord = Get-ForeignActive
     return [ordered]@{
         schema   = $script:STATUS_SCHEMA
         ok       = $Ok
         code     = $Code
         action   = 'switch'
         to       = $To
+        # Which stack holds the ports right now, or null. A client should not
+        # have to infer it from port states it cannot attribute.
+        # Read once: each Get-ForeignActive re-reads and re-parses config.json, and
+        # this payload is built on every panel poll.
+        active   = $(if ($holderRecord) { [string]$holderRecord.alias } else { $null })
+        # The same name can be registered twice (C:\xampp and D:\xampp), so the
+        # alias alone does not identify the holder. The path does.
+        active_path = $(if ($holderRecord) { [string]$holderRecord.path } else { $null })
         dry_run  = $DryRun
         changed  = $Changed
         stack    = $stackList
@@ -4338,6 +4585,7 @@ function Invoke-CliSwitch {
         [switch]$DryRun,
         [switch]$List,
         [switch]$Add,
+        [switch]$Remove,
         [switch]$Json,
         [switch]$Quiet
     )
@@ -4389,6 +4637,66 @@ function Invoke-CliSwitch {
         $payload = New-SwitchPayload -Ok $true -Code $null -To $addAlias -Steps @($step) `
                                      -Warnings @() -Errors @() -Changed (-not [bool]$DryRun) `
                                      -DryRun ([bool]$DryRun) -Stack $addRows -Ports $null
+        return @{ code = 0; payload = $payload }
+    }
+
+    # --remove: drop a root from the registry. Refused while that root holds the
+    # ports: the recorded handover is the only thing that gets phpup back, and
+    # forgetting who holds them strands the user with a stopped stack.
+    if ($Remove) {
+        $want = $Path
+        $stacksNow = @(Get-ForeignStacks $config)
+        if ([string]::IsNullOrWhiteSpace($want)) {
+            if ([string]::IsNullOrWhiteSpace($To)) {
+                return @{ code = 2; payload = (New-SwitchPayload -Ok $false -Code 'usage' -To $null `
+                    -Steps @() -Warnings @() -Errors @('Remove needs -Path <dir> (or -To <alias> when it is the only one)') -Changed $false `
+                    -DryRun ([bool]$DryRun) -Stack $null -Ports $null) }
+            }
+            $hits = @($stacksNow | Where-Object { $_.alias -eq $To })
+            if ($hits.Count -gt 1) {
+                $paths = @($hits | ForEach-Object { $_.path })
+                return @{ code = 2; payload = (New-SwitchPayload -Ok $false -Code 'usage' -To $To `
+                    -Steps @() -Warnings @() -Errors @("'$To' matches $($hits.Count) registered stacks: $($paths -join ', '). Pass --path to say which one.") -Changed $false `
+                    -DryRun ([bool]$DryRun) -Stack $null -Ports $null) }
+            }
+            if ($hits.Count -eq 0) {
+                return @{ code = 2; payload = (New-SwitchPayload -Ok $false -Code 'usage' -To $To `
+                    -Steps @() -Warnings @() -Errors @("No registered stack called '$To'.") -Changed $false `
+                    -DryRun ([bool]$DryRun) -Stack $null -Ports $null) }
+            }
+            $want = $hits[0].path
+        }
+
+        $gone = $null
+        $keep = @()
+        foreach ($entry in $stacksNow) {
+            if ($entry.path.TrimEnd('\') -eq $want.TrimEnd('\')) { $gone = $entry } else { $keep += $entry }
+        }
+        if (-not $gone) {
+            return @{ code = 2; payload = (New-SwitchPayload -Ok $false -Code 'usage' -To $null `
+                -Steps @() -Warnings @() -Errors @("'$want' is not a registered stack.") -Changed $false `
+                -DryRun ([bool]$DryRun) -Stack $null -Ports $null) }
+        }
+
+        $activeNow = Get-ForeignActive
+        if ($activeNow -and $activeNow.path -and ($activeNow.path.TrimEnd('\') -eq $gone.path.TrimEnd('\'))) {
+            return @{ code = 5; payload = (New-SwitchPayload -Ok $false -Code 'active_stack' -To $gone.alias `
+                -Steps @() -Warnings @() -Errors @("$($gone.path) holds the ports right now; run switch --to phpup first, then remove it.") -Changed $false `
+                -DryRun ([bool]$DryRun) -Stack $null -Ports $null) }
+        }
+
+        if (-not $DryRun) {
+            Set-ForeignStacks -Stacks $keep -Config $config
+            $config = Get-Config
+        }
+        $removeRows = @()
+        foreach ($entry in @(Get-ForeignStacks $config)) {
+            $removeRows += [ordered]@{ alias = $entry.alias; path = $entry.path; kind = $entry.kind }
+        }
+        $removeStep = if ($DryRun) { "would remove $($gone.alias) at $($gone.path)" } else { "removed $($gone.alias) at $($gone.path)" }
+        $payload = New-SwitchPayload -Ok $true -Code $null -To $null -Steps @($removeStep) `
+                                     -Warnings @() -Errors @() -Changed (-not [bool]$DryRun) `
+                                     -DryRun ([bool]$DryRun) -Stack $removeRows -Ports $null
         return @{ code = 0; payload = $payload }
     }
 
@@ -4516,13 +4824,17 @@ function Write-CliSwitchHuman {
 
 $script:STATUS_SCHEMA  = 1
 $script:VERSION_CACHE  = $null
+# Image paths keyed by process id and start time. A PID can be recycled, so the
+# start time is part of the key; a hit costs a hashtable lookup instead of a
+# kernel call, and the watch loop asks for the same two listeners every tick.
+$script:EXE_PATH_CACHE = @{}
 
 function Get-ScriptVersion {
     # The header comment owns the version when the script is a file on disk.
     # A streamed run (`irm ... | iex`) has no file, so the literal below is the
     # fallback and must be bumped together with the header.
     if ($script:VERSION_CACHE) { return $script:VERSION_CACHE }
-    $script:VERSION_CACHE = '2.5.4'
+    $script:VERSION_CACHE = '2.5.5'
     if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) {
         foreach ($line in (Get-Content $PSCommandPath -TotalCount 12 -ErrorAction SilentlyContinue)) {
             if ($line -match '^#\s*Version:\s*(\S+)') { $script:VERSION_CACHE = $matches[1]; break }
@@ -5055,7 +5367,7 @@ function Invoke-CliVerb {
                 $script:CliExitCode = 2
                 return
             }
-            $result = Invoke-CliSwitch -To $To -Path $SwitchPath -DryRun:$DryRun -List:$List -Add:$Add -Json:$Json -Quiet:$Quiet
+            $result = Invoke-CliSwitch -To $To -Path $SwitchPath -DryRun:$DryRun -List:$List -Add:$Add -Remove:$Remove -Json:$Json -Quiet:$Quiet
             if ($Json) { Write-CliJson $result.payload }
             elseif (-not $Quiet) { Write-CliSwitchHuman $result.payload }
             $script:CliExitCode = $result.code

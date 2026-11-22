@@ -120,7 +120,7 @@ toolchain. It reads the CLI contract below and drives the same verbs, so the scr
 single source of truth for installation, updates and version switching.
 
 **Download:** Windows x64 zip with `install.ps1`:
-[phpup panel 0.2.0 beta](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.0-beta-win).
+[phpup panel 0.2.1 beta](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.1-beta-win).
 It is a pre-release, so GitHub keeps it out of the *Latest* slot; that link, or
 **Releases -> show more**, is the way in.
 
@@ -138,7 +138,7 @@ It is a pre-release, so GitHub keeps it out of the *Latest* slot; that link, or
   prompts) with `phpup - as administrator` in the title bar
 
 Download the beta from [Releases](https://github.com/DaFa66/phpup/releases)
-(`phpup-panel-0.2.0-beta-win-x64.zip`), extract it and run `\.install.ps1`. That copies the exe into
+(`phpup-panel-0.2.1-beta-win-x64.zip`), extract it and run `\.install.ps1`. That copies the exe into
 `<install_path>\bin` and needs no elevation. Or build it yourself:
 
 ```
@@ -156,8 +156,8 @@ task with `/RL HIGHEST` instead, and use one or the other rather than both:
 schtasks /Create /TN "phpup panel" /TR "\"C:\phpup\bin\phpup-panel.exe\"" /SC ONLOGON /RL HIGHEST /F
 ```
 
-The panel is at **0.2.0 beta**, downloadable from
-[Releases](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.0-beta-win). Full build notes,
+The panel is at **0.2.1 beta**, downloadable from
+[Releases](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.1-beta-win). Full build notes,
 settings and troubleshooting: [`panel/README.md`](panel/README.md).
 
 ## Scripted use (CLI)
@@ -184,7 +184,7 @@ phpup help
   `null`, never omitted — and additive only.
 
 `install`, `update`, `delete` and `doctor` are reserved for v2, once they have non-interactive
-modes. `switch` is implemented now: released on both platforms in 2.5.4 and 1.3.3.
+modes. `switch` is implemented now: released on both platforms in 2.5.5 and 1.3.4.
 The full contract — schema, stream rules, semantics — is in
 [`docs/CLI.md`](docs/CLI.md).
 

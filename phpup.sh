@@ -5,14 +5,14 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-11-21
-#  Version: 1.3.3
+#  Date: 2026-11-22
+#  Version: 1.3.4
 # ============================================================
 
 # ---- Config -------------------------------------------------
 REMOTE_URL='https://raw.githubusercontent.com/DaFa66/phpup/HEAD/phpup.sh'
 # Runtime version (the script is usually streamed, so no file to grep).
-PHPUP_VERSION="1.3.3"
+PHPUP_VERSION="1.3.4"
 BASE_DIR="${HOME}/phpup"
 DOC_ROOT="${BASE_DIR}/www"
 LOGS_DIR="${BASE_DIR}/logs"
@@ -609,7 +609,6 @@ php_via_apache() {
 }
 
 # ---- PHP-FPM Helpers (apt) ----------------------------------
-fpm_service()       { echo "php${1}-fpm"; }
 fpm_socket()        { echo "/run/php/php${1}-fpm.sock"; }
 apache_fpm_conf()   { echo "/etc/apache2/conf-available/phpup-php-fpm.conf"; }
 
@@ -3917,33 +3916,6 @@ check_restore_data() {
     fi
 }
 
-# ---- Offline Check ------------------------------------------
-check_offline() {
-    # Quick connectivity check
-    if ! curl -s --connect-timeout 2 https://github.com &>/dev/null; then
-        printf "${YELLOW}⚠ No internet connection detected.${RESET}\n"
-        if [[ $USE_PORTS == 1 ]]; then
-            printf "${YELLOW}MacPorts compiles everything from source — an online install is required.${RESET}\n"
-        else
-            printf "${YELLOW}Homebrew may use cached bottles if available.${RESET}\n"
-        fi
-        printf "\n"
-        return 1
-    fi
-
-    # Check for cached bottles
-    local cache_dir
-    cache_dir=$(brew --cache 2>/dev/null)
-    if [[ -d "$cache_dir" ]] && [[ "$(ls -A "$cache_dir" 2>/dev/null)" ]]; then
-        local cache_count
-        cache_count=$(find "$cache_dir" -type f 2>/dev/null | wc -l | tr -d ' ')
-        if [[ "$cache_count" -gt 0 ]]; then
-            printf "${CYAN}ℹ %s cached bottle(s) available for offline use${RESET}\n" "$cache_count"
-            printf "\n"
-        fi
-    fi
-    return 0
-}
 
 # One-time notice for an Intel Mac keeping the Homebrew backend: why brew is slow
 # here, and how to move to the route that is still bottled. Shown once (marker
@@ -4025,6 +3997,10 @@ detect_backend() {
 # An empty saved_* means no handover is outstanding for that stack.
 
 FOREIGN_REGISTRY="${BASE_DIR}/foreign_stacks.tsv"
+# Which root holds 80/3306 because phpup handed them over. A record, not
+# an inference: written by the handover, removed by the way back, the same
+# contract phpup.ps1 keeps in config.json so both scripts answer `active`.
+FOREIGN_ACTIVE="${BASE_DIR}/foreign_active"
 FOREIGN_ROOT=""
 FOREIGN_KIND=""
 FOREIGN_APACHE=""
@@ -4083,7 +4059,9 @@ foreign_registry_set() {
     local alias="$1" path="$2" kind="$3" sa="$4" sm="$5" tmp
     tmp=$(mktemp "${TMPDIR:-/tmp}/phpup-foreign.XXXXXX") || return 1
     {
-        foreign_registry_lines | awk -F'\t' -v a="$alias" '$1!=a'
+        # Same leaf name in two places is legal; replacing by alias alone would
+        # silently drop the other root's saved start types.
+        foreign_registry_lines | awk -F'\t' -v a="$alias" -v p="$path" '!($1==a && $2==p)'
         printf '%s\t%s\t%s\t%s\t%s\n' "$alias" "$path" "$kind" "$sa" "$sm"
     } > "$tmp" && mv "$tmp" "$FOREIGN_REGISTRY" || return 1
     # An elevated switch must not leave the registry unreadable to the account that
@@ -4091,6 +4069,38 @@ foreign_registry_set() {
     # out of their own config and every later `switch --to <alias>` says "Unknown
     # target". Hand it back to whoever invoked the sudo.
     if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        chown "$SUDO_USER" "$FOREIGN_REGISTRY" 2>/dev/null || true
+    fi
+}
+
+foreign_active_path() {
+    [[ -f "$FOREIGN_ACTIVE" ]] || return 0
+    local p
+    p=$(head -1 "$FOREIGN_ACTIVE" 2>/dev/null || true)
+    printf '%s' "${p%/}"
+}
+
+foreign_active_set() {
+    local path="${1%/}"
+    [[ -z "$path" ]] && return 0
+    printf '%s\n' "$path" > "$FOREIGN_ACTIVE" || return 1
+    if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        chown "$SUDO_USER" "$FOREIGN_ACTIVE" 2>/dev/null || true
+    fi
+}
+
+foreign_active_clear() {
+    rm -f "$FOREIGN_ACTIVE" 2>/dev/null || true
+}
+
+foreign_registry_remove() {
+    # foreign_registry_remove <path> — drop one root, keep the others.
+    local path="$1" tmp
+    [[ -z "$path" ]] && return 1
+    tmp=$(mktemp "${TMPDIR:-/tmp}/phpup-foreign.XXXXXX") || return 1
+    foreign_registry_lines | awk -F'\t' -v p="${path%/}" '$2!=p' > "$tmp" &&
+        mv "$tmp" "$FOREIGN_REGISTRY" || return 1
+    if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
         chown "$SUDO_USER" "$FOREIGN_REGISTRY" 2>/dev/null || true
     fi
 }
@@ -4329,8 +4339,15 @@ emit_switch_payload() {
     # `ports` stays nullable on both (it is absent on a usage error).
     local stack_json="${SW_STACK:-}"
     [[ -z "$stack_json" || "$stack_json" == "null" ]] && stack_json='[]'
-    printf '{"schema":1,"ok":%s,"code":%s,"action":"switch","to":"%s","dry_run":%s,"changed":%s,"stack":%s,"ports":%s,"steps":%s,"warnings":%s,"errors":%s}\n' \
+    local active_path="" active=""
+    active_path=$(foreign_active_path)
+    if [[ -n "$active_path" ]]; then
+        active=$(foreign_alias_for "$active_path")
+    fi
+    printf '{"schema":1,"ok":%s,"code":%s,"action":"switch","to":"%s","active":%s,"active_path":%s,"dry_run":%s,"changed":%s,"stack":%s,"ports":%s,"steps":%s,"warnings":%s,"errors":%s}\n' \
         "$(jbool "${SW_OK:-0}")" "$(jstr "${SW_CODE:-}")" "$(json_escape "${SW_TO:-}")" \
+        "$(if [[ -n "$active" ]]; then printf '"%s"' "$(json_escape "$active")"; else printf 'null'; fi)" \
+        "$(if [[ -n "$active_path" ]]; then printf '"%s"' "$(json_escape "$active_path")"; else printf 'null'; fi)" \
         "$(jbool "${SW_DRY:-0}")" "$(jbool "${SW_CHANGED:-0}")" \
         "$stack_json" "${SW_PORTS:-null}" \
         "$(switch_json_array "${SW_STEPS:-}")" "$(switch_json_array "${SW_WARN:-}")" "$(switch_json_array "${SW_ERR:-}")" >&3
@@ -4384,6 +4401,7 @@ CLI_PATH=""
 CLI_DRY=0
 CLI_LIST=0
 CLI_ADD=0
+CLI_REMOVE=0
 
 json_escape() {
     local s="$1"
@@ -4922,6 +4940,16 @@ switch_disable_phpup_boot() {
     [[ $USE_APT == 1 ]] || return 0
     sudo systemctl disable apache2 >/dev/null 2>&1 || true
     sudo systemctl disable mariadb >/dev/null 2>&1 || true
+    # A refused disable used to look identical to a successful one. Read it back:
+    # a service still enabled comes up at boot and fights the foreign stack for
+    # the same two ports.
+    local still_enabled=()
+    [[ "$(systemctl is-enabled apache2 2>/dev/null)" == "enabled" ]] && still_enabled+=("apache2")
+    [[ "$(systemctl is-enabled mariadb 2>/dev/null)" == "enabled" ]] && still_enabled+=("mariadb")
+    if [[ ${#still_enabled[@]} -gt 0 ]]; then
+        SW_WARN="$SW_WARN
+${still_enabled[*]} is still enabled at boot; it may start on the next reboot and take the ports back."
+    fi
 }
 
 switch_restore_phpup_boot() {
@@ -5024,7 +5052,23 @@ start $alias apache and mariadb"
         return
     fi
 
-    foreign_registry_set "$alias" "$FOREIGN_ROOT" "$FOREIGN_KIND" "$(switch_boot_state apache2)" "$(switch_boot_state mariadb)"
+    # This write is what makes phpup recoverable: it records the start types the
+    # handover is about to disable. If it fails, stop now — before phpup's own
+    # stack is switched off — or the user is left with a dead stack after the
+    # next reboot and nothing on disk explaining why.
+    if ! foreign_registry_set "$alias" "$FOREIGN_ROOT" "$FOREIGN_KIND" "$(switch_boot_state apache2)" "$(switch_boot_state mariadb)"; then
+        switch_fail 1 action_failed "Could not write the stack registry at $FOREIGN_REGISTRY, so phpup's start types could not be recorded. Nothing was changed."
+        return
+    fi
+    if ! foreign_active_set "$FOREIGN_ROOT"; then
+        SW_WARN="$SW_WARN
+The holder record at $FOREIGN_ACTIVE could not be written; the panel will report this stack as unknown until it is switched back."
+    fi
+    # PATH is not part of the handover, by design: the switch moves ports and
+    # boot state, never the shell environment, so `php -v` still answers with
+    # phpup's build. Name the binaries instead.
+    SW_WARN="$SW_WARN
+PATH still resolves php and mysql to phpup; use $FOREIGN_ROOT/bin/php and $FOREIGN_ROOT/bin/mysql while $FOREIGN_ROOT holds the ports."
     stop_services
     switch_disable_phpup_boot
 
@@ -5150,6 +5194,7 @@ start phpup apache and mariadb"
     fi
 
     foreign_registry_clear_state "$alias"
+    foreign_active_clear
     SW_OK=1; SW_CHANGED=1
     if [[ $CLI_JSON == 1 ]]; then emit_switch_payload; else switch_human_ports; switch_human_tail; fi
     CLI_EXIT=0
@@ -5191,7 +5236,10 @@ cmd_cli_switch() {
             SW_OK=1; SW_CHANGED=0
             SW_STEPS="would register $add_alias at $FOREIGN_ROOT"
         else
-            foreign_registry_set "$add_alias" "$FOREIGN_ROOT" "$FOREIGN_KIND" "" ""
+            if ! foreign_registry_set "$add_alias" "$FOREIGN_ROOT" "$FOREIGN_KIND" "" ""; then
+                switch_fail 1 action_failed "Could not write the stack registry at $FOREIGN_REGISTRY; nothing was registered."
+                return
+            fi
             SW_OK=1; SW_CHANGED=1
             SW_STEPS="registered $add_alias at $FOREIGN_ROOT"
         fi
@@ -5200,6 +5248,55 @@ cmd_cli_switch() {
             emit_switch_payload
         else
             printf 'Registered %s at %s\n' "$add_alias" "$FOREIGN_ROOT" >&3
+        fi
+        CLI_EXIT=0; return
+    fi
+
+    # --remove: drop a root from the registry. Refused while it holds the ports,
+    # because that record is what gets phpup its stack back.
+    if [[ $CLI_REMOVE == 1 ]]; then
+        local want="$CLI_PATH"
+        if [[ -z "$want" && -n "$CLI_TO" ]]; then
+            local hits n
+            hits=$(foreign_registry_lines | awk -F'\t' -v a="$CLI_TO" '$1==a {print $2}')
+            n=$(printf '%s\n' "$hits" | grep -c . || true)
+            if [[ "$n" -gt 1 ]]; then
+                switch_fail 2 usage "'$CLI_TO' matches $n registered stacks: $(printf '%s' "$hits" | tr '\n' ',' | sed 's/,$//'). Pass --path to say which one."
+                return
+            fi
+            if [[ "$n" -eq 0 ]]; then
+                switch_fail 2 usage "No registered stack called '$CLI_TO'."
+                return
+            fi
+            want="$hits"
+        fi
+        if [[ -z "$want" ]]; then
+            switch_fail 2 usage "Remove needs --path <dir>"
+            return
+        fi
+        local gone
+        gone=$(foreign_registry_lines | awk -F'\t' -v p="${want%/}" '$2==p {print $1}' | head -1)
+        if [[ -z "$gone" ]]; then
+            switch_fail 2 usage "'$want' is not a registered stack."
+            return
+        fi
+        if [[ -f "$FOREIGN_ACTIVE" ]] && [[ "$(foreign_active_path)" == "${want%/}" ]]; then
+            switch_fail 5 active_stack "$want holds the ports right now; run switch --to phpup first, then remove it."
+            return
+        fi
+        if [[ $CLI_DRY == 1 ]]; then
+            SW_OK=1; SW_CHANGED=0
+            SW_STEPS="would remove $gone at $want"
+        else
+            foreign_registry_remove "$want"
+            SW_OK=1; SW_CHANGED=1
+            SW_STEPS="removed $gone at $want"
+        fi
+        SW_TO=""; SW_PORTS="null"; SW_STACK=$(switch_registry_json)
+        if [[ $CLI_JSON == 1 ]]; then
+            emit_switch_payload
+        else
+            printf 'Removed %s at %s\n' "$gone" "$want" >&3
         fi
         CLI_EXIT=0; return
     fi
@@ -5250,6 +5347,7 @@ parse_args() {
             --version) CLI_VERB=version; CLI_MODE=1 ;;
             --to|-To) shift; CLI_TO="${1:-}" ;;
             --add|-Add) CLI_ADD=1 ;;
+            --remove|-Remove) CLI_REMOVE=1 ;;
             --to=*) CLI_TO="${1#*=}" ;;
             --path|-Path) shift; CLI_PATH="${1:-}" ;;
             --path=*) CLI_PATH="${1#*=}" ;;

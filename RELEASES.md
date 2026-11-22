@@ -13,7 +13,7 @@ and fixes move the last digit.
   [1.3.1-nix]` did. There is no rule that forces the untouched script to move, which would put a
   version on code that never changed.
 - **Last digit — patch.** Bug fixes, corrections and small behaviour changes. Most releases are
-  these: `2.5.3` → `2.5.4`, `1.3.2` → `1.3.3`.
+  these: `2.5.4` → `2.5.5`, `1.3.3` → `1.3.4`.
 - **Middle digit — feature milestone.** A release that genuinely adds a capability worth calling
   out: a new backend, a cross-series PHP upgrade, platform parity, a new component.
 - **First digit — structural.** Rebrand, breaking change, or a platform dropped.
@@ -82,6 +82,8 @@ git push origin :refs/tags/v2.6.0-win :refs/tags/v1.4.0-nix
 
 | Tag | Date | Milestone |
 |---|---|---|
+| `v2.5.5-win` / `v1.3.4-nix` | 2026-11-22 | The handover refuses rather than half-committing: an unreadable service start type, a refused boot-disable or a failed registry write now stops the switch before phpup is touched; `sc.exe`-free process image paths (WMI off the polling path); `--remove`, alias ambiguity and `active_path` in the payload; one config write per handover |
+| `panel-v0.2.1-beta-win` | 2026-11-22 | Output pane takes the slack under the cards, a `Links` menu, `About` back in the header, green/red chips on all four cards, a refresh slider that actually re-polls, and a panel that reopens where it was left |
 | `v2.5.4-win` / `v1.3.3-nix` | 2026-11-21 | `switch --add` registers a stack without touching the ports; the switch payload is one shape on both platforms (`to` a string, `stack` an array); the handover logic is covered by the harness (34 → 42 checks on a POSIX host); `foreign_exe_running`, an absolute brew path and the last two silenced `brew services start` calls |
 | `panel-v0.2.0-beta-win` | 2026-11-21 | Stacks block: registered XAMPP roots with one-click handover of 80/3306 and back, and a path field that registers further installs |
 | `v1.3.2-nix` | 2026-11-20 | `switch` lands on macOS/Linux — hand 80/3306 to XAMPP and back, with the registry in `foreign_stacks.tsv`; live testing fixed attribution without root, `brew services` as the invoking user, a free-ports no-op, registry ownership after an elevated run, and the `sbin/mysqld` version probe |

@@ -1,6 +1,6 @@
 [package]
 name = "phpup-panel"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Desktop control panel for phpup"
 homepage = "https://phpup.org"
@@ -15,6 +15,18 @@ tray-icon = "0.24"
 # Native folder picker for registering a stack. Windows uses IFileDialog through
 # windows-sys; the GTK/portal backends are not needed, so no default features.
 rfd = { version = "0.15", default-features = false }
+
+# A job object is the only thing that makes a child die with the panel even when
+# the panel is force-killed: closing the job handle takes its processes with it.
+# Without it a closed panel left `status --watch` behind, still polling and
+# writing to a pipe nobody was reading.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [profile.release]
 opt-level = 2

@@ -39,7 +39,9 @@ Check (($bom[0] -eq 0xEF) -and ($bom[1] -eq 0xBB) -and ($bom[2] -eq 0xBF)) 'phpu
 $wanted = @(
     'Test-ForeignStack', 'Get-ForeignStacks', 'Get-ForeignAlias', 'Set-ForeignStacks',
     'Register-ForeignStack', 'Set-ForeignHandoverState',
-    'Get-PortOwnerPid', 'Get-ProcessExePath', 'Get-PortOwnerKind', 'Get-PortOwner', 'Get-PortOwnerExe',
+    'Get-ForeignActive', 'Get-ForeignStackForProcess',
+    'Get-PortOwnerPid', 'Get-ProcessExePath', 'Get-ProcessImagePath',
+    'Get-PortOwnerKind', 'Get-PortOwner', 'Get-PortOwnerExe',
     'Wait-PortState', 'Get-ServiceStartType', 'Set-ServiceStartType',
     'Get-PhpupServiceStartTypes', 'Start-ForeignStack', 'Stop-ForeignStack',
     'Switch-ToForeign', 'Switch-ToPhpup', 'Resolve-SwitchTarget',
@@ -53,6 +55,10 @@ foreach ($def in $defs) {
         $loaded += $def.Name
     }
 }
+# Sections stub Get-ProcessImagePath to fake an unreadable image path; keep the
+# real body so Reset-Harness can put it back (a leaked stub caused two false
+# failures on the first run of section 10).
+$script:REAL_IMAGE_PATH = (Get-Command Get-ProcessImagePath -ErrorAction SilentlyContinue).ScriptBlock
 $missing = @($wanted | Where-Object { $loaded -notcontains $_ })
 Check ($missing.Count -eq 0) "extracted $($loaded.Count)/$($wanted.Count) real function bodies (missing: $($missing -join ', '))"
 
@@ -166,9 +172,15 @@ Set-Item -Path function:sc.exe -Value {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$ScArgs)
     $script:SC_CALLS += ,($ScArgs -join ' ')
     if ($ScArgs[0] -eq 'qc') {
+        # A real sc.exe prints nothing when the query is refused; the script must
+        # treat that as "unknown", never as "no start type".
+        if ($script:SC_QC_FAILS) { return @() }
         return @("SERVICE_NAME: $($ScArgs[1])", "        START_TYPE         : $($script:SC_START_TEXT)")
     }
     if ($ScArgs[0] -eq 'config') {
+        # Refused: exit non-zero and leave the start type alone, so the read-back
+        # in Set-ServiceStartType sees the old value and reports failure.
+        if ($script:SC_CONFIG_REFUSES) { return @('[SC] OpenService FAILED 5:') }
         $type = $ScArgs[$ScArgs.Count - 1]
         switch ($type) {
             'disabled'     { $script:SC_START_TEXT = '4   DISABLED' }
@@ -189,6 +201,8 @@ Set-Item -Path function:Write-Utf8File -Value {
 Set-Item -Path function:Get-Config -Value { return $script:CONFIG_CANNED }
 
 function Reset-Harness {
+    $script:SC_QC_FAILS = $false
+    $script:SC_CONFIG_REFUSES = $false
     $script:PHASE = 'before'
     $script:KILLED = @()
     $script:START_PROCESS = @()
@@ -212,10 +226,19 @@ function Reset-Harness {
         return $null
     }
     Set-Item -Path function:Get-ServicePid -Value { param([string]$ServiceName) return $null }
-    # Get-ProcessExePath falls back to CIM when ExecutablePath is empty, which is
-    # the live behaviour for XAMPP's processes. Stub it so the harness never
-    # queries the real WMI.
-    Set-Item -Path function:Get-CimInstance -Value { param($ClassName, $Filter, $ErrorAction) return $null }
+    if ($script:REAL_IMAGE_PATH) {
+        Set-Item -Path function:Get-ProcessImagePath -Value $script:REAL_IMAGE_PATH
+    }
+    # Nothing on the port-ownership path may touch WMI: a provider call can block
+    # for minutes, and a blocked one wedged a live `status --watch` hard enough
+    # that taskkill could not end it. Counted and throwing, so a regression fails
+    # a check instead of hanging the suite.
+    $script:CIM_CALLS = 0
+    Set-Item -Path function:Get-CimInstance -Value {
+        param($ClassName, $Filter, $ErrorAction)
+        $script:CIM_CALLS++
+        throw 'Get-CimInstance must not be used on the port-ownership path'
+    }
     Set-Item -Path function:Test-TcpPortListening -Value {
         param([int]$Port)
         switch ($script:PHASE) {
@@ -287,15 +310,19 @@ Set-Item -Path function:Get-ServicePid -Value {
 Check ((Get-PortOwnerKind -Port 80 -ForeignRoot 'C:\xampp') -eq 'phpup') 'a service PID with an unreadable path still resolves to phpup via the SCM'
 
 # The live failure of 2026-11-18: Process.ExecutablePath comes back EMPTY (not an
-# exception) for XAMPP's httpd/mysqld even elevated, so only CIM can identify it.
+# exception) for XAMPP's httpd/mysqld even elevated, so the kernel is asked
+# directly. The WMI provider is never consulted here: a blocked provider call
+# wedged a live watch process hard enough that taskkill could not end it.
 Reset-Harness
 $script:PROCS = @([pscustomobject]@{ Id = 7101; ProcessName = 'httpd'; ExecutablePath = '' })
 Set-Item -Path function:Get-PortOwnerPid -Value { param([int]$Port) return 7101 }
-Set-Item -Path function:Get-CimInstance -Value {
-    param($ClassName, $Filter, $ErrorAction)
-    return [pscustomobject]@{ ExecutablePath = 'C:\xampp\apache\bin\httpd.exe' }
+Set-Item -Path function:Get-ProcessImagePath -Value {
+    param([int]$ProcessId)
+    if ($ProcessId -eq 7101) { return 'C:\xampp\apache\bin\httpd.exe' }
+    return $null
 }
-Check ((Get-PortOwnerKind -Port 80 -ForeignRoot 'C:\xampp') -eq 'foreign') 'an empty ExecutablePath is resolved through CIM'
+Check ((Get-PortOwnerKind -Port 80 -ForeignRoot 'C:\xampp') -eq 'foreign') 'an empty ExecutablePath is resolved through the kernel, not WMI'
+Check ($script:CIM_CALLS -eq 0) 'that lookup never reached the WMI provider'
 Reset-Harness
 $script:PROCS = @([pscustomobject]@{ Id = 7102; ProcessName = 'mysqld'; ExecutablePath = '' })
 Set-Item -Path function:Get-PortOwnerPid -Value {
@@ -373,6 +400,7 @@ $disabled = @($script:SC_CALLS | Where-Object { $_ -like '*config*disabled*' })
 Check ($disabled.Count -eq 2) "both phpup services set to disabled (got $($disabled.Count))"
 Check ($script:CONFIG_JSON -like '*foreign_stacks*') 'the registry was written to config'
 Check ($script:CONFIG_JSON -like '*saved_start*') 'the release point recorded the service start types'
+Check ($script:CONFIG_JSON -like '*foreign_active*') 'the holder was recorded in the same write'
 Check ($script:CONFIG_JSON -like '*8.6.0RC7*') 'existing version data survived the config write'
 Check ($to.warnings.Count -ge 1) 'the reboot caveat is disclosed'
 
@@ -416,6 +444,8 @@ $delayed = @($script:SC_CALLS | Where-Object { $_ -like '*delayed-auto*' })
 Check ($delayed.Count -eq 1) 'the delayed-auto start type was restored rather than flattened to auto'
 Check ($script:CONFIG_JSON -like '*foreign_stacks*') 'the registry survived the switch back'
 Check (-not ($script:CONFIG_JSON -like '*saved_start*')) 'the release point was cleared after switching back'
+Check (-not ($script:CONFIG_JSON -like '*foreign_active*')) 'the recorded holder was cleared too'
+Check (($script:CONFIG_JSON -like '*foreign_stacks*')) 'the registry itself survived both writes'
 
 # ======================================================================
 Write-Host ""
@@ -435,6 +465,10 @@ Check ($script:CONFIG_JSON -like '*13.0.2*') 'version data still survives an unr
 Write-Host ""
 Write-Host "9. Refusals"
 Reset-Harness
+$script:PROCS = @(
+    [pscustomobject]@{ Id = 4001; ProcessName = 'httpd';    ExecutablePath = 'C:\phpuppachein\httpd.exe' },
+    [pscustomobject]@{ Id = 4002; ProcessName = 'mariadbd'; ExecutablePath = 'C:\phpup\mariadbin\mariadbd.exe' }
+)
 $script:PHASE = 'before'
 $script:PROCS = @([pscustomobject]@{ Id = 9101; ProcessName = 'httpd'; ExecutablePath = 'C:\other\nginx.exe' })
 Set-Item -Path function:Get-PortOwnerPid -Value { param([int]$Port) return 9101 }
@@ -453,6 +487,60 @@ $noAdmin = Switch-ToForeign -Stack $fakeStack -Alias 'xampp'
 Check ($noAdmin.code -eq 4) "handover without admin returns 4 (got $($noAdmin.code))"
 Check ($script:STOP_PHPUP_CALLED -eq $false) 'an unelevated handover stops nothing'
 Set-Item -Path function:Test-CliIsAdmin -Value { return $true }
+
+Reset-Harness
+# sc.exe qc answers with nothing: the start type is unknown, so it cannot be
+# restored afterwards. Disabling the services anyway would leave phpup dead after
+# the next reboot with nothing recording what its start types were.
+$script:PHASE = 'before'
+$script:PROCS = @(
+    [pscustomobject]@{ Id = 4001; ProcessName = 'httpd';    ExecutablePath = 'C:\phpuppachein\httpd.exe' },
+    [pscustomobject]@{ Id = 4002; ProcessName = 'mariadbd'; ExecutablePath = 'C:\phpup\mariadbin\mariadbd.exe' }
+)
+$script:SC_QC_FAILS = $true
+$unreadable = Switch-ToForeign -Stack $fakeStack -Alias 'xampp'
+Check ($unreadable.code -eq 1) "an unreadable start type is refused (got $($unreadable.code))"
+Check ($unreadable.error -like '*start type*') 'the refusal says the start type could not be read'
+Check ($script:STOP_PHPUP_CALLED -eq $false) 'it stopped nothing'
+Check (-not ($script:CONFIG_JSON -like '*saved_start*')) 'it recorded no handover'
+$script:SC_QC_FAILS = $false
+
+Reset-Harness
+# sc.exe config is refused: the read-back still says AUTO_START, so the disable
+# did not happen. Stopping phpup now would leave two stacks able to start at boot.
+$script:PHASE = 'before'
+$script:PROCS = @(
+    [pscustomobject]@{ Id = 4001; ProcessName = 'httpd';    ExecutablePath = 'C:\phpuppachein\httpd.exe' },
+    [pscustomobject]@{ Id = 4002; ProcessName = 'mariadbd'; ExecutablePath = 'C:\phpup\mariadbin\mariadbd.exe' }
+)
+$script:SC_CONFIG_REFUSES = $true
+$stuck = Switch-ToForeign -Stack $fakeStack -Alias 'xampp'
+Check ($stuck.code -eq 1) "a refused disable is refused as a handover (got $($stuck.code))"
+Check ($stuck.error -like '*Could not disable*') 'the refusal names what could not be disabled'
+Check ($script:STOP_PHPUP_CALLED -eq $false) 'a refused disable stopped nothing'
+Check (-not ($script:CONFIG_JSON -like '*saved_start*')) 'a refused disable recorded no handover'
+$script:SC_CONFIG_REFUSES = $false
+
+# ======================================================================
+Write-Host ""
+Write-Host "10. Image paths without WMI"
+Reset-Harness
+$script:CIM_CALLS = 0
+# Reset-Harness shadows Get-Process with a fake process table; this section needs
+# the real one to resolve this process's own image path.
+Remove-Item -Path function:Get-Process -ErrorAction SilentlyContinue
+
+$direct = Get-ProcessImagePath -ProcessId $PID
+Check ([bool]$direct -and $direct -like '*.exe') "kernel32 read this process's image path ($direct)"
+Check ($script:CIM_CALLS -eq 0) 'reading an image path did not reach the WMI provider'
+
+$through = Get-ProcessExePath -OwnerProcessId $PID
+Check ([bool]$through -and $through -like '*.exe') 'Get-ProcessExePath resolved a real process'
+Check ($script:CIM_CALLS -eq 0) 'Get-ProcessExePath did not reach the WMI provider'
+Check ($script:EXE_PATH_CACHE.Count -ge 1) 'the answer was cached'
+$cached = Get-ProcessExePath -OwnerProcessId $PID
+Check ($cached -eq $through) 'a second call answers from the cache'
+Check (($null -eq (Get-ProcessExePath -OwnerProcessId 2147483))) 'a pid that does not exist answers null'
 
 # ---- summary -----------------------------------------------------------
 Remove-Item -Recurse -Force $script:SCRATCH -ErrorAction SilentlyContinue

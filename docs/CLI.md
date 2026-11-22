@@ -5,8 +5,8 @@ drive phpup without the interactive dashboard.
 
 Non-goal: a daemon, a socket API, or a rewrite of the install/update engine.
 
-**Status:** implemented — `phpup.ps1` 2.5.4 on Windows and `phpup.sh` 1.3.3 on macOS/Linux.
-The `switch` verb (section 13) is released on both platforms as of 2.5.4 and 1.3.3, including
+**Status:** implemented — `phpup.ps1` 2.5.5 on Windows and `phpup.sh` 1.3.4 on macOS/Linux.
+The `switch` verb (section 13) is released on both platforms as of 2.5.5 and 1.3.4, including
 `--add` for registering a root without handing the ports over. The Windows desktop panel in
 [`panel/`](../panel/README.md) consumes this
 contract; it is the reason the contract exists.
@@ -52,14 +52,14 @@ Reserved for v2, do not alias these names: `install`, `update`, `delete`, `docto
 Both scripts answer `version`, and with `--json` they emit a single object and nothing else:
 
 ```json
-{ "schema": 1, "version": "2.5.4", "script": "ps1" }
+{ "schema": 1, "version": "2.5.5", "script": "ps1" }
 ```
 
 `script` is `ps1` on Windows and `sh` on macOS/Linux, so a caller can tell which
 implementation answered. The same pair appears as `phpup.version` and `phpup.script` in
 the `status` payload (section 6), and it is required on both scripts — consumers must not
 infer the running version from the components. Each interactive dashboard prints it in the
-banner beside the wordmark (`phpup v1.3.3`), and the desktop panel shows it in its About popup.
+banner beside the wordmark (`phpup v1.3.4`), and the desktop panel shows it in its About popup.
 
 ## 3. Flags
 
@@ -116,7 +116,7 @@ Rationale for 0 on `status` when the stack is absent: the probe succeeded, "abse
 {
   "schema": 1,
   "generated_at": "2026-10-20T12:34:56+11:00",
-  "phpup": { "version": "2.5.4", "script": "ps1" },
+  "phpup": { "version": "2.5.5", "script": "ps1" },
   "platform": {
     "os": "windows",
     "arch": "x86_64",
@@ -320,7 +320,7 @@ GUI cadence: run `--watch 2` (or 3) as the poll source and take a full `status -
 
 ## 10. Versioning and docs
 
-- `phpup.ps1` → **2.5.4**, `phpup.sh` → **1.3.3** (patch increments; the middle digit is
+- `phpup.ps1` → **2.5.5**, `phpup.sh` → **1.3.4** (patch increments; the middle digit is
   reserved for a feature milestone).
 - CHANGELOG entries, newest first.
 - README gains a short **Automation** section with the two invocation lines above.
@@ -362,7 +362,7 @@ GUI cadence: run `--watch 2` (or 3) as the poll source and take a full `status -
 ## 13. `switch` (stack handover)
 
 **Status:** implemented in `phpup.ps1` (Windows) and `phpup.sh` (macOS, Linux), released in
-2.5.4 and 1.3.3. `--to off` is not implemented on either script.
+2.5.5 and 1.3.4. `--to off` is not implemented on either script.
 
 **Purpose:** hand ports 80 and 3306 to a foreign stack (XAMPP) and take them back, so a user
 can close phpup and work in the stack their older projects already live in. It moves port
@@ -375,6 +375,7 @@ phpup.ps1 switch --to xampp --path C:\xampp     # register on first use, then ha
 phpup.ps1 switch --to xampp                     # hand over to the registered alias
 phpup.ps1 switch --to phpup                     # take the ports back
 phpup.ps1 switch --list                         # registered foreign stacks
+phpup.ps1 switch --remove --path C:\xampp       # unregister a root (refused while it holds the ports)
 phpup.ps1 switch --to xampp --dry-run           # print the plan, change nothing
 ```
 
@@ -388,18 +389,36 @@ reports the alias it would use and writes nothing. `to` is always a string and `
 an array in the payload, on both platforms, so a client parses one shape; `ports` is null only
 when the command failed before probing.
 
+`--remove` unregisters a root. It refuses while that root holds the ports —
+`C:\xampp holds the ports right now; run switch --to phpup first, then remove it.` — because
+removing the record while it owns 80/3306 would leave a stack listening that no payload can
+name. Two roots can share a leaf name (`C:\xampp` and `D:\xampp` are both `xampp`), so
+`--to <alias>` refuses an ambiguous alias and names the candidates:
+`'xampp' matches 2 registered stacks: D:\xampp, C:\xampp. Pass --path to say which one.`
+The payload carries `active_path` for exactly this reason: the alias identifies a name, the
+path identifies the stack.
+
+A handover also refuses rather than half-committing. If the registry write fails, if a service
+start type cannot be read (`sc.exe qc` returning nothing) or cannot be disabled, the switch
+stops before phpup's own stack is touched and reports `action_failed` — a refused switch leaves
+a working stack, whereas a silently lost start type leaves phpup disabled with nothing on disk
+recording why.
+
 ### Payload
 
 ```json
 {
   "schema": 1, "ok": true, "code": null, "action": "switch",
   "to": "xampp", "dry_run": false, "changed": true,
-  "stack": {
-    "alias": "xampp", "path": "C:\\xampp", "kind": "xampp",
-    "apache":  { "version": "2.4.58",  "pid": 1234, "port": 80 },
-    "mariadb": { "version": "10.4.32", "pid": 5678, "port": 3306 },
-    "php": "8.2.19", "htdocs": "C:\\xampp\\htdocs"
-  },
+  "active": "xampp", "active_path": "C:\\xampp",
+  "stack": [
+    {
+      "alias": "xampp", "path": "C:\\xampp", "kind": "xampp",
+      "apache":  { "version": "2.4.58",  "pid": 1234, "port": 80 },
+      "mariadb": { "version": "10.4.32", "pid": 5678, "port": 3306 },
+      "php": "8.2.19", "htdocs": "C:\\xampp\\htdocs"
+    }
+  ],
   "ports": {
     "80":   { "state": "foreign", "owner": "httpd (PID 1234)" },
     "3306": { "state": "foreign", "owner": "mysqld (PID 5678)" }
@@ -410,7 +429,9 @@ when the command failed before probing.
 }
 ```
 
-`ports.*.state` is one of `phpup`, `foreign`, `other`, `unknown`, `free`. `unknown` means
+`active` is the alias the handover record names, or null when phpup holds the ports;
+`active_path` is the root that actually holds them. `ports.*.state` is one of `phpup`,
+`foreign`, `other`, `unknown`, `free`. `unknown` means
 something is listening but its executable cannot be identified, and the verb will refuse to
 act on it.
 

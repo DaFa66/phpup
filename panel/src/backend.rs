@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 // ---------------------------------------------------------------- payload
@@ -260,10 +261,10 @@ where
 }
 
 /// `stack` arrives as an array from the list branches (`switch`, `switch --add`,
-/// `switch --list`) and as a single object from the handover branches of
-/// phpup.ps1 2.5.4 and phpup.sh 1.3.3. Both shapes are in the wild, so accept
-/// either: refusing the object turned a perfectly good "elevation required"
-/// payload into "unreadable payload" and hid the reason from the user.
+/// `switch --list`) and as a single object from the handover branches of older
+/// builds, before the payload was made uniform. Both shapes are in the wild, so
+/// accept either: refusing the object turned a perfectly good "elevation
+/// required" payload into "unreadable payload" and hid the reason from the user.
 fn stack_list<'de, D>(d: D) -> Result<Vec<ForeignStack>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -291,6 +292,16 @@ pub struct SwitchPayload {
     /// optional: a bare String makes every Unix payload unparseable.
     #[serde(default)]
     pub to: Option<String>,
+    /// Which stack holds ports 80/3306 right now, as recorded by the handover.
+    /// Null when phpup holds them. Lets the block name the stack instead of
+    /// showing "unknown" for a listener it cannot inspect.
+    #[serde(default)]
+    pub active: Option<String>,
+    /// The holder's root. `active` alone cannot identify it: C:\xampp and
+    /// D:\xampp are both aliased "xampp", so a client that only knows the alias
+    /// has to guess — and guessed wrong once, refusing a legitimate way back.
+    #[serde(default)]
+    pub active_path: Option<String>,
     #[serde(default, deserialize_with = "bool_or_false")]
     pub changed: bool,
     #[serde(default, deserialize_with = "bool_or_false")]
@@ -328,7 +339,15 @@ pub enum Event {
     Status(Box<Status>),
     /// A `switch` invocation finished and produced a payload. Boxed: the
     /// payload is several times larger than any other variant.
-    Switch(Box<SwitchPayload>),
+    ///
+    /// `from_action` says whether the user asked for this or the panel polled.
+    /// Without it a snapshot that happened to be in flight when a button was
+    /// pressed could take the action's place: the error vanished, the busy flag
+    /// cleared early, and the block reported a snapshot as if it were the result.
+    Switch {
+        payload: Box<SwitchPayload>,
+        from_action: bool,
+    },
     /// One line of human output from phpup (its stderr channel).
     Log(String),
     /// The elevated instance is starting, so this one should shut down.
@@ -619,16 +638,130 @@ fn normalize(path: PathBuf) -> PathBuf {
     canonical
 }
 
+// --------------------------------------------------------------------- job
+
+/// A job object every child is assigned to. Windows terminates every process in
+/// a job when its last handle closes, which happens even when the panel itself is
+/// ended abruptly - the one case where `Drop` and `shutdown()` never run.
+#[cfg(windows)]
+mod job {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    /// Opaque handle, kept as an integer so `Backend` stays `Send + Sync`.
+    #[derive(Clone, Copy)]
+    pub struct Job(isize);
+
+    impl Job {
+        pub fn create() -> Option<Job> {
+            unsafe {
+                let handle: HANDLE = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle == 0 {
+                    return None;
+                }
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let ok = SetInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformation,
+                    &mut info as *mut _ as *const c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if ok == 0 {
+                    let _ = CloseHandle(handle);
+                    return None;
+                }
+                Some(Job(handle as isize))
+            }
+        }
+
+        pub fn assign(&self, child: &Child) {
+            unsafe {
+                let _ =
+                    AssignProcessToJobObject(self.0 as HANDLE, child.as_raw_handle() as HANDLE);
+            }
+        }
+    }
+}
+
 // ----------------------------------------------------------------- backend
 
 pub struct Backend {
     pub script: PathBuf,
     pub interval: u32,
+    /// Children are assigned here so the OS ends them with the panel.
+    #[cfg(windows)]
+    job: Option<job::Job>,
+    /// Every child this backend starts, so the panel can take them with it.
+    /// A forced close used to leave `status --watch` and any switch run behind,
+    /// each holding a conhost and, in the switch's case, still probing ports.
+    children: Arc<Mutex<Vec<u32>>>,
+    /// The `status --watch` process. Its interval arrives as an argument, so a
+    /// new rate means replacing this child, not editing it.
+    watch: Arc<Mutex<Option<u32>>>,
 }
 
 impl Backend {
     pub fn new(script: PathBuf, interval: u32) -> Self {
-        Self { script, interval }
+        #[cfg(windows)]
+        let job = job::Job::create();
+        Self {
+            script,
+            interval,
+            #[cfg(windows)]
+            job,
+            children: Arc::new(Mutex::new(Vec::new())),
+            watch: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Stop only the status stream, leaving any switch run alone.
+    pub fn stop_watch(&self) {
+        let id = match self.watch.lock() {
+            Ok(mut w) => w.take(),
+            Err(_) => None,
+        };
+        let Some(id) = id else { return };
+        if let Ok(mut list) = self.children.lock() {
+            list.retain(|c| *c != id);
+        }
+        let mut cmd = Command::new("taskkill");
+        cmd.arg("/F").arg("/T").arg("/PID").arg(id.to_string());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        let _ = cmd.status();
+    }
+
+    /// Kill everything this backend started. Called when the window closes, so a
+    /// closed panel leaves no phpup processes behind.
+    pub fn shutdown(&self) {
+        let ids: Vec<u32> = match self.children.lock() {
+            Ok(mut list) => list.drain(..).collect(),
+            Err(_) => return,
+        };
+        for id in ids {
+            let mut cmd = Command::new("taskkill");
+            cmd.arg("/F").arg("/T").arg("/PID").arg(id.to_string());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+            let _ = cmd.status();
+        }
     }
 
     /// Long-lived `status --watch`, parsed line by line. One process instead of
@@ -636,6 +769,10 @@ impl Backend {
     pub fn spawn_watch(&self, tx: Sender<Event>) {
         let script = self.script.clone();
         let interval = self.interval.to_string();
+        let children = self.children.clone();
+        let watch = self.watch.clone();
+        #[cfg(windows)]
+        let job = self.job;
         thread::spawn(move || {
             let mut cmd = build_command(
                 &script,
@@ -650,6 +787,15 @@ impl Backend {
                     return;
                 }
             };
+            if let Some(job) = job {
+                job.assign(&child);
+            }
+            if let Ok(mut list) = children.lock() {
+                list.push(child.id());
+            }
+            if let Ok(mut w) = watch.lock() {
+                *w = Some(child.id());
+            }
 
             // phpup writes its human chatter to stderr; forward it to the
             // console pane so failures are visible without a terminal.
@@ -694,6 +840,9 @@ impl Backend {
 
     pub fn spawn_action(&self, verb: &'static str, tx: Sender<Event>) {
         let script = self.script.clone();
+        let children = self.children.clone();
+        #[cfg(windows)]
+        let job = self.job;
         thread::spawn(move || {
             let mut cmd = build_command(&script, verb, &["--json".to_string()]);
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -704,6 +853,12 @@ impl Backend {
                     return;
                 }
             };
+            if let Some(job) = job {
+                job.assign(&child);
+            }
+            if let Ok(mut list) = children.lock() {
+                list.push(child.id());
+            }
 
             // Stream stderr to the console as it arrives; stdout is the JSON
             // payload and is captured whole.
@@ -756,7 +911,11 @@ impl Backend {
     /// path serves listing, adding and handing the ports over.
     pub fn spawn_switch(&self, args: Vec<String>, tx: Sender<Event>) {
         let script = self.script.clone();
+        let children = self.children.clone();
+        #[cfg(windows)]
+        let job = self.job;
         thread::spawn(move || {
+            let no_args = args.is_empty();
             let mut extra = args;
             extra.push("--json".to_string());
             let mut cmd = build_command(&script, "switch", &extra);
@@ -768,6 +927,12 @@ impl Backend {
                     return;
                 }
             };
+            if let Some(job) = job {
+                job.assign(&child);
+            }
+            if let Ok(mut list) = children.lock() {
+                list.push(child.id());
+            }
 
             // Same stderr handling as spawn_action, so a refused switch explains
             // itself in the console pane rather than vanishing.
@@ -796,7 +961,11 @@ impl Backend {
                     let exit = o.status.code().unwrap_or(-1);
                     match parse_switch_payload(&stdout, exit) {
                         Ok(payload) => {
-                            let _ = tx.send(Event::Switch(Box::new(payload)));
+                            // No arguments is the snapshot; anything else was asked for.
+                            let _ = tx.send(Event::Switch {
+                                payload: Box::new(payload),
+                                from_action: !no_args,
+                            });
                         }
                         Err(msg) => {
                             let _ = tx.send(Event::Failed(msg));
@@ -830,14 +999,22 @@ fn first_line(text: &str) -> String {
 /// name the exit code and the head of the text or the console shows nothing.
 fn parse_switch_payload(stdout: &str, exit: i32) -> Result<SwitchPayload, String> {
     // Out-File can prepend a BOM; serde_json rejects it as an unexpected char.
-    let trimmed = stdout.trim().trim_start_matches('\u{feff}');
-    match serde_json::from_str::<SwitchPayload>(trimmed) {
+    let text = stdout.trim().trim_start_matches('\u{feff}').trim();
+    // The PowerShell console host writes warnings to stdout when stdout is a
+    // pipe rather than a console, so an elevated run can hand back
+    // "WARNING: Waiting for service 'phpup_Apache' to start..." in front of the
+    // payload. Take the outermost JSON object and ignore the rest.
+    let candidate = match (text.find('{'), text.rfind('}')) {
+        (Some(first), Some(last)) if last > first => &text[first..=last],
+        _ => text,
+    };
+    match serde_json::from_str::<SwitchPayload>(candidate) {
         Ok(payload) => Ok(payload),
         Err(e) => {
-            let raw = if trimmed.is_empty() {
+            let raw = if candidate.is_empty() {
                 format!("no payload on stdout (exit {exit})")
             } else {
-                format!("exit {exit}: {}", first_line(trimmed))
+                format!("exit {exit}: {}", first_line(candidate))
             };
             Err(format!("switch: unreadable payload ({e}) — {raw}"))
         }
@@ -889,20 +1066,33 @@ pub fn spawn_switch_elevated(script: PathBuf, args: Vec<String>, tx: Sender<Even
             return;
         }
 
+        // NOT `-Wait`: Start-Process -Wait waits for the process *tree*, and the
+        // tree includes the httpd/mysqld the handover just started — which never
+        // exit. The panel then sat on "refreshing…" with buttons disabled while
+        // the switch had in fact succeeded. Wait on this one process only.
         let shell = format!(
             "$p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden \
-             -Wait -PassThru -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',{}; \
+             -PassThru -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',{}; \
+             if ($null -eq $p) {{ exit 4 }}; \
+             if (-not $p.WaitForExit(900000)) {{ exit 3 }}; \
              exit $p.ExitCode",
             q(&wrapper.display().to_string())
         );
-        let status = Command::new("powershell.exe")
-            .arg("-NoProfile")
-            .arg("-NonInteractive")
-            .arg("-WindowStyle")
-            .arg("Hidden")
-            .arg("-Command")
-            .arg(shell)
-            .status();
+        let status = {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            // A GUI process spawning a console app gets a console window unless it
+            // says otherwise — the same reason run_elevated sets this.
+            Command::new("powershell.exe")
+                .arg("-NoProfile")
+                .arg("-NonInteractive")
+                .arg("-WindowStyle")
+                .arg("Hidden")
+                .arg("-Command")
+                .arg(shell)
+                .creation_flags(CREATE_NO_WINDOW)
+                .status()
+        };
 
         let text = std::fs::read_to_string(&out).unwrap_or_default();
         let _ = std::fs::remove_file(&out);
@@ -911,7 +1101,10 @@ pub fn spawn_switch_elevated(script: PathBuf, args: Vec<String>, tx: Sender<Even
         match status {
             Ok(s) if s.success() => match parse_switch_payload(&text, 0) {
                 Ok(payload) => {
-                    let _ = tx.send(Event::Switch(Box::new(payload)));
+                    let _ = tx.send(Event::Switch {
+                        payload: Box::new(payload),
+                        from_action: true,
+                    });
                 }
                 Err(msg) => {
                     let _ = tx.send(Event::Failed(msg));
@@ -1262,6 +1455,31 @@ mod tests {
         let p = parse_switch_payload(&body, 0).expect("bom tolerated");
         assert!(p.ok);
         assert_eq!(p.stack.len(), 1);
+    }
+
+    /// Observed from a real elevated handover: Start-Service wrote
+    /// "WARNING: Waiting for service 'phpup_Apache (phpup_Apache)' to start..."
+    /// to the same stream as the payload, first.
+    #[test]
+    fn a_warning_before_the_payload_is_ignored() {
+        let body = format!(
+            "\u{feff}WARNING: Waiting for service 'phpup_Apache (phpup_Apache)' to start...{}",
+            WIN
+        );
+        let p = parse_switch_payload(&body, 0).expect("noise tolerated");
+        assert!(p.ok);
+    }
+
+    /// The warning can also land after the payload, since it is written whenever
+    /// the service finally reports in.
+    #[test]
+    fn a_warning_after_the_payload_is_ignored() {
+        let body = format!(
+            "{}WARNING: Waiting for service 'phpup_MariaDB (phpup_MariaDB)' to start...",
+            WIN
+        );
+        let p = parse_switch_payload(&body, 0).expect("noise tolerated");
+        assert!(p.ok);
     }
 
     #[test]

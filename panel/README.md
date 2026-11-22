@@ -5,7 +5,7 @@ no Node toolchain.
 
 Project site: **[phpup.org](https://phpup.org)**.
 
-**Panel version 0.2.0, beta** — Windows x64. Tagged and downloadable as a pre-release.
+**Panel version 0.2.1, beta** — Windows x64. Tagged and downloadable as a pre-release.
 It is a beta: expect rough edges, and read the known limits in the release notes before
 trusting it with a stack you care about.
 
@@ -16,8 +16,8 @@ source of truth for installation, updates and version switching.
 
 ## Install from a release
 
-Download `phpup-panel-0.2.0-beta-win-x64.zip` from
-[Releases](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.0-beta-win), extract it, then run:
+Download `phpup-panel-0.2.1-beta-win-x64.zip` from
+[Releases](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.1-beta-win), extract it, then run:
 
 ```
 .\install.ps1              # installs into <install_path>\bin, default C:\phpup\bin
@@ -34,14 +34,15 @@ To build it yourself instead, see Build below.
 
 - Windows 10/11 (x64). The panel is Windows-first; it builds on macOS and Linux but service
   control and elevation are Windows paths today.
-- phpup 2.5.4+ for the CLI verbs. On an older `phpup.ps1` the panel says "not usable" and
+- phpup 2.5.5+ for the CLI verbs. On an older `phpup.ps1` the panel says "not usable" and
   waits rather than guessing.
 - To compile: Rust stable and the MSVC linker from Visual Studio Build Tools.
 
 ## What works
 
 - **Component cards** — Apache, PHP, MariaDB, phpMyAdmin: version, running state, PIDs,
-  ports, SAPI and registered service names, refreshed from `status --watch`.
+  ports, SAPI and registered service names, refreshed from `status --watch`. Every chip
+  uses the same two colours: green for running or ready, red for stopped or missing.
 - **Stacks** — the registered XAMPP roots, with `Switch to` handing ports 80/3306 over and
   `Return to phpup` taking them back; `Browse…` registers a further install through
   `switch --add` using the native folder picker, without touching the ports. Needs a `phpup.ps1`
@@ -54,11 +55,17 @@ To build it yourself instead, see Build below.
   names the process holding the port, 3 says the stack is not installed.
 - **Output pane** — every line phpup writes to stderr plus panel events: monospace
   scrollback capped at 2000 lines, follow/pause that releases when you scroll up, copy,
-  clear, resizable split.
+  clear. It is sized from the space the cards leave rather than a fixed height, so the
+  window never carries an empty band under the cards; short windows scroll the cards
+  instead.
 - **Administrator mode** — per-action by default; optional always-elevated panel with
   `phpup - as administrator` in the title bar. See below.
 - **Settings slide-out** — Status, Services, Appearance, Zoom, Window, Startup, Privileges,
-  Source, Refresh. Closes with Escape, the Close button, or a click outside.
+  Source, Refresh. Closes with Escape, the Close button, or a click outside. The Refresh
+  slider takes effect at once: the status stream is restarted at the new rate instead of
+  waiting for the panel to re-attach.
+- **Window geometry** — size, position and maximised state are saved to `panel.json` as you
+  resize, and restored on the next launch.
 - **Service startup type** — per registered service, `Auto` or `Disabled`, applied with
   `sc.exe config <name> start=`. Settings owns boot behaviour only; `Start` / `Restart` /
   `Stop` above the cards are the process controls.
@@ -69,8 +76,9 @@ To build it yourself instead, see Build below.
 - **About popup** — panel version, live phpup version, GitHub link, one-paragraph summary.
 - **Tray** — favicon icon, menu of Show panel / Start / Stop / Restart / Quit. Closing the
   window hides to the tray; Quit drops the icon and exits.
-- **Quick links** — localhost, phpinfo, phpMyAdmin, logs, www folder, on their own row
-  beneath the component cards so the settings slide-out cannot push them into the buttons.
+- **Links menu** — localhost, phpinfo, phpMyAdmin, logs and the www folder, in the header.
+  They open in the default browser or file manager, and only appear when the status
+  payload supplies them.
 - **Hover states** — buttons lighten, take an accent edge and grow a fraction on hover. The
   effect lives in `theme.rs`, so it applies to every button rather than per call site.
 - **Theme and zoom** — System / Light / Dark, and Auto / 85% / 100% / 115% / 130%. Auto
