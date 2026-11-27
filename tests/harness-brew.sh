@@ -111,6 +111,34 @@ eq 'pretty-printed line list' "$(brew_php_lines | tr '\n' ' ')" 'php@8.3 php@8.4
 INFO_JSON='{"formulae":[]}'
 eq 'no metadata still offers the meta formula' "$(brew_php_lines)" 'php'
 
+
+# ---- warn_foreign_ports ----------------------------------------------------
+# A foreign server on 3306 must be named BEFORE a long upgrade, not after it,
+# and it must warn rather than block the update.
+print_warn() { printf 'WARN: %s\n' "$*"; }
+print_err()  { printf 'ERR: %s\n' "$*"; }
+tcp_port_listening() { [[ "$1" == "3306" && "${PORT_BUSY:-0}" == "1" ]]; }
+port_owner_active()  { [[ "${PORT_OURS:-0}" == "1" ]]; }
+port_holder_label()  { printf 'mysqld (PID 316) /opt/local/lib/mariadb-11.4/bin/mysqld'; }
+
+extract_fn warn_foreign_ports > /tmp/wfp.$$ || { echo "ABORT: could not extract warn_foreign_ports"; exit 1; }
+# shellcheck disable=SC1090
+. /tmp/wfp.$$
+rm -f /tmp/wfp.$$
+
+out=$(PORT_BUSY=1 warn_foreign_ports)
+case "$out" in
+    *"Port 3306 is already held by another stack — mysqld (PID 316) /opt/local/lib/mariadb-11.4/bin/mysqld"*)
+        ok "names the foreign holder and its binary" ;;
+    *) bad "names the foreign holder and its binary" "$out" "a warning naming 3306 and the binary" ;;
+esac
+case "$out" in
+    *"cannot start on 3306"*) ok "says what will fail afterwards" ;;
+    *) bad "says what will fail afterwards" "$out" "a note that phpup cannot start on 3306" ;;
+esac
+eq "silent when the port is free"   "$(PORT_BUSY=0 warn_foreign_ports)" ""
+eq "silent when the port is ours"   "$(PORT_BUSY=1 PORT_OURS=1 warn_foreign_ports)" ""
+
 echo ""
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

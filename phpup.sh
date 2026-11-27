@@ -1470,6 +1470,13 @@ port_holder_label() {
     if [[ -n "$line" ]]; then
         label=$(printf '%s' "$line" | awk '{print $1 " (PID " $2 ")"}')
         if [[ -n "$label" ]]; then
+            # Name the binary too: lsof truncates both /opt/local/lib/mariadb-11.4/bin/mysqld
+            # and /usr/local/opt/mariadb/bin/mariadbd to "mysqld", and telling them
+            # apart is the whole point when two stacks share a Mac.
+            local holder_pid holder_bin
+            holder_pid=$(printf '%s' "$line" | awk '{print $2}')
+            holder_bin=$(ps -o command= -p "$holder_pid" 2>/dev/null | awk '{print $1}')
+            [[ -n "$holder_bin" ]] && label="${label} ${holder_bin}"
             echo "$label"
             return
         fi
@@ -1480,6 +1487,19 @@ port_holder_label() {
 # Refuse to start when another stack holds the web/DB ports. Loud, not silent:
 # without this, an apt systemctl start just fails with stderr swallowed and
 # phpup still reports "[ OK ] Services started".
+# An update can run with a foreign server on 3306, but phpup will not be able
+# to start MariaDB afterwards. Say that before a 20-minute source build, not
+# after it, and name which stack owns the port.
+warn_foreign_ports() {
+    local port
+    for port in 80 3306; do
+        if tcp_port_listening "$port" && ! port_owner_active "$port"; then
+            print_warn "Port ${port} is already held by another stack — $(port_holder_label "$port")"
+            print_warn "The update can continue, but phpup cannot start on ${port} until that stops."
+        fi
+    done
+}
+
 check_stack_ports_free() {
     local busy=0 port
     for port in 80 3306; do
@@ -3164,6 +3184,7 @@ cmd_update() {
         [[ "$confirm" != "y" && "$confirm" != "Y" && "$confirm" != "yes" ]] && { print_info "Update cancelled."; printf "\n"; read -r -p "Press Enter to continue..."; return; }
 
         stop_services
+        warn_foreign_ports
 
         if [[ -n "$outdated" ]]; then
             printf "\n"; print_info "Upgrading packages via MacPorts..."
@@ -3275,6 +3296,7 @@ cmd_update() {
         fi
 
         stop_services
+        warn_foreign_ports
         printf "\n"
         if [[ -n "$php_target" ]]; then
             print_info "Moving PHP onto the newest line (${target_full})..."
@@ -3284,14 +3306,27 @@ cmd_update() {
             done
         fi
         print_info "Upgrading packages via Homebrew..."
+        local brew_status=0
         if [[ -n "$php_target" ]]; then
             # Switching lines: leave the OUTGOING formula alone. Upgrading it
             # would be a wasted source build — 15-30 min wherever brew has no
             # bottles, which is now every Intel Mac — and it stays installed so
             # fu can switch back to it.
-            HOMEBREW_NO_AUTO_UPDATE=1 printf 'y\n' | brew upgrade httpd mariadb phpmyadmin "$php_target"
+            HOMEBREW_NO_AUTO_UPDATE=1 printf 'y\n' | brew upgrade httpd mariadb phpmyadmin "$php_target" || brew_status=$?
         else
-            HOMEBREW_NO_AUTO_UPDATE=1 printf 'y\n' | brew upgrade httpd mariadb "$active_php" phpmyadmin
+            HOMEBREW_NO_AUTO_UPDATE=1 printf 'y\n' | brew upgrade httpd mariadb "$active_php" phpmyadmin || brew_status=$?
+        fi
+        if [[ $brew_status -ne 0 ]]; then
+            # brew can fail hard — a dependency that refuses to build ("requires
+            # full Xcode", "arm64 required") — and the formulas above never move.
+            # Reporting that as "packages updated" is a lie the dashboard repeated.
+            print_err "brew upgrade failed (exit ${brew_status}) — the components above were NOT updated"
+            if [[ ${INTEL_BREW_NO_BOTTLES:-0} == 1 ]]; then
+                print_warn "Homebrew no longer builds bottles for Intel macOS, and newer formulas"
+                print_warn "can demand dependencies that refuse to build there (a JDK needing arm64)."
+                print_warn "MacPorts still ships Intel binaries — re-run the installer and choose ports."
+            fi
+            update_ok=0
         fi
         if [[ -n "$php_target" ]]; then
             # configure_apache below re-points Apache's php_module at it, so the
@@ -3303,7 +3338,11 @@ cmd_update() {
         configure_apache
         configure_php
         start_services || update_ok=0
-        configure_phpmyadmin
+        if [[ ${update_ok:-1} -eq 1 ]]; then
+            configure_phpmyadmin
+        else
+            print_warn "Skipped the phpMyAdmin setup — MariaDB is not up, and it would write to the wrong server"
+        fi
     fi
 
     # Save new versions
