@@ -5,8 +5,8 @@
 #  GitHub: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-11-22
-#  Version: 1.3.4
+#  Date: 2026-11-27
+#  Version: 1.3.5
 # ============================================================
 
 # ---- Config -------------------------------------------------
@@ -105,11 +105,10 @@ PORTS_APACHE_CONF="${PORT_PREFIX}/etc/apache2/httpd.conf"
 PORTS_APACHE_MODDIR="${PORT_PREFIX}/lib/apache2/modules"
 PORTS_APACHE_DOCROOT="${PORT_PREFIX}/www/apache2/html"
 PORTS_APACHECTL="${PORT_PREFIX}/sbin/apachectl"
-PORTS_MARIADB_DATADIR="${PORT_PREFIX}/var/db/${MARIADB_PORT}"
-PORTS_MARIADB_SOCKET="${PORT_PREFIX}/var/run/${MARIADB_PORT}/mysqld.sock"
-PORTS_MARIADB_CONF="${PORT_PREFIX}/etc/${MARIADB_PORT}/my.cnf"
-PORTS_MARIADB_INSTALL_DB="${PORT_PREFIX}/lib/${MARIADB_PORT}/bin/mariadb-install-db"
-PORTS_MARIADB_SERVER_PORT="${MARIADB_PORT}-server"
+# MacPorts paths are derived from $MARIADB_PORT at each use, never cached at
+# load time: the series can change mid-run (config load, series sniff, or a
+# cross-series update), and a stale cached datadir path silently points the
+# wrong server at the wrong data.
 
 if [[ -x "${PORT_PREFIX}/bin/port" ]]; then
     MACPORTS=1
@@ -253,11 +252,12 @@ detect_mariadb() {
         # MARIADB_PORT comes from config.json (persisted at install/switch);
         # this sniff is a last-resort migration shim for configs written
         # before ports were persisted (pre-1.1.0). If the configured series
-        # datadir is absent but any other mariadb-1[12].* datadir exists,
-        # adopt that series so the stack still resolves.
+        # datadir is absent but any other mariadb-<series> datadir exists,
+        # adopt the newest of them so the stack still resolves. Match every
+        # series: pinning the glob to 10–12 hid 13.x entirely.
         if [[ ! -d "${PORT_PREFIX}/var/db/${MARIADB_PORT}" ]]; then
             local found_series
-            found_series=$(find "${PORT_PREFIX}/var/db" -maxdepth 1 -type d -name 'mariadb-1[12].*' 2>/dev/null | sed 's@.*/@@' | sort -V | tail -1)
+            found_series=$(find "${PORT_PREFIX}/var/db" -maxdepth 1 -type d -name 'mariadb-[0-9]*.*' 2>/dev/null | sed 's@.*/@@' | sort -V | tail -1)
             [[ -n "$found_series" ]] && MARIADB_PORT="$found_series"
         fi
         if [[ -d "${PORT_PREFIX}/var/db/${MARIADB_PORT}" ]]; then
@@ -998,6 +998,179 @@ install_macports() {
     print_ok "MacPorts installed"
     print_info "Updating ports tree (first selfupdate can take a few minutes)..."
     sudo "${PORT_PREFIX}/bin/port" -v selfupdate || print_warn "port selfupdate failed — ports tree may be stale"
+}
+
+# ---- MacPorts: follow the ports tree --------------------------
+# `port upgrade outdated` only upgrades INSTALLED ports, so a stack installed
+# when php85/mariadb-12.3 were newest stayed on them forever — the port name
+# changes with the series (php85 → php86, mariadb-12.3 → mariadb-13.1) and
+# `upgrade` never crosses that. These helpers ask the tree what the newest
+# series is so install and update can move to it (Simon, 2026-11-27).
+ports_tree_ports() {
+    # $1 = name regex. Prints matching port names, one per line.
+    "${PORT_PREFIX}/bin/port" -q search --name --regex "$1" 2>/dev/null \
+        | awk '{print $1}' | grep -E "$1" | sort -u
+}
+
+ports_installed_ports() {
+    "${PORT_PREFIX}/bin/port" list 2>/dev/null | awk '{print $1}'
+}
+
+ports_latest_php() {
+    # Highest phpNN in the tree (falls back to installed ports when the tree
+    # cannot be read). Empty when neither knows anything.
+    local names v best=""
+    names=$(ports_tree_ports '^php[0-9]+$')
+    [[ -z "$names" ]] && names=$(ports_installed_ports | grep -E '^php[0-9]+$')
+    for v in $(printf '%s\n' "$names" | sed -n 's/^php\([0-9][0-9]\)$/\1/p'); do
+        if [[ -z "$best" || "$(printf '%s\n%s\n' "$best" "$v" | sort -V | tail -1)" == "$v" ]]; then
+            best="$v"
+        fi
+    done
+    [[ -n "$best" ]] && printf 'php%s' "$best"
+}
+
+ports_latest_mariadb() {
+    # MariaDB's own "Stable" series wins when it can be reached: the ports tree
+    # also carries a release-candidate series (mariadb-13.2 while 13.2 is RC),
+    # and moving a developer's data onto an RC is not what "latest" means.
+    local names v best="" stable
+    names=$(ports_tree_ports '^mariadb-[0-9]+\.[0-9]+$')
+    [[ -z "$names" ]] && names=$(ports_installed_ports | grep -E '^mariadb-[0-9]+\.[0-9]+$')
+    if command -v latest_mariadb_series >/dev/null 2>&1; then
+        stable=$(latest_mariadb_series 2>/dev/null || true)
+        if [[ -n "$stable" ]] && printf '%s\n' "$names" | grep -qx "mariadb-${stable}"; then
+            printf 'mariadb-%s' "$stable"
+            return 0
+        fi
+    fi
+    for v in $(printf '%s\n' "$names" | sed -n 's/^mariadb-\([0-9][0-9]*\.[0-9][0-9]*\)$/\1/p'); do
+        if [[ -z "$best" || "$(printf '%s\n%s\n' "$best" "$v" | sort -V | tail -1)" == "$v" ]]; then
+            best="$v"
+        fi
+    done
+    [[ -n "$best" ]] && printf 'mariadb-%s' "$best"
+}
+
+ports_series_of() {
+    # 'php86' → 8.6, 'mariadb-13.1' → 13.1
+    local n="$1"
+    if [[ "$n" == php[0-9][0-9] ]]; then
+        n="${n#php}"
+        printf '%s.%s' "${n:0:1}" "${n:1}"
+    elif [[ "$n" == mariadb-[0-9]* ]]; then
+        printf '%s' "${n#mariadb-}"
+    else
+        printf '%s' "$n"
+    fi
+}
+
+ports_is_newer() {
+    # ports_is_newer <candidate> <current>: true when candidate is a newer series.
+    local a b
+    a=$(ports_series_of "$1"); b=$(ports_series_of "$2")
+    [[ -z "$a" || -z "$b" ]] && return 1
+    [[ "$a" == "$b" ]] && return 1
+    [[ "$(printf '%s\n%s\n' "$b" "$a" | sort -V | tail -1)" == "$a" ]]
+}
+
+ports_move_php() {
+    # Install a newer phpNN, select it, and leave PHP_PORT pointing at it.
+    # The caller re-points Apache with configure_apache afterwards.
+    local new_port="$1" current="$PHP_PORT"
+    [[ -z "$new_port" || "$new_port" == "$current" ]] && return 0
+    print_info "Installing ${new_port} (compiles from source on Intel — this can take a while)..."
+    sudo -v || true
+    if ! sudo "${PORT_PREFIX}/bin/port" -N install "$new_port" "${new_port}-apache2handler" \
+            "${new_port}-mysql" "${new_port}-curl" "${new_port}-gd" "${new_port}-intl" \
+            "${new_port}-mbstring" "${new_port}-sqlite" "${new_port}-openssl"; then
+        print_err "${new_port} failed to install — PHP stays on ${current}"
+        return 1
+    fi
+    sudo "${PORT_PREFIX}/bin/port" select --set php "$new_port" 2>/dev/null || true
+    PHP_PORT="$new_port"
+    print_ok "PHP now on ${new_port} (${current} left installed for fu)"
+    return 0
+}
+
+ports_move_mariadb() {
+    # Cross-series MariaDB move. Each series owns its own datadir, so the old
+    # data is never touched: dump the user schemas, install the new series,
+    # initialise its datadir, restore, switch. Any failure before the switch
+    # leaves the old series installed and the old datadir intact.
+    local new_port="$1" old_port="$MARIADB_PORT"
+    [[ -z "$new_port" || "$new_port" == "$old_port" ]] && return 0
+
+    local dump_dir dump_file=""
+    dump_dir="${BASE_DIR}/dumps"
+    mkdir -p "$dump_dir" 2>/dev/null || true
+
+    # 1. Dump from the OLD series (start it briefly — stop_services ran already).
+    sudo "${PORT_PREFIX}/bin/port" load "${old_port}-server" >/dev/null 2>&1 || true
+    local waited=0 reachable=0
+    while [[ $waited -lt 20 ]]; do
+        if "${PORT_PREFIX}/bin/mysql" -u root -e "SELECT 1" >/dev/null 2>&1; then
+            reachable=1; break
+        fi
+        sleep 1; waited=$((waited + 1))
+    done
+    if [[ $reachable -eq 0 ]]; then
+        # Never install over a server we could not read: that is how "empty
+        # database" turns into "lost database".
+        print_err "Could not reach ${old_port} to dump its databases — nothing was changed"
+        return 1
+    fi
+
+    local user_dbs dump_bin
+    user_dbs=$("${PORT_PREFIX}/bin/mysql" -u root -N -e "SHOW DATABASES" 2>/dev/null \
+        | grep -vE '^(information_schema|performance_schema|mysql|sys)$' || true)
+    dump_bin="${PORT_PREFIX}/lib/${old_port}/bin/mariadb-dump"
+    [[ -x "$dump_bin" ]] || dump_bin="${PORT_PREFIX}/bin/mysqldump"
+
+    if [[ -n "$user_dbs" ]]; then
+        dump_file="${dump_dir}/${old_port}-$(date +%Y%m%d-%H%M%S).sql"
+        print_info "Dumping databases before the move: $(printf '%s' "$user_dbs" | tr '\n' ' ')"
+        # shellcheck disable=SC2086
+        if ! "$dump_bin" -u root --single-transaction --routines --events --databases $user_dbs > "$dump_file" 2>/dev/null; then
+            print_err "Dump failed — staying on ${old_port}; nothing was changed"
+            return 1
+        fi
+        print_ok "Dumped to ${dump_file}"
+    else
+        print_info "No user databases to carry over"
+    fi
+
+    sudo "${PORT_PREFIX}/bin/port" unload "${old_port}-server" >/dev/null 2>&1 || true
+
+    # 2. Install the new series, then make its client the default one so the
+    #    init, root-auth and restore steps below all run against it.
+    print_info "Installing ${new_port} (compiles from source on Intel — this can take a while)..."
+    sudo -v || true
+    if ! sudo "${PORT_PREFIX}/bin/port" -N install "$new_port" "${new_port}-server"; then
+        print_err "${new_port} failed to install — staying on ${old_port}"
+        sudo "${PORT_PREFIX}/bin/port" load "${old_port}-server" >/dev/null 2>&1 || true
+        return 1
+    fi
+    sudo "${PORT_PREFIX}/bin/port" select --set mysql "$new_port" 2>/dev/null || true
+
+    # 3. Initialise + start the new datadir and normalise root auth.
+    MARIADB_PORT="$new_port"
+    MARIADB=1
+    configure_mariadb_ports
+
+    # 4. Restore the user schemas.
+    if [[ -n "$dump_file" && -s "$dump_file" ]]; then
+        print_info "Restoring databases into ${new_port}..."
+        if "${PORT_PREFIX}/bin/mysql" -u root < "$dump_file"; then
+            print_ok "Databases restored"
+        else
+            print_err "Restore failed — the dump is kept at ${dump_file}"
+            return 1
+        fi
+    fi
+
+    print_ok "MariaDB now on ${new_port} (${old_port} left installed; its data dir ${PORT_PREFIX}/var/db/${old_port} is untouched)"
+    return 0
 }
 
 # ---- PATH Management ----------------------------------------
@@ -2704,6 +2877,15 @@ cmd_install() {
         install_macports || { print_err "MacPorts bootstrap failed"; read -r -p "Press Enter..."; return; }
         export PATH="${PORT_PREFIX}/bin:${PORT_PREFIX}/sbin:${PATH}"
 
+        # Install the newest series in the ports tree. The pinned defaults are
+        # only a fallback for when the tree cannot be read — following them is
+        # what left this Mac on MariaDB 12.3 after 13.1 shipped.
+        local latest_php_port latest_mariadb_port
+        latest_php_port=$(ports_latest_php)
+        latest_mariadb_port=$(ports_latest_mariadb)
+        if [[ $PHP == 0 && -n "$latest_php_port" ]]; then PHP_PORT="$latest_php_port"; fi
+        if [[ $MARIADB == 0 && -n "$latest_mariadb_port" ]]; then MARIADB_PORT="$latest_mariadb_port"; fi
+
         printf "\n"; print_info "Installing packages via MacPorts (compiled from source — this can take a long time on Intel)..."; printf "\n"
         # Source builds take hours — refresh the sudo credential before each long command
         sudo -v || true
@@ -2713,7 +2895,7 @@ cmd_install() {
             if sudo "${PORT_PREFIX}/bin/port" -N install "${MARIADB_PORT}" "${MARIADB_PORT}-server"; then
                 MARIADB=1
             else
-                print_warn "mariadb-12.3 failed — falling back to mariadb-11.4 (LTS)"
+                print_warn "${MARIADB_PORT} failed — falling back to mariadb-11.4 (LTS)"
                 MARIADB_PORT="mariadb-11.4"
                 sudo "${PORT_PREFIX}/bin/port" -N install "${MARIADB_PORT}" "${MARIADB_PORT}-server" && MARIADB=1
             fi
@@ -2947,31 +3129,68 @@ cmd_update() {
         sudo "${PORT_PREFIX}/bin/port" selfupdate 2>&1
         local selfupdate_status=$?
         if [[ $selfupdate_status -ne 0 ]]; then
-            # Non-fatal: the `port outdated` gate below is self-correcting, but be honest
+            # Non-fatal: the gates below are self-correcting, but be honest
             print_warn "port selfupdate failed (exit ${selfupdate_status}) — continuing with the current ports tree"
         fi
-        local outdated
-        outdated=$("${PORT_PREFIX}/bin/port" outdated 2>/dev/null | grep -E "apache2|${PHP_PORT}|php8|mariadb" || true)
-        if [[ -z "$outdated" ]]; then
-            print_ok "All stack components are up to date"; printf "\n"; read -r -p "Press Enter to continue..."; return
+
+        # MacPorts has two kinds of update: patch bumps of what is INSTALLED
+        # (`port outdated`) and a move to a newer SERIES, which `port upgrade`
+        # never performs because the port name changes with the series
+        # (php85 → php86, mariadb-12.3 → mariadb-13.1). Without the second,
+        # the stack freezes on whatever series was newest at install time.
+        local outdated latest_php_port latest_mariadb_port php_move mariadb_move
+        outdated=$("${PORT_PREFIX}/bin/port" outdated 2>/dev/null | grep -E "apache2|php[0-9]+|mariadb" || true)
+        latest_php_port=$(ports_latest_php)
+        latest_mariadb_port=$(ports_latest_mariadb)
+        php_move=""
+        mariadb_move=""
+        ports_is_newer "$latest_php_port" "$PHP_PORT" && php_move="$latest_php_port"
+        ports_is_newer "$latest_mariadb_port" "$MARIADB_PORT" && mariadb_move="$latest_mariadb_port"
+
+        if [[ -z "$outdated" && -z "$php_move" && -z "$mariadb_move" ]]; then
+            print_ok "All stack components are up to date"
+            print_info "PHP ${PHP_PORT}, MariaDB ${MARIADB_PORT} — the newest series in the ports tree"
+            printf "\n"
+            read -r -p "Press Enter to continue..."
+            return
         fi
-        printf "\n${CYAN}Updates available:${RESET}\n"; printf "%s\n" "$outdated"; printf "\n"
+        printf "\n${CYAN}Updates available:${RESET}\n"
+        [[ -n "$outdated" ]] && printf "%s\n" "$outdated"
+        [[ -n "$php_move" ]] && printf "  ${BOLD}PHP${RESET}      %s → %s (newer series)\n" "$PHP_PORT" "$php_move"
+        [[ -n "$mariadb_move" ]] && printf "  ${BOLD}MariaDB${RESET}  %s → %s (newer series — databases are dumped and restored)\n" "$MARIADB_PORT" "$mariadb_move"
+        printf "\n"
         printf "${BOLD}Apply these updates? [y/N]:${RESET} "
         read -r confirm
         [[ "$confirm" != "y" && "$confirm" != "Y" && "$confirm" != "yes" ]] && { print_info "Update cancelled."; printf "\n"; read -r -p "Press Enter to continue..."; return; }
+
         stop_services
-        printf "\n"; print_info "Upgrading packages via MacPorts..."
-        print_info "This can take several minutes — upgraded ports may recompile from source."
-        # N1: stream live so the user sees progress — $? captures port's real
-        # exit status so a failed upgrade is never reported as "UPDATE COMPLETE!"
-        sudo "${PORT_PREFIX}/bin/port" upgrade outdated 2>&1
-        local upgrade_status=$?
-        if [[ $upgrade_status -ne 0 ]]; then
-            print_err "port upgrade failed (exit ${upgrade_status}) — no updates were applied"
-            printf "\n"
-            read -r -p "Press Enter to return to the dashboard..."
-            return
+
+        if [[ -n "$outdated" ]]; then
+            printf "\n"; print_info "Upgrading packages via MacPorts..."
+            print_info "This can take several minutes — upgraded ports may recompile from source."
+            # N1: stream live so the user sees progress — $? captures port's real
+            # exit status so a failed upgrade is never reported as "UPDATE COMPLETE!"
+            sudo "${PORT_PREFIX}/bin/port" upgrade outdated 2>&1
+            local upgrade_status=$?
+            if [[ $upgrade_status -ne 0 ]]; then
+                print_err "port upgrade failed (exit ${upgrade_status}) — no updates were applied"
+                printf "\n"
+                read -r -p "Press Enter to return to the dashboard..."
+                return
+            fi
         fi
+
+        # Series moves run last, MariaDB first: the PHP move re-points Apache and
+        # should find the new server already serving. A failed MariaDB move stops
+        # the PHP move rather than leaving the stack half-updated.
+        local series_ok=1
+        if [[ -n "$mariadb_move" ]]; then
+            ports_move_mariadb "$mariadb_move" || series_ok=0
+        fi
+        if [[ -n "$php_move" && $series_ok -eq 1 ]]; then
+            ports_move_php "$php_move" || series_ok=0
+        fi
+
         # phpMyAdmin tarball upgrade (same as apt branch)
         local pma_latest
         pma_latest=$(latest_pma_version)
@@ -2981,9 +3200,11 @@ cmd_update() {
             read -r pma_upgrade
             [[ "$pma_upgrade" != "n" && "$pma_upgrade" != "N" ]] && install_pma_tarball "$pma_latest" "$PMA_DIR" || print_warn "phpMyAdmin upgrade failed"
         fi
+        detect_all
         configure_apache; configure_php
         start_services || update_ok=0
         configure_phpmyadmin
+
     else
         brew update &>/dev/null
         # Detect the ACTIVE PHP formula — meta 'php' or a versioned php@X.Y
