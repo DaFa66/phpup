@@ -812,6 +812,21 @@ print_ok()    { printf "[${GREEN}  OK  ${RESET}] %s\n" "$1"; }
 print_err()   { printf "[${RED} ERROR ${RESET}] %s\n" "$1"; }
 print_warn()  { printf "[${YELLOW}  WAIT ${RESET}] %s\n" "$1"; }
 print_note()  { printf "[${CYAN} NOTE ${RESET}] %s\n" "$1"; }
+
+# The end of an update has three possible truths, and only one of them is
+# "done": the stack came up with new components, the stack came up on the old
+# ones, or the stack did not come up at all.
+print_update_summary() {
+    local stack_ok="$1" components_ok="$2"
+    if [[ "$stack_ok" -eq 0 ]]; then
+        print_warn "The stack did not come up — see the messages above."
+    elif [[ "$components_ok" -eq 0 ]]; then
+        print_warn "Update incomplete: the stack is running, but some components could not be upgraded (see above)."
+    else
+        print_ok "UPDATE COMPLETE!"
+    fi
+}
+
 print_info()  { printf "${CYAN}%s${RESET}\n" "$1"; }
 
 # 32-byte phpMyAdmin blowfish secret. PMA warns on missing AND on >32 bytes —
@@ -3032,7 +3047,9 @@ cmd_update() {
     # Track whether the stack actually came back up. Reporting success here
     # regardless of start_services was how a failed start still ended in
     # "[ OK ] UPDATE COMPLETE!".
-    local update_ok=1
+    # Two different failures, two different messages: components that could not be
+    # upgraded (brew/port/apt said no) and the stack failing to come up afterwards.
+    local update_ok=1 components_ok=1
 
     printf "\n${BOLD}phpup — Update Web Stack${RESET}\n\n"
 
@@ -3121,7 +3138,10 @@ cmd_update() {
         # Noninteractive for the same reason the install and remove paths are: a
         # dpkg conffile prompt on php.ini or httpd.conf blocks an unattended run
         # and swallows whatever is queued on stdin.
-        sudo DEBIAN_FRONTEND=noninteractive apt upgrade -y apache2 mariadb-server $(php_active_pkgs)
+        if ! sudo DEBIAN_FRONTEND=noninteractive apt upgrade -y apache2 mariadb-server $(php_active_pkgs); then
+            print_err "apt upgrade failed — the components above were NOT updated"
+            components_ok=0
+        fi
 
         # Check for newer phpMyAdmin tarball
         local pma_latest
@@ -3211,6 +3231,7 @@ cmd_update() {
         if [[ -n "$php_move" && $series_ok -eq 1 ]]; then
             ports_move_php "$php_move" || series_ok=0
         fi
+        [[ $series_ok -eq 0 ]] && components_ok=0
 
         # phpMyAdmin tarball upgrade (same as apt branch)
         local pma_latest
@@ -3322,11 +3343,11 @@ cmd_update() {
             # Reporting that as "packages updated" is a lie the dashboard repeated.
             print_err "brew upgrade failed (exit ${brew_status}) — the components above were NOT updated"
             if [[ ${INTEL_BREW_NO_BOTTLES:-0} == 1 ]]; then
-                print_warn "Homebrew no longer builds bottles for Intel macOS, and newer formulas"
-                print_warn "can demand dependencies that refuse to build there (a JDK needing arm64)."
-                print_warn "MacPorts still ships Intel binaries — re-run the installer and choose ports."
+                print_note "Homebrew no longer builds bottles for Intel macOS, and newer formulas"
+                print_note "can demand dependencies that refuse to build there (a JDK needing arm64)."
+                print_note "MacPorts still ships Intel binaries — re-run the installer and choose ports."
             fi
-            update_ok=0
+            components_ok=0
         fi
         if [[ -n "$php_target" ]]; then
             # configure_apache below re-points Apache's php_module at it, so the
@@ -3338,10 +3359,12 @@ cmd_update() {
         configure_apache
         configure_php
         start_services || update_ok=0
-        if [[ ${update_ok:-1} -eq 1 ]]; then
+        # phpMyAdmin's config writes to the pma database, so it needs the DATABASE,
+        # not a healthy overall update: gate on the service itself.
+        if is_service_running mariadb; then
             configure_phpmyadmin
         else
-            print_warn "Skipped the phpMyAdmin setup — MariaDB is not up, and it would write to the wrong server"
+            print_warn "Skipped the phpMyAdmin setup — MariaDB is not running, so it would write to the wrong server"
         fi
     fi
 
@@ -3353,11 +3376,7 @@ cmd_update() {
     local stale_backup="${BASE_DIR}/data_backup_pre_upgrade"
     [[ -d "$stale_backup" ]] && sudo rm -rf "$stale_backup" 2>/dev/null || true
 
-    if [[ ${update_ok:-1} -eq 1 ]]; then
-        print_ok "UPDATE COMPLETE!"
-    else
-        print_warn "Packages updated, but the stack did not come up — see the messages above."
-    fi
+    print_update_summary "${update_ok:-1}" "${components_ok:-1}"
     printf "\n"
     read -r -p "Press Enter to return to the dashboard..."
 }

@@ -139,6 +139,25 @@ esac
 eq "silent when the port is free"   "$(PORT_BUSY=0 warn_foreign_ports)" ""
 eq "silent when the port is ours"   "$(PORT_BUSY=1 PORT_OURS=1 warn_foreign_ports)" ""
 
+
+# ---- print_update_summary --------------------------------------------------
+# Three truths, three messages: a failed upgrade must never read as "the stack
+# did not come up" when the stack is serving fine on the old versions.
+print_ok() { printf 'OK: %s\n' "$*"; }
+extract_fn print_update_summary > /tmp/pus.$$ || { echo "ABORT: could not extract print_update_summary"; exit 1; }
+# shellcheck disable=SC1090
+. /tmp/pus.$$
+rm -f /tmp/pus.$$
+
+eq "both fine is UPDATE COMPLETE" \
+   "$(print_update_summary 1 1)" "OK: UPDATE COMPLETE!"
+eq "failed components, stack up is incomplete not down" \
+   "$(print_update_summary 1 0)" "WARN: Update incomplete: the stack is running, but some components could not be upgraded (see above)."
+eq "stack down is reported as down" \
+   "$(print_update_summary 0 1)" "WARN: The stack did not come up — see the messages above."
+eq "stack down wins over failed components" \
+   "$(print_update_summary 0 0)" "WARN: The stack did not come up — see the messages above."
+
 echo ""
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
