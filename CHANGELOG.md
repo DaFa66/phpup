@@ -18,6 +18,31 @@ overview of every release.
 
 ---
 
+## [Unreleased]
+
+### Windows (phpup.ps1)
+
+### Fixed
+
+- **`u` no longer removes a component before it has the replacement.** The update downloads
+  every needed zip into `downloads\` first and stops with `Nothing has been changed` if a
+  download fails or arrives under 1 MB. Previously the old install was deleted first, so a
+  failed download left the component gone — the MariaDB 13.1 update removed `mariadb\` and
+  left the databases sitting in `data_backup_update`.
+- **The MariaDB archive URL is built from the full release, not the series.** The REST API
+  reports `release_id` as a series (`13.1`) while the individual builds are the keys of
+  `releases` (`13.1.2`), and `archive.mariadb.org` is keyed by the build. The resolver
+  produced `mariadb-13.1/winx64-packages/mariadb-13.1.2-winx64.zip`, which 404s. It now
+  builds the path from the build, checks the URL actually serves bytes
+  (`Test-UrlAvailable`), and falls through to the next build when it does not.
+- **MariaDB databases are restored even when the extract fails.** The restore moved into a
+  `finally` block, so data is never stranded in `data_backup_update`.
+
+### Added
+
+- `tests/harness-mariadb-url.ps1` — offline regression test for the MariaDB archive path
+  (build-based URL, series-only path rejected, fall-through when a build is unavailable).
+
 ## [panel 0.2.2-beta-win] — 2026-11-23
 
 ### Windows panel (Rust + egui, 0.2.2 beta)

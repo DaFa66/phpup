@@ -973,6 +973,39 @@ function Get-PhpPreReleaseBuilds {
                               @{ Expression = { Get-PhpPreReleaseRank $_ }; Descending = $true })
 }
 
+function Test-UrlAvailable($url) {
+    # Cheap reachability probe. A resolved URL is only worth trusting if it
+    # actually serves bytes — MariaDB's archive path is derived, not returned.
+    if (-not $url) { return $false }
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $req = [System.Net.HttpWebRequest]::Create($url)
+        $req.Method    = 'HEAD'
+        $req.Timeout   = 15000
+        $req.UserAgent = $UA_STRING
+        $resp = $req.GetResponse()
+        $code = [int]$resp.StatusCode
+        $resp.Close()
+        if ($code -ge 200 -and $code -lt 400) { return $true }
+    }
+    catch { }
+    # Servers that refuse HEAD still serve GET: ask for one byte instead.
+    try {
+        $req = [System.Net.HttpWebRequest]::Create($url)
+        $req.Method    = 'GET'
+        $req.Timeout   = 15000
+        $req.UserAgent = $UA_STRING
+        $req.AddRange(0, 0)
+        $resp = $req.GetResponse()
+        $code = [int]$resp.StatusCode
+        $resp.Close()
+        return ($code -ge 200 -and $code -lt 400)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Get-LatestMariadbUrl {
     Write-Info "Resolving MariaDB (latest stable, Windows x64)..."
 
@@ -1005,13 +1038,20 @@ function Get-LatestMariadbUrl {
         $releaseKeys = $detail.releases.PSObject.Properties.Name |
             Sort-Object { [version]$_ } -Descending
 
+        # release_id is the SERIES ('13.1'); the release keys are the builds
+        # ('13.1.2'). archive.mariadb.org is keyed by the full build, so a path
+        # built from the series 404s — that is what broke `u` for MariaDB 13.1.
         foreach ($key in $releaseKeys) {
             $release = $detail.releases.$key
             foreach ($file in $release.files) {
                 $name = $file.file_name.ToLower()
                 if ($name -like "*winx64*" -and $name -like "*.zip" -and $name -notlike "*debugsymbols*") {
                     # Construct direct archive URL — bypass REST API redirector
-                    $archiveUrl = "https://archive.mariadb.org/mariadb-$version/winx64-packages/$($file.file_name)"
+                    $archiveUrl = "https://archive.mariadb.org/mariadb-$key/winx64-packages/$($file.file_name)"
+                    if (-not (Test-UrlAvailable $archiveUrl)) {
+                        Write-Warn "  MariaDB $key archive URL is not downloadable — trying another build"
+                        continue
+                    }
                     Write-Ok "MariaDB -> $archiveUrl"
                     return $archiveUrl
                 }
@@ -2760,6 +2800,49 @@ function Invoke-UpdateWebStack {
     $needsMariadb = ($currentMariadbVer -and $latestMariadbVer -and ([version]$latestMariadbVer -gt [version]$currentMariadbVer))
     $needsPma     = ($currentPmaVer -and $latestPmaVer -and ($currentPmaVer -ne 'unknown') -and ([version]$latestPmaVer -gt [version]$currentPmaVer))
 
+    # Download every needed zip BEFORE the stack is touched. The update removes
+    # each old install before extracting its replacement, so a failed download
+    # used to leave a component gone with nothing to put back (MariaDB 13.1,
+    # 2026-11-27: the resolver built a 404 URL and `u` deleted MariaDB first).
+    $pending = @()
+    if ($needsApache)  { $pending += @{ Url = $latestApacheUrl;  Label = 'Apache' } }
+    if ($needsPhp)     { $pending += @{ Url = $latestPhpUrl;     Label = 'PHP' } }
+    if ($needsMariadb) { $pending += @{ Url = $latestMariadbUrl; Label = 'MariaDB' } }
+    if ($needsPma)     { $pending += @{ Url = $latestPmaUrl;     Label = 'phpMyAdmin' } }
+
+    New-Item -ItemType Directory -Force -Path $DOWNLOAD_CACHE | Out-Null
+    foreach ($p in $pending) {
+        $filename = [IO.Path]::GetFileName([string]$p.Url)
+        if (-not $filename) {
+            Write-Err "$($p.Label) download URL could not be resolved — nothing has been changed."
+            return
+        }
+        $zipPath = Join-Path $DOWNLOAD_CACHE $filename
+        if (Test-Path $zipPath) {
+            Write-Info "$($p.Label) zip already cached — $filename"
+            continue
+        }
+
+        Write-Host ""
+        Write-Info "Downloading $($p.Label) $filename..."
+        try {
+            Invoke-WebRetry -Uri $p.Url -OutFile $zipPath -Headers @{ "User-Agent" = $UA_STRING } -MaxRetries 3 -RetryDelay 5
+        }
+        catch {
+            Write-Err "$($p.Label) download failed: $($_.Exception.Message)"
+            Write-Err "Nothing has been changed — your current $($p.Label) is untouched."
+            if (Test-Path $zipPath) { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue }
+            return
+        }
+        if (-not (Test-Path $zipPath) -or (Get-Item $zipPath).Length -lt 1MB) {
+            Write-Err "$($p.Label) download looks incomplete: $zipPath"
+            Write-Err "Nothing has been changed — your current $($p.Label) is untouched."
+            if (Test-Path $zipPath) { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue }
+            return
+        }
+        Write-Ok "$($p.Label) downloaded to cache"
+    }
+
     Stop-WebStackServices
     Start-Sleep -Seconds 2
 
@@ -2781,10 +2864,15 @@ function Invoke-UpdateWebStack {
     if ($needsMariadb) {
         Backup-MariaDbData
 
-        Remove-Tree $MARIADB_PATH
-        Invoke-DownloadAndExtract $latestMariadbUrl $MARIADB_PATH "MariaDB"
-
-        Restore-MariaDbData
+        try {
+            Remove-Tree $MARIADB_PATH
+            Invoke-DownloadAndExtract $latestMariadbUrl $MARIADB_PATH "MariaDB"
+        }
+        finally {
+            # Never strand the databases in data_backup_update if the extract
+            # fails — put them back where the server looks for them.
+            Restore-MariaDbData
+        }
 
         Invoke-ConfigureMariaDb
     }

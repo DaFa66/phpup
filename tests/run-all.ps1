@@ -47,6 +47,7 @@ $toRun = @()
 if ($Quick) { Skip 'tests/harness-switch.ps1 (-Quick)' } else { $toRun += 'tests/harness-switch.ps1' }
 $toRun += 'tests/harness-prerelease.ps1'
 $toRun += 'tests/harness-prerelease-menu.ps1'
+$toRun += 'tests/harness-mariadb-url.ps1'
 
 foreach ($s in $toRun) {
     $suites++
