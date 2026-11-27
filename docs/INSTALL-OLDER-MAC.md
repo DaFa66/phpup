@@ -123,7 +123,7 @@ http://localhost/phpinfo.php
 Your browser should show the **phpinfo** page — the big PHP version and
 configuration table that proves PHP is running inside Apache:
 
-![phpinfo page showing PHP 8.5.9](images/05-phpinfo.png)
+![phpinfo page showing PHP running under Apache](images/05-phpinfo.png)
 
 ## Step 6 — Log into phpMyAdmin
 
@@ -148,7 +148,7 @@ MariaDB server from the browser.
 | What              | Where                                        |
 | ----------------- | -------------------------------------------- |
 | Your website files | `~/phpup/www`                               |
-| Logs              | `~/phpup/logs` (Apache) and `/opt/local/var/log/mariadb-12.3` (MariaDB) |
+| Logs              | `~/phpup/logs` (Apache) and `/opt/local/var/log/mariadb-<series>` (MariaDB) |
 | phpMyAdmin        | `http://localhost/phpmyadmin`               |
 | PHP test page     | `http://localhost/phpinfo.php`              |
 
@@ -165,6 +165,12 @@ Back in phpup's dashboard:
 | `U`           | Update everything                               |
 | `D`           | Delete the whole stack (your website files stay)|
 | `fu`          | Switch PHP version (hidden power-user command)  |
+
+`U` follows the ports tree rather than the series this machine was set up with. When a newer
+PHP or MariaDB series has landed it lists the move (`PHP php85 → php86 (newer series)`) and
+performs it on confirmation. MariaDB moves by dumping your databases, installing the new
+series and restoring them: the old series stays installed with its own data directory
+untouched, and the dump is kept in `~/phpup/dumps/`.
 
 ## Why is it slow?
 

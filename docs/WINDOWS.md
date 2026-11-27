@@ -78,7 +78,7 @@ phpup doesn't hardcode version numbers. Every install and update dynamically res
 | Component      | Source          | Method                                                           |
 | -------------- | --------------- | ---------------------------------------------------------------- |
 | **Apache**     | Apache Lounge   | Scrapes download page, picks highest VS version × Apache version |
-| **PHP**        | windows.php.net | Queries `releases.json`, takes the highest 8.x TS x64 series (rebuild suffixes such as `8.5.12-1` are normal), prefers VS18/VS17 builds    |
+| **PHP**        | windows.php.net | Queries `releases.json`, takes the highest 8.x TS x64 series (a rebuild suffix such as `8.5.13-1` is tolerated and reported as `8.5.13`), prefers VS18/VS17 builds    |
 | **MariaDB**    | mariadb.org     | REST API, sorts by support policy (Rolling > LTS), then version  |
 | **phpMyAdmin** | phpmyadmin.net  | Scrapes downloads page for latest stable `all-languages.zip`     |
 
@@ -170,7 +170,7 @@ Once multiple versions are cached, the hidden **`fu`** command lets you switch b
 
 Online, `fu` checks windows.php.net for the latest stable per series, plus its pre-release (QA) index. Run with `-Offline` to skip the network check — the menu then lists cached versions only (labels and variant markers still apply, but no hints or download offers).
 
-A configurable floor (`php_min_series` in `%APPDATA%\phpup\config.json`, default `8.2`) controls the oldest PHP series offered as a download candidate — set it to `8.0` to keep offering EOL series, or raise it to narrow the list. Cached zips are always listed regardless of the floor. The key is written to config.json automatically (visible and editable), and an older config that predates the key simply falls back to the `8.2` default.
+A configurable floor (`php_min_series` in `config.json` in the stack folder, e.g. `C:\phpup\config.json`, default `8.2`) controls the oldest PHP series offered as a download candidate — set it to `8.0` to keep offering EOL series, or raise it to narrow the list. Cached zips are always listed regardless of the floor. The key is written to config.json automatically (visible and editable), and an older config that predates the key simply falls back to the `8.2` default.
 
 Apache's PHP module follows the installed PHP major: 7.x loads `php7apache2_4.dll` with `LoadModule php7_module`, 8.x loads `php8apache2_4.dll` with `LoadModule php_module` (the symbol PHP 8 actually exports — there is no `php8_module`). httpd.conf is re-pointed automatically after any PHP switch, so going 8 ↔ 7 keeps Apache loadable.
 
@@ -215,9 +215,9 @@ Example:
   "services_registered": true,
   "php_min_series": "8.2",
   "versions": {
-    "apache": "2.4.68",
-    "php": "8.5.9",
-    "mariadb": "12.3.2",
+    "apache": "2.4.71",
+    "php": "8.6.0",
+    "mariadb": "13.1.2",
     "phpmyadmin": "5.2.3"
   }
 }
@@ -227,11 +227,11 @@ Config is cleared when you delete the stack. The next run prompts for a fresh in
 
 ## Control panel
 
-A Windows desktop control surface (Rust + egui, panel 0.2.1 beta) drives the same CLI
+A Windows desktop control surface (Rust + egui, panel 0.2.2 beta) drives the same CLI
 verbs as the dashboard: live component cards, start/restart/stop, stderr in a terminal-style
 pane, tray icon and an optional always-elevated mode. Settings can also set each service's
 startup type (`Auto` / `Disabled`), start the panel hidden in the tray with no taskbar button,
-and register it to start with Windows. Grab `phpup-panel-0.2.1-beta-win-x64.zip` from
+and register it to start with Windows. Grab `phpup-panel-0.2.2-beta-win-x64.zip` from
 [Releases](https://github.com/DaFa66/phpup/releases) and run `install.ps1` inside it. Build, install and autostart notes: [`panel/README.md`](../panel/README.md).
 
 ## After Installation

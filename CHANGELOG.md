@@ -18,30 +18,83 @@ overview of every release.
 
 ---
 
-## [Unreleased]
+## [2.5.6-win] / [1.3.5-nix] — 2026-11-27
 
-### Windows (phpup.ps1)
+### Windows (phpup.ps1 v2.5.6) and macOS/Linux (phpup.sh v1.3.5)
 
-### Fixed
+*Previous platform update: [2.5.5-win] / [1.3.4-nix](#255-win--134-nix--2026-11-22).*
 
-- **`u` no longer removes a component before it has the replacement.** The update downloads
-  every needed zip into `downloads\` first and stops with `Nothing has been changed` if a
-  download fails or arrives under 1 MB. Previously the old install was deleted first, so a
-  failed download left the component gone — the MariaDB 13.1 update removed `mariadb\` and
-  left the databases sitting in `data_backup_update`.
+A failed MariaDB update can no longer take the stack down with it, and a MacPorts install
+now follows the ports tree to the newest series instead of freezing on the one that was
+current when it was installed.
+
+### Fixed — stack updates (Windows)
+
+- **`u` no longer removes a component before it has the replacement.** Every needed zip is
+  downloaded into `downloads\` first, and the run stops with `Nothing has been changed` if a
+  download fails or arrives under 1 MB. The old order deleted the install first, so a failed
+  download left the component gone: the MariaDB 13.1 update removed `mariadb\` and left the
+  databases in `data_backup_update`.
 - **The MariaDB archive URL is built from the full release, not the series.** The REST API
   reports `release_id` as a series (`13.1`) while the individual builds are the keys of
-  `releases` (`13.1.2`), and `archive.mariadb.org` is keyed by the build. The resolver
-  produced `mariadb-13.1/winx64-packages/mariadb-13.1.2-winx64.zip`, which 404s. It now
-  builds the path from the build, checks the URL actually serves bytes
-  (`Test-UrlAvailable`), and falls through to the next build when it does not.
-- **MariaDB databases are restored even when the extract fails.** The restore moved into a
-  `finally` block, so data is never stranded in `data_backup_update`.
+  `releases` (`13.1.2`), and `archive.mariadb.org` is keyed by the build, so the series-based
+  path 404'd. `Test-UrlAvailable` now cuts a HEAD (then one-byte GET) probe and falls through
+  to the next build when one is unavailable.
+- **MariaDB databases are restored even when the extract fails** — the restore moved into a
+  `finally`, so data cannot be stranded in `data_backup_update`.
+- **`$FALLBACK_URLS` tracks the stack again:** Apache `2.4.69-261002` → `2.4.71-261112`,
+  PHP `8.5.12-1-vs17` → `8.6.0-vs18`, MariaDB `13.0.2` → `13.1.2`. The block now carries a
+  note to bump all four whenever a component release moves.
 
-### Added
+### Fixed — MacPorts series tracking (macOS)
+
+- **`u` moves to a newer series, not just a newer patch.** `port upgrade outdated` only
+  upgrades ports that are already installed, and the port name carries the series
+  (`php85` → `php86`, `mariadb-12.3` → `mariadb-13.1`), so a Mac stayed on whatever was
+  newest when the stack was installed — this one was on MariaDB 12.3 with 13.1 released.
+  Update asks the ports tree for the newest series, lists it as
+  `PHP php85 → php86 (newer series)`, and moves on confirmation.
+- **The MariaDB move is dump → install → init → restore, and the old series is left
+  installed.** Each series owns its own datadir, so nothing old is touched: the dump goes to
+  `~/phpup/dumps/<port>-<timestamp>.sql`, and a failed install or restore leaves the old
+  server serving.
+- **A fresh MacPorts install targets the newest series in the tree** instead of the pinned
+  `php85` / `mariadb-12.3` defaults, which are now only a fallback for when `port search`
+  cannot answer.
+- **MariaDB's own Stable list decides, not the tree alone.** A ports tree can carry a
+  release-candidate series (`mariadb-13.2` while 13.2 is an RC), so the pick defers to the
+  REST API's Stable series when it answers, and to the tree when it cannot.
+- **The MariaDB datadir sniff only matched `mariadb-1[12].*`**, so a 13.x datadir was
+  invisible to the pre-1.1.0 config migration. It matches any series now.
+- **The cached `PORTS_MARIADB_*` paths are gone.** They were computed once at load and never
+  refreshed when `MARIADB_PORT` changed mid-run; paths are derived from it at each use.
+
+### Added (tests)
 
 - `tests/harness-mariadb-url.ps1` — offline regression test for the MariaDB archive path
-  (build-based URL, series-only path rejected, fall-through when a build is unavailable).
+  (build-based URL, series-only path rejected, fall-through when a build is unavailable),
+  wired into `tests/run-all.ps1`.
+- `tests/harness-ports-series.sh` — offline regression test for the MacPorts series helpers
+  (newest phpNN / mariadb series from a stubbed tree, the Stable-list preference, the
+  installed-ports fallback, series comparison and arithmetic), wired into `tests/run-all.sh`.
+
+### Docs
+
+- Version sweep across `README.md`, `docs/WINDOWS.md`, `docs/CLI.md`, `docs/LINUX.md`,
+  `docs/INSTALL-OLDER-MAC.md`, `docs/PANEL-PLATFORMS.md` and `panel/README.md`: PHP 8.5 →
+  8.6.0, Apache 2.4.68/2.4.69 → 2.4.71, MariaDB 12.3/13.0 → 13.1.2, panel 0.2.1 → 0.2.2
+  (download link, zip name and tag), and the MacPorts `php85` / `mariadb-12.3` examples →
+  `php86` / `mariadb-13.1`.
+- `docs/WINDOWS.md`: the `php_min_series` paragraph no longer calls
+  `%APPDATA%\phpup\config.json` the config — it lives in `config.json` in the stack folder
+  (`C:\phpup\config.json`), and `%APPDATA%` holds only the discovery pointer for a moved
+  install.
+- `docs/MACOS.md` and `docs/INSTALL-OLDER-MAC.md` describe the MacPorts series tracking:
+  `U` lists `php85 → php86 (newer series)`, MariaDB moves by dump and restore, and the old
+  series stays installed. The MacPorts log path is quoted as
+  `/opt/local/var/log/mariadb-<series>` rather than a fixed 12.3.
+- Version stamps follow the release: `2.5.6-win` / `1.3.5-nix` in the headers, `VERSION_CACHE`,
+  `PHPUP_VERSION`, `docs/CLI.md`, `panel/README.md` and this file's summary table.
 
 ## [panel 0.2.2-beta-win] — 2026-11-23
 
@@ -1681,6 +1734,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 | Version | Date | Key Changes |
 |---------|------|-------------|
 | [**panel 0.2.2-beta**](#panel-022-beta-win--2026-11-23) | 2026-11-23 | A remembered window position is verified against the current monitors before it is restored, and an unreachable one is never written back — the panel can no longer launch off-screen |
+| [**2.5.6-win**](#256-win--135-nix--2026-11-27) / [**1.3.5-nix**](#256-win--135-nix--2026-11-27) | 2026-11-27 | `u` downloads every zip before it deletes anything and MariaDB's archive URL is built from the full release; MacPorts install and update follow the newest series in the tree (PHP 8.6, MariaDB 13.1) with a dump-restore move; `$FALLBACK_URLS` and the docs track the current stack |
 | [**2.5.5-win**](#255-win--134-nix--2026-11-22) | 2026-11-22 | The handover refuses instead of half-committing (unreadable start type, refused boot-disable, failed registry write); `sc.exe`-free process image paths off the polling path; `--remove`, alias ambiguity refusal and `active_path` |
 | [**panel 0.2.1-beta**](#panel-021-beta-win--2026-11-22) | 2026-11-22 | Output pane takes the slack under the cards, `Links` menu, About back in the header, green/red chips on all four cards, a refresh slider that re-polls, window geometry remembered |
 | [**2.5.4-win**](#254-win--133-nix--2026-11-21) | 2026-11-21 | `switch` reaches Windows and gains `--add`, which registers a stack without touching the ports; the switch payload is one shape on both platforms; a pre-release install no longer passes as the matching stable |

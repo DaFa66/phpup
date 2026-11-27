@@ -120,7 +120,7 @@ toolchain. It reads the CLI contract below and drives the same verbs, so the scr
 single source of truth for installation, updates and version switching.
 
 **Download:** Windows x64 zip with `install.ps1`:
-[phpup panel 0.2.1 beta](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.2-beta-win).
+[phpup panel 0.2.2 beta](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.2-beta-win).
 It is a pre-release, so GitHub keeps it out of the *Latest* slot; that link, or
 **Releases -> show more**, is the way in.
 
@@ -138,7 +138,7 @@ It is a pre-release, so GitHub keeps it out of the *Latest* slot; that link, or
   prompts) with `phpup - as administrator` in the title bar
 
 Download the beta from [Releases](https://github.com/DaFa66/phpup/releases)
-(`phpup-panel-0.2.1-beta-win-x64.zip`), extract it and run `\.install.ps1`. That copies the exe into
+(`phpup-panel-0.2.2-beta-win-x64.zip`), extract it and run `\.install.ps1`. That copies the exe into
 `<install_path>\bin` and needs no elevation. Or build it yourself:
 
 ```
@@ -156,7 +156,7 @@ task with `/RL HIGHEST` instead, and use one or the other rather than both:
 schtasks /Create /TN "phpup panel" /TR "\"C:\phpup\bin\phpup-panel.exe\"" /SC ONLOGON /RL HIGHEST /F
 ```
 
-The panel is at **0.2.1 beta**, downloadable from
+The panel is at **0.2.2 beta**, downloadable from
 [Releases](https://github.com/DaFa66/phpup/releases/tag/panel-v0.2.2-beta-win). Full build notes,
 settings and troubleshooting: [`panel/README.md`](panel/README.md).
 
@@ -184,7 +184,7 @@ phpup help
   `null`, never omitted — and additive only.
 
 `install`, `update`, `delete` and `doctor` are reserved for v2, once they have non-interactive
-modes. `switch` is implemented now: released on both platforms in 2.5.5 and 1.3.4.
+modes. `switch` is implemented now: released on both platforms in 2.5.6 and 1.3.5.
 The full contract — schema, stream rules, semantics — is in
 [`docs/CLI.md`](docs/CLI.md).
 
@@ -221,7 +221,7 @@ phpup doesn't hardcode version numbers. Every install and update dynamically res
 | **MariaDB**    | [mariadb.org](https://mariadb.org)                                                         | REST API, sorts by support policy (Rolling > LTS), then version |
 | **phpMyAdmin** | [phpmyadmin.net](https://www.phpmyadmin.net)                                               | Latest stable release                                           |
 
-PHP is always the latest stable major version (8.2+, currently 8.5). Use the hidden **`fu`** command to switch versions — on Windows it manages cached zips and can fill missing series (including EOL ones like 7.4 if the `php_min_series` floor is lowered), flags newer patches, shows pre-release labels (`8.6.0 beta1`), offers alpha/beta/RC builds from windows.php.net's QA index in their own block when one is ahead of stable, and re-points Apache's PHP module automatically when you cross major versions. On Linux it switches the Apache PHP-FPM runtime and the CLI default together, with automatic rollback if the new version fails to start. On macOS it relinks the formula **and** re-points Apache's `php_module` at that same formula, so the version serving requests always matches the version phpup reports.
+PHP is always the latest stable major version (8.2+, currently 8.6.0). Use the hidden **`fu`** command to switch versions — on Windows it manages cached zips and can fill missing series (including EOL ones like 7.4 if the `php_min_series` floor is lowered), flags newer patches, shows pre-release labels (`8.6.0 beta1`), offers alpha/beta/RC builds from windows.php.net's QA index in their own block when one is ahead of stable, and re-points Apache's PHP module automatically when you cross major versions. On Linux it switches the Apache PHP-FPM runtime and the CLI default together, with automatic rollback if the new version fails to start. On macOS it relinks the formula **and** re-points Apache's `php_module` at that same formula, so the version serving requests always matches the version phpup reports.
 
 ## After Installation
 

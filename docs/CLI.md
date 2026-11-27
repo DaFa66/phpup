@@ -5,8 +5,8 @@ drive phpup without the interactive dashboard.
 
 Non-goal: a daemon, a socket API, or a rewrite of the install/update engine.
 
-**Status:** implemented — `phpup.ps1` 2.5.5 on Windows and `phpup.sh` 1.3.4 on macOS/Linux.
-The `switch` verb (section 13) is released on both platforms as of 2.5.5 and 1.3.4, including
+**Status:** implemented — `phpup.ps1` 2.5.6 on Windows and `phpup.sh` 1.3.5 on macOS/Linux.
+The `switch` verb (section 13) is released on both platforms as of 2.5.6 and 1.3.5, including
 `--add` for registering a root without handing the ports over. The Windows desktop panel in
 [`panel/`](../panel/README.md) consumes this
 contract; it is the reason the contract exists.
@@ -52,14 +52,14 @@ Reserved for v2, do not alias these names: `install`, `update`, `delete`, `docto
 Both scripts answer `version`, and with `--json` they emit a single object and nothing else:
 
 ```json
-{ "schema": 1, "version": "2.5.5", "script": "ps1" }
+{ "schema": 1, "version": "2.5.6", "script": "ps1" }
 ```
 
 `script` is `ps1` on Windows and `sh` on macOS/Linux, so a caller can tell which
 implementation answered. The same pair appears as `phpup.version` and `phpup.script` in
 the `status` payload (section 6), and it is required on both scripts — consumers must not
 infer the running version from the components. Each interactive dashboard prints it in the
-banner beside the wordmark (`phpup v1.3.4`), and the desktop panel shows it in its About popup.
+banner beside the wordmark (`phpup v1.3.5`), and the desktop panel shows it in its About popup.
 
 ## 3. Flags
 
@@ -116,7 +116,7 @@ Rationale for 0 on `status` when the stack is absent: the probe succeeded, "abse
 {
   "schema": 1,
   "generated_at": "2026-10-20T12:34:56+11:00",
-  "phpup": { "version": "2.5.5", "script": "ps1" },
+  "phpup": { "version": "2.5.6", "script": "ps1" },
   "platform": {
     "os": "windows",
     "arch": "x86_64",
@@ -135,17 +135,17 @@ Rationale for 0 on `status` when the stack is absent: the probe succeeded, "abse
   },
   "components": {
     "apache": {
-      "installed": true, "version": "2.4.68", "running": true,
+      "installed": true, "version": "2.4.71", "running": true,
       "pids": [4321], "ports": [80],
       "service": "phpup_Apache", "owned_by_phpup": true, "notes": null
     },
     "php": {
-      "installed": true, "version": "8.5.9", "label": "8.5.9", "prerelease": false,
+      "installed": true, "version": "8.6.0", "label": "8.6.0", "prerelease": false,
       "running": null, "pids": [], "ports": [],
       "sapi": "apache2handler", "cli_on_path": true, "series_floor": "8.2", "notes": null
     },
     "mariadb": {
-      "installed": true, "version": "12.3.2", "running": true,
+      "installed": true, "version": "13.1.2", "running": true,
       "pids": [5122], "ports": [3306],
       "service": "phpup_MariaDB", "owned_by_phpup": true, "notes": null
     },
@@ -281,7 +281,7 @@ from the verb response without a second call.
   `tcp_port_listening`, `port_holder_label`, `load_config`, and `USE_APT` / `USE_PORTS` for
   `platform.backend`.
 - **Naming trap:** `config.json`'s `mariadb_port` and `php_port` hold MacPorts *port names*
-  (`mariadb-12.3`, `php85`), not TCP port numbers. Do not map them to numeric ports. Map to
+  (`mariadb-13.1`, `php86`), not TCP port numbers. Do not map them to numeric ports. Map to
   the component's `version`, and report TCP `3306` for `ports`. Renaming those keys is a
   later config migration, not v1.
 - **MariaDB log path differs per backend:** MacPorts writes
@@ -320,7 +320,7 @@ GUI cadence: run `--watch 2` (or 3) as the poll source and take a full `status -
 
 ## 10. Versioning and docs
 
-- `phpup.ps1` → **2.5.5**, `phpup.sh` → **1.3.4** (patch increments; the middle digit is
+- `phpup.ps1` → **2.5.6**, `phpup.sh` → **1.3.5** (patch increments; the middle digit is
   reserved for a feature milestone).
 - CHANGELOG entries, newest first.
 - README gains a short **Automation** section with the two invocation lines above.
@@ -362,7 +362,7 @@ GUI cadence: run `--watch 2` (or 3) as the poll source and take a full `status -
 ## 13. `switch` (stack handover)
 
 **Status:** implemented in `phpup.ps1` (Windows) and `phpup.sh` (macOS, Linux), released in
-2.5.5 and 1.3.4. `--to off` is not implemented on either script.
+2.5.6 and 1.3.5. `--to off` is not implemented on either script.
 
 **Purpose:** hand ports 80 and 3306 to a foreign stack (XAMPP) and take them back, so a user
 can close phpup and work in the stack their older projects already live in. It moves port

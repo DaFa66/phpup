@@ -39,7 +39,7 @@ PHP is served through **Apache + PHP-FPM** (`mod_proxy_fcgi` → `phpX.Y-fpm`), 
 | **phpMyAdmin** | Tarball from [phpmyadmin.net](https://www.phpmyadmin.net/) | `/etc/phpmyadmin/conf.d/phpup.php` |
 
 phpup adds two external apt repositories for the latest versions:
-- **[ondrej/php](https://deb.sury.org/)** — provides PHP 8.2 through latest stable (currently 8.5), kept current by the repo maintainer
+- **[ondrej/php](https://deb.sury.org/)** — provides PHP 8.2 through latest stable (currently 8.6), kept current by the repo maintainer
 - **[MariaDB.org](https://mariadb.org/download/)** — provides the latest stable MariaDB series instead of the distro default
 
 Both repos support `x86_64` and `arm64`.
@@ -194,12 +194,12 @@ phpup keeps a persistent config at **`~/phpup/config.json`** — co-located with
   "architecture": "x86_64",
   "os": "Debian 13",
   "php_min_series": "8.2",
-  "apache_version": "2.4.68",
-  "mariadb_version": "12.3.3",
-  "php_version": "8.5.9",
-  "phpmyadmin_version": "6.0.2",
-  "mariadb_port": "mariadb-12.3",
-  "php_port": "php85"
+  "apache_version": "2.4.71",
+  "mariadb_version": "13.1.2",
+  "php_version": "8.6.0",
+  "phpmyadmin_version": "5.2.3",
+  "mariadb_port": "mariadb-13.1",
+  "php_port": "php86"
 }
 ```
 

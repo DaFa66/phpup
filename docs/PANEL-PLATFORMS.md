@@ -117,7 +117,7 @@ opens the app cleanly from a fresh download.
 1. `README.md`: platform matrix for the panel.
 2. `docs/MACOS.md` and `docs/LINUX.md`: panel sections, tray dependency, elevation model.
 3. `panel/README.md`: per-OS requirements, build and packaging.
-4. `CHANGELOG.md`: panel version bump (suggest 0.2.0) with the port.
+4. `CHANGELOG.md`: panel version bump with the port (0.2.2 is the current Windows beta).
 5. Release artefacts named per target; document where each one installs.
 
 ## Risks, worst first
@@ -139,4 +139,4 @@ opens the app cleanly from a fresh download.
 1. Linux elevation: `pkexec` with a polkit policy, or a terminal `sudo` prompt?
 2. Apple: pay for notarisation, or ship unsigned with instructions?
 3. Packaging: AppImage only, or also `.deb` and `.rpm`?
-4. Panel version: bump to 0.2.0 when the port lands?
+4. Panel version: 0.2.2 is the current Windows beta; pick the number for the ported build.

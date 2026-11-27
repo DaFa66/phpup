@@ -212,6 +212,11 @@ Homebrew moved Intel x86_64 to **Tier 3** in September 2026: no new bottles, sou
 
 **What that means in practice:**
 
+- **The MacPorts stack follows the ports tree.** `U` compares what is installed with the
+  newest series in the tree (`php86`, `mariadb-13.1`) and moves to it on confirmation,
+  because `port upgrade` never crosses a series: the port name changes with it. MariaDB
+  moves by dumping and restoring your databases, and the old series stays installed with
+  its own data directory.
 - **PHP has no Intel bottles any more.** Every install or upgrade compiles from source — 15–30 minutes each, and a single `u` or `fu` can trigger more than one. The same applies to dependencies (`openssl@3`, `curl`, `pcre2` and friends), so a routine update can run for the better part of an hour.
 - **New Intel installs get MacPorts automatically.** phpup routes every Intel Mac to MacPorts, which still ships Intel bottles, whatever the macOS version.
 - **An existing Homebrew stack is not migrated behind your back.** phpup keeps it, and tells you where it matters instead of nagging: the dashboard header carries `(Intel — PHP builds from source)`, a one-time `[ NOTE ]` on first sighting names the `PHPPUP_BACKEND=port` route, and any install, update or `fu` that is about to compile PHP says so **before** it starts — with the expected 15–30 minutes. (Homebrew's own notice arrives only once the build is under way.) Moving to MacPorts is your call, because a stack migration has to bring the databases with it (see the [MacPorts install guide](INSTALL-OLDER-MAC.md)).

@@ -1,11 +1,10 @@
 ﻿# =======================================================================
 #  phpup — Windows 11 x64 a bare-metal PHP local development environment
-#  Inspired by the simplicity of getphp.org - this script is so much more
 #  Github: https://github.com/DaFa66/phpup
 #  Author: Simon Field (aka - DaFa)
 #  License: MIT
-#  Date: 2026-11-22
-#  Version: 2.5.5
+#  Date: 2026-11-27
+#  Version: 2.5.6
 # =======================================================================
 
 param(
@@ -58,11 +57,14 @@ $BANNER_ART = @'
 '@
 
 # Pinned fallback URLs — used when live scraping/API resolution fails.
+# Keep these at the newest release of each component: they are the offline
+# safety net and the versions the docs quote. Bump all four whenever a
+# component moves, in the same commit as the stack/docs update.
 $FALLBACK_URLS = @{
     Redist     = "https://aka.ms/vc14/vc_redist.x64.exe"
-    Apache     = "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.69-261002-Win64-VS18.zip"
-    PHP        = "https://windows.php.net/downloads/releases/php-8.5.12-1-Win32-vs17-x64.zip"
-    MariaDB    = "https://archive.mariadb.org/mariadb-13.0.2/winx64-packages/mariadb-13.0.2-winx64.zip"
+    Apache     = "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.71-261112-Win64-VS18.zip"
+    PHP        = "https://windows.php.net/downloads/releases/php-8.6.0-Win32-vs18-x64.zip"
+    MariaDB    = "https://archive.mariadb.org/mariadb-13.1.2/winx64-packages/mariadb-13.1.2-winx64.zip"
     phpMyAdmin = "https://files.phpmyadmin.net/phpMyAdmin/5.2.3/phpMyAdmin-5.2.3-all-languages.zip"
 }
 
@@ -4922,7 +4924,7 @@ function Get-ScriptVersion {
     # A streamed run (`irm ... | iex`) has no file, so the literal below is the
     # fallback and must be bumped together with the header.
     if ($script:VERSION_CACHE) { return $script:VERSION_CACHE }
-    $script:VERSION_CACHE = '2.5.5'
+    $script:VERSION_CACHE = '2.5.6'
     if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) {
         foreach ($line in (Get-Content $PSCommandPath -TotalCount 12 -ErrorAction SilentlyContinue)) {
             if ($line -match '^#\s*Version:\s*(\S+)') { $script:VERSION_CACHE = $matches[1]; break }
