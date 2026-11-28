@@ -121,7 +121,7 @@ grep -q 'offer_dump_restore' phpup.sh && [ "$(grep -c '^        offer_dump_resto
     || { FAIL=$((FAIL+1)); printf '  [FAIL] called from both Install and Update\n'; }
 
 printf '\nThe CLI verb:\n'
-grep -q 'status|start|stop|restart|switch|backup|version|help' phpup.sh \
+grep -q 'switch|backup|restore|version|help' phpup.sh \
     && { PASS=$((PASS+1)); printf '  [PASS] backup is accepted as a verb\n'; } \
     || { FAIL=$((FAIL+1)); printf '  [FAIL] backup is accepted as a verb\n'; }
 grep -q 'backup)  cmd_cli_backup' phpup.sh \

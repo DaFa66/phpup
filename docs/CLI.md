@@ -46,7 +46,7 @@ No arguments = today's interactive dashboard, byte-for-byte unchanged.
 | `version` | none         | prints script version, no config or stack access   |
 | `help`    | none         | usage text, exit 0                                 |
 
-Reserved for v2, do not alias these names: `install`, `update`, `restore`, `delete`, `doctor`.
+Reserved for v2, do not alias these names: `install`, `update`, `delete`, `doctor`.
 
 ### `version` output
 
@@ -558,3 +558,45 @@ Restoring is not a verb: the file is ordinary SQL, and any client applies it.
 ```bash
 mysql -u root < ~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql
 ```
+
+---
+
+## 15. `restore` (hidden)
+
+```
+phpup restore [<number>] [--dry-run] [--json] [--quiet]
+phpup restore <file name>
+```
+
+Deliberately absent from `help` and from the dashboard: it replaces live databases. It is documented here so that anyone who goes looking for it finds the rules.
+
+`phpup restore` with no argument lists the files in `~/phpup/dumps/`, newest first, with date, size and contents:
+
+```
+  #   DATE        SIZE     FILE                                       CONTENTS
+  1   28/11/2026  44K      phpup-backup-10.11.14-20261128-213839.sql  5 databases, 4 users
+```
+
+`phpup restore 1` picks that row, `phpup restore phpup-backup-...sql` names it, and a path outside the dumps directory is not accepted.
+
+Three rules it does not bend:
+
+- **It never chooses a file for you.** The newest dump is usually the one just taken, which is the worst thing to restore by accident.
+- **It takes a safety copy first** and refuses to continue if that copy cannot be written. Restoring replaces the databases the file contains.
+- **It asks for the word `yes`**, not a keystroke, and anything else cancels with exit 1 and nothing changed.
+
+`--dry-run` lists what the file would create (databases, tables, accounts) and stops. Accounts are applied as `CREATE USER IF NOT EXISTS`, so a dump restores into a server that already has those accounts.
+
+Payload (`--json`), listing:
+
+```json
+{"schema": 1, "ok": true, "dumps": [{"file": "...", "date": "28/11/2026", "databases": 5, "users": 4, "bytes": 43105}]}
+```
+
+and restoring:
+
+```json
+{"schema": 1, "ok": true, "file": "...", "safety_copy": "...", "databases": 5, "users": 4}
+```
+
+Exit codes: `0` restored or listed, `1` cancelled, failed, or MariaDB stopped, `2` no such file, `3` stack not installed.

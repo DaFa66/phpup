@@ -81,6 +81,12 @@ current when it was installed.
   so the file restores into a different MariaDB series — which is what a series move or a
   backend switch does. The dump uses the active backend's own client, so a neighbour stack's
   server is never the one being read.
+- **`phpup restore`, hidden on purpose.** `phpup restore` lists the dumps in
+  `~/phpup/dumps/` newest first with date, size and contents; `phpup restore <#|file>` restores
+  one after taking a safety copy and asking for a typed `yes`; `--dry-run` shows what the file
+  would create. It never picks a file on its own, refuses a safety copy it cannot write, applies
+  accounts as `CREATE USER IF NOT EXISTS`, and stays out of `help` and the dashboard because it
+  replaces live databases. Documented in `docs/CLI.md` §15 only.
 - **`phpup backup` is a CLI verb on both platforms.** The dashboard's `B` key as a
   non-interactive command: writes the dump, prints its path, and accepts `--json` for the
   path, MariaDB version, database, user and grant counts, and byte size. Stream discipline

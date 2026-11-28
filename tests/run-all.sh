@@ -63,6 +63,7 @@ run_suite tests/harness-brew.sh
 run_suite tests/harness-ports-series.sh
 run_suite tests/harness-backend.sh
 run_suite tests/harness-backup.sh
+run_suite tests/harness-restore.sh
 
 echo ""
 printf 'RESULT: %d gates, %d failed, %d suites, %d skipped\n' \

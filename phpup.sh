@@ -3634,6 +3634,173 @@ cmd_cli_backup() {
     CLI_EXIT=0
 }
 
+# ---- Restore -------------------------------------------------
+# Hidden on purpose: it replaces live databases, so it never appears in `help`
+# or the dashboard. It also never picks a file on its own — the newest dump is
+# usually the one just taken, which is the worst thing to restore by accident.
+restore_dumps() {   # newest first, one path per line
+    ls -1t "${BASE_DIR}/dumps"/*.sql 2>/dev/null
+}
+
+restore_targets() {  # <file> -> one line per thing the file changes
+    local f="$1" line
+    grep -E '^CREATE DATABASE|^CREATE TABLE|^CREATE USER' "$f" 2>/dev/null | while IFS= read -r line; do
+        case "$line" in
+            "CREATE DATABASE"*) printf 'database  %s\n' "$(printf '%s' "$line" | sed 's/.*`\([^`]*\)`.*/\1/')" ;;
+            "CREATE TABLE"*)    printf 'table     %s\n' "$(printf '%s' "$line" | sed 's/.*`\([^`]*\)`.*/\1/')" ;;
+            "CREATE USER"*)     printf 'account   %s\n' "$(printf '%s' "$line" | sed 's/^CREATE USER //; s/ .*//')" ;;
+        esac
+    done
+}
+
+restore_pick() {    # <target> -> absolute path, 0 on success
+    local target="$1" f n=0
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        while IFS= read -r f; do
+            n=$((n+1))
+            if [[ $n -eq $target ]]; then printf '%s' "$f"; return 0; fi
+        done < <(restore_dumps)
+        return 1
+    fi
+    # A name, or a path: only ever a file that lives in this dumps directory.
+    f="${BASE_DIR}/dumps/$(basename "$target")"
+    [[ -s "$f" ]] && { printf '%s' "$f"; return 0; }
+    return 1
+}
+
+restore_list_json() {
+    local f first=1
+    printf '{"schema":1,"ok":true,"dumps":['
+    while IFS= read -r f; do
+        [[ $first == 1 ]] || printf ','
+        first=0
+        printf '{"file":%s,"date":"%s","databases":%s,"users":%s,"bytes":%s}' \
+            "$(jstr "$f")" "$(dump_when "$f")" \
+            "$(grep -c '^CREATE DATABASE' "$f" 2>/dev/null || true)" \
+            "$(grep -c '^CREATE USER' "$f" 2>/dev/null || true)" \
+            "$(wc -c < "$f" 2>/dev/null | tr -d ' ')"
+    done < <(restore_dumps)
+    printf ']}\n'
+}
+
+restore_list_human() {
+    local f n=0
+    if [[ -z "$(restore_dumps)" ]]; then
+        print_warn "No backups in ${BASE_DIR}/dumps — press B (or run 'phpup backup') first"
+        return 1
+    fi
+    printf "\n%s\n" "Backups in ${BASE_DIR}/dumps (newest first):"
+    printf "  %-3s %-11s %-8s %-42s %s\n" "#" "DATE" "SIZE" "FILE" "CONTENTS"
+    while IFS= read -r f; do
+        n=$((n+1))
+        printf "  %-3s %-11s %-8s %-42s %s\n" "$n" "$(dump_when "$f")" \
+            "$(du -h "$f" 2>/dev/null | awk '{print $1}')" "$(basename "$f")" "$(dump_counts "$f")"
+    done < <(restore_dumps)
+    printf "\n%s\n" "  phpup restore <#> <file name>   restore one of these"
+    printf "%s\n\n" "  phpup restore <#> --dry-run     show what it would change"
+}
+
+cmd_cli_restore() {
+    local target="${CLI_RESTORE_TARGET:-}" f
+
+    if [[ -z "$target" ]]; then
+        if [[ $CLI_JSON == 1 ]]; then
+            restore_list_json >&3
+        else
+            restore_list_human
+        fi
+        CLI_EXIT=0
+        return
+    fi
+
+    if [[ $MARIADB == 0 ]]; then
+        cli_backup_fail 3 not_installed "MariaDB is not installed"
+        return
+    fi
+    if ! f=$(restore_pick "$target"); then
+        [[ $CLI_JSON == 1 ]] && printf '{"schema":1,"ok":false,"code":"no_such_file","error":%s}\n' "$(jstr "no dump matches: ${target}")" >&3 \
+            || print_err "No backup matches '${target}' — run 'phpup restore' to see the list"
+        CLI_EXIT=2
+        return
+    fi
+
+    if [[ $CLI_DRY == 1 ]]; then
+        local dbs tables users
+        dbs=$(grep -c '^CREATE DATABASE' "$f" 2>/dev/null || true)
+        tables=$(grep -c '^CREATE TABLE' "$f" 2>/dev/null || true)
+        users=$(grep -c '^CREATE USER' "$f" 2>/dev/null || true)
+        if [[ $CLI_JSON == 1 ]]; then
+            printf '{"schema":1,"ok":true,"dry_run":true,"file":%s,"databases":%s,"tables":%s,"users":%s}\n' \
+                "$(jstr "$f")" "${dbs:-0}" "${tables:-0}" "${users:-0}" >&3
+        else
+            printf "\n%s\n" "Would restore $(basename "$f") ($(dump_when "$f")):"
+            restore_targets "$f" | sed 's/^/  /'
+            printf "\n%s\n\n" "  ${dbs:-0} databases, ${tables:-0} tables, ${users:-0} accounts. Nothing changed."
+        fi
+        CLI_EXIT=0
+        return
+    fi
+
+    if ! is_service_running mariadb; then
+        cli_backup_fail 1 action_failed "MariaDB is not running"
+        return
+    fi
+
+    # Restoring replaces what is there now, so a copy is taken first. If that
+    # copy cannot be made, nothing is restored.
+    local safety
+    BACKUP_NO_PAUSE=1
+    BACKUP_FILE=""
+    if [[ $CLI_QUIET == 1 ]]; then
+        cmd_backup >/dev/null 2>&1
+    else
+        print_info "Taking a safety copy before restoring..."
+        cmd_backup
+    fi
+    safety="$BACKUP_FILE"
+    if [[ -z "$safety" || ! -s "$safety" ]]; then
+        cli_backup_fail 1 action_failed "could not take a safety copy — nothing was restored"
+        return
+    fi
+
+    if [[ $CLI_QUIET == 0 && $CLI_JSON == 0 ]]; then
+        printf "\n%s\n" "About to restore $(basename "$f") into this stack."
+        printf "%s\n" "It replaces the databases it contains. Safety copy: $(basename "$safety")"
+        local ans
+        read -r -p "Type yes to continue: " ans
+        if [[ "$ans" != "yes" ]]; then
+            print_info "Cancelled — nothing was changed"
+            CLI_EXIT=1
+            return
+        fi
+    fi
+
+    local mysql_bin
+    mysql_bin=$(backup_bin mysql)
+    if ! sed 's/^CREATE USER /CREATE USER IF NOT EXISTS /' "$f" | "$mysql_bin" -u root 2>"${BASE_DIR}/dumps/.restore.err"; then
+        local msg
+        msg=$(sed -n '1,3p' "${BASE_DIR}/dumps/.restore.err" 2>/dev/null | tr '\n' ' ')
+        rm -f "${BASE_DIR}/dumps/.restore.err"
+        [[ $CLI_JSON == 1 ]] && printf '{"schema":1,"ok":false,"code":"action_failed","file":%s,"error":%s}\n' "$(jstr "$f")" "$(jstr "${msg:-restore failed}")" >&3 \
+            || print_err "Restore failed: ${msg:-see the output above} — the safety copy is at ${safety}"
+        CLI_EXIT=1
+        return
+    fi
+    rm -f "${BASE_DIR}/dumps/.restore.err"
+
+    if [[ $CLI_JSON == 1 ]]; then
+        printf '{"schema":1,"ok":true,"file":%s,"safety_copy":%s,"databases":%s,"users":%s}\n' \
+            "$(jstr "$f")" "$(jstr "$safety")" \
+            "$(grep -c '^CREATE DATABASE' "$f" 2>/dev/null || true)" \
+            "$(grep -c '^CREATE USER' "$f" 2>/dev/null || true)" >&3
+    else
+        print_ok "Restored $(basename "$f")"
+        printf "%s\n" "        Safety copy: ${safety}"
+        printf "%s\n" "$f" >&3
+    fi
+    CLI_EXIT=0
+}
+
 # ---- Restore Offer ------------------------------------------
 # The step people skip when they move between backends: the new stack has its own
 # data directory, so their databases are not in it until someone restores them.
@@ -5962,7 +6129,7 @@ cmd_cli_switch() {
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            status|start|stop|restart|switch|backup|version|help)
+            status|start|stop|restart|switch|backup|restore|version|help)
                 CLI_VERB="$1"; CLI_MODE=1 ;;
             --json|-Json|json) CLI_JSON=1 ;;
             --fast|-Fast|fast) CLI_FAST=1 ;;
@@ -5988,6 +6155,12 @@ parse_args() {
             --dry-run|-DryRun) CLI_DRY=1 ;;
             --list|-List) CLI_LIST=1 ;;
             *)
+                # `phpup restore 2` — the only verb that takes a bare positional.
+                if [[ "$CLI_VERB" == "restore" && -z "${CLI_RESTORE_TARGET:-}" ]]; then
+                    CLI_RESTORE_TARGET="$1"
+                    shift
+                    continue
+                fi
                 printf 'Unknown argument: %s\n' "$1" >&2
                 CLI_MODE=1; CLI_VERB=""; CLI_EXIT=2 ;;
         esac
@@ -6003,6 +6176,7 @@ run_cli() {
         start|stop|restart) cmd_cli_lifecycle "$CLI_VERB" ;;
         switch)  cmd_cli_switch ;;
         backup)  cmd_cli_backup ;;
+        restore) cmd_cli_restore ;;
         *)
             [[ $CLI_EXIT == 2 ]] || printf 'Unknown command: %s\n' "$CLI_VERB" >&2
             [[ $CLI_QUIET == 0 ]] && printf "Run 'phpup.sh help' for usage.\n" >&2
