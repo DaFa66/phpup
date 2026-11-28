@@ -188,6 +188,18 @@ PHP is never cleared first. A switch stops the services, force-stops any `php.ex
 
 During install, you're prompted to register Apache and MariaDB as Windows services for auto-start on boot. If you skip it, the **S** toggle will offer registration later. Services are named `phpup_Apache` and `phpup_MariaDB`. The dashboard shows current registration state and the **S** command works in both directions — it can also unregister services when they're no longer needed.
 
+## Backup
+
+**B** writes every database and every account to a single file, `C:\phpup\dumps\phpup-backup-<version>-<timestamp>.sql`. It is the snapshot to take before an update, a version switch, or a move to another machine.
+
+The file holds the application databases as data, and the users as `CREATE USER` / `GRANT` statements rather than rows copied out of the `mysql` schema. That difference matters: `mysql.global_priv` changes shape between MariaDB versions, so a dump that carries it restores cleanly only into the version it came from. Users written as SQL restore into any of them.
+
+It uses MariaDB's own `mariadb-dump.exe` from the active install, takes a consistent snapshot of a running server, and refuses to run at all when MariaDB is stopped — start the stack first with **S**. Restore with:
+
+```
+C:\phpup\mariadb\bin\mariadb.exe -u root --skip-password < C:\phpup\dumps\phpup-backup-<version>-<timestamp>.sql
+```
+
 ## Safe Delete
 
 Pressing **D** stops services, backs up your config files (`httpd.conf`, `php.ini`, `my.ini`, `config.inc.php`) to `config_backup\` and MariaDB data to `data_backup\`, then removes Apache, PHP, MariaDB, and phpMyAdmin. Your website files in `www\` are untouched.

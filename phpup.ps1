@@ -84,6 +84,7 @@ function Write-Err($msg)   { Write-Host "[ Error ]  $msg" -ForegroundColor Red }
 function Write-Info($msg)  { Write-Host $msg -ForegroundColor Cyan }
 function Write-Warn($msg)  { Write-Host $msg -ForegroundColor Yellow }
 function Write-Bold($msg)  { Write-Host $msg -ForegroundColor White }
+function Write-Note($msg)  { Write-Host "[ NOTE ]  $msg" -ForegroundColor DarkGray }
 
 # ---- Detection Helpers -------------------------------------
 function Test-ApacheInstalled  { return [System.IO.File]::Exists("$APACHE_PATH\bin\httpd.exe") }
@@ -3724,6 +3725,90 @@ function Invoke-ForcedUpdate {
 }
 
 # ============================================================
+#  BACKUP
+# ============================================================
+
+# One file you can carry to another MariaDB version or another machine: the
+# application databases as data, and the users as CREATE USER/GRANT statements
+# rather than raw mysql.global_priv rows, which do not survive a version jump.
+function Invoke-DatabaseBackup {
+    if (-not (Test-MariaDbInstalled)) {
+        Write-Err "MariaDB is not installed — there is nothing to back up"
+        Read-Host "Press Enter to continue..." | Out-Null
+        return
+    }
+    if (-not (Test-MariaDbRunning)) {
+        Write-Err "MariaDB is not running — start the stack first (S), then run the backup again"
+        Read-Host "Press Enter to continue..." | Out-Null
+        return
+    }
+
+    $client  = Join-Path $MARIADB_PATH "bin\mariadb.exe"
+    $dumpExe = Join-Path $MARIADB_PATH "bin\mariadb-dump.exe"
+    if (-not (Test-Path $dumpExe)) {
+        $legacy = Join-Path $MARIADB_PATH "bin\mysqldump.exe"
+        if (Test-Path $legacy) { $dumpExe = $legacy }
+    }
+    if (-not (Test-Path $client) -or -not (Test-Path $dumpExe)) {
+        Write-Err "Cannot find the MariaDB client tools in $MARIADB_PATH\bin — backup cancelled"
+        Read-Host "Press Enter to continue..." | Out-Null
+        return
+    }
+
+    $dumpDir = Join-Path $BASE "dumps"
+    if (-not (Test-Path $dumpDir)) { New-Item -ItemType Directory -Path $dumpDir -Force | Out-Null }
+    $version = Get-MariaDbVersion
+    if (-not $version) { $version = "unknown" }
+    $outFile = Join-Path $dumpDir ("phpup-backup-{0}-{1}.sql" -f $version, (Get-Date -Format "yyyyMMdd-HHmmss"))
+
+    $dbList = & $client -u root --skip-password -N -e "SHOW DATABASES" 2>$null |
+        Where-Object { $_ -and ($_ -notmatch '^(information_schema|performance_schema|mysql|sys)$') }
+
+    Write-Info "Backing up to $outFile"
+    $dumpArgs = @("-u", "root", "--skip-password", "--system=users", "--single-transaction",
+                  "--routines", "--events", "--triggers")
+    if ($dbList) { $dumpArgs += "--databases"; $dumpArgs += @($dbList) }
+
+    $errFile = Join-Path ([System.IO.Path]::GetTempPath()) ("phpup-dump-{0}.err" -f (Get-Date -Format "HHmmssfff"))
+    $proc = Start-Process -FilePath $dumpExe -ArgumentList $dumpArgs -NoNewWindow -Wait -PassThru `
+                          -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+
+    if ($proc.ExitCode -ne 0) {
+        Write-Err "Backup failed:"
+        if (Test-Path $errFile) {
+            Get-Content $errFile -TotalCount 5 | ForEach-Object { Write-Host "        $_" -ForegroundColor DarkGray }
+            Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item $outFile -Force -ErrorAction SilentlyContinue
+        Read-Host "Press Enter to continue..." | Out-Null
+        return
+    }
+    Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+
+    $bytes = (Get-Item $outFile).Length
+    if ($bytes -lt 512) {
+        Write-Err ("The dump is only {0} bytes — treating it as failed and removing it" -f $bytes)
+        Remove-Item $outFile -Force -ErrorAction SilentlyContinue
+        Read-Host "Press Enter to continue..." | Out-Null
+        return
+    }
+
+    $dbCount    = @(Select-String -Path $outFile -Pattern '^CREATE DATABASE').Count
+    $userCount  = @(Select-String -Path $outFile -Pattern '^CREATE USER').Count
+    $grantCount = @(Select-String -Path $outFile -Pattern '^GRANT ').Count
+    $sizeKb     = [math]::Round($bytes / 1KB, 1)
+
+    Write-Ok "Backup written: $outFile"
+    Write-Host ("        {0} databases, {1} users, {2} grants, {3} KB" -f $dbCount, $userCount, $grantCount, $sizeKb) -ForegroundColor DarkGray
+    if ($dbCount -eq 0) {
+        Write-Note "No user databases were found — the file holds the user grants only"
+    }
+    Write-Note "Users are stored as CREATE USER/GRANT statements, so this file restores into a different MariaDB version"
+    Write-Info "Restore with:  mariadb.exe -u root --skip-password < $outFile"
+    Read-Host "Press Enter to continue..." | Out-Null
+}
+
+# ============================================================
 #  DELETE
 # ============================================================
 
@@ -5680,6 +5765,7 @@ function Show-Dashboard {
         else {
             Write-Host ""
         }
+        Write-Host "B  Backup all databases and users" -ForegroundColor Cyan
         Write-Host "D  Delete the web stack" -ForegroundColor Cyan
     }
     Write-Host "Q  Quit" -ForegroundColor Cyan
@@ -5933,6 +6019,10 @@ while ($true) {
                 }
             }
             else { Write-Err "Stack not installed." }
+        }
+        "b" {
+            if ($stackComplete) { Invoke-DatabaseBackup }
+            else { Write-Err "Stack not installed. Use 'I' to install." }
         }
         "d" {
             if ($stackComplete) { Invoke-DeleteWebStack }

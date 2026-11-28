@@ -74,14 +74,17 @@ current when it was installed.
 - `tests/harness-mariadb-url.ps1` — offline regression test for the MariaDB archive path
   (build-based URL, series-only path rejected, fall-through when a build is unavailable),
   wired into `tests/run-all.ps1`.
-- **`B` backs up the databases and the users as one portable file.** Every database plus
+- **`B` backs up the databases and the users as one portable file — on both platforms.**
+  Every database plus
   every account and grant is written to `~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql`.
   Users are captured as `CREATE USER`/`GRANT` statements rather than raw `mysql` table rows,
   so the file restores into a different MariaDB series — which is what a series move or a
   backend switch does. The dump uses the active backend's own client, so a neighbour stack's
   server is never the one being read.
-- `tests/harness-backup.sh` — checks the dump binary follows the active backend and that the
-  dump stays portable (users as SQL, no raw grant tables), wired into `tests/run-all.sh`.
+- `tests/harness-backup.sh` / `tests/harness-backup.ps1` — the dump binary follows the active
+  backend on macOS/Linux (ports series path, both fallbacks), the dump stays portable (users as
+  SQL, no raw grant tables), and the command refuses when the database is down. Wired into
+  `tests/run-all.sh` and `tests/run-all.ps1`.
 - `tests/harness-ports-series.sh` — offline regression test for the MacPorts series helpers
   (newest phpNN / mariadb series from a stubbed tree, the Stable-list preference, the
   installed-ports fallback, series comparison and arithmetic), wired into `tests/run-all.sh`.
