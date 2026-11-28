@@ -165,6 +165,14 @@ load_config() {
     [[ -n "$php_port" ]] && PHP_PORT="$php_port"
 }
 
+# One value out of config.json. save_config() writes a fixed shape, so a
+# targeted match is enough and phpup stays free of a JSON parser dependency.
+config_value() {
+    local key="$1" file="${CONFIG_FILE:-}"
+    [[ -n "$file" && -f "$file" ]] || return 1
+    sed -n "s/^[[:space:]]*\"${key}\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}[[:space:]]*$/\1/p" "$file" | head -1
+}
+
 save_config() {
     local install_path="$1"
     local apache_ver="$2"
@@ -4220,7 +4228,37 @@ detect_backend() {
     local choice="${PHPPUP_BACKEND:-}"
     case "$choice" in
         port|macports) USE_PORTS=1; return ;;
-        brew|homebrew) USE_PORTS=0; return ;;
+        brew|homebrew)
+            # Forcing brew on an Intel Mac is allowed, but it still means PHP
+            # compiles from source — say so rather than pretending otherwise.
+            USE_PORTS=0
+            [[ "$ARCH" == "x86_64" ]] && INTEL_BREW_NO_BOTTLES=1
+            return
+            ;;
+    esac
+
+    # The backend you last used sticks. save_config() records package_manager on
+    # every install and update; without this, the "existing Homebrew stack" rule
+    # below silently pulled a ports stack back to brew on the next plain run, so
+    # a ports user had to type PHPPUP_BACKEND=port every time. Only honoured when
+    # that backend is still viable, so uninstalling one stack does not leave
+    # phpup pointing at something that is gone.
+    local saved
+    saved=$(config_value package_manager 2>/dev/null || true)
+    case "$saved" in
+        port|macports)
+            if [[ -x "${PORT_PREFIX}/bin/port" ]]; then
+                USE_PORTS=1
+                return
+            fi
+            ;;
+        brew|homebrew)
+            if [[ -n "$BREW_PREFIX" ]]; then
+                USE_PORTS=0
+                [[ "$ARCH" == "x86_64" ]] && INTEL_BREW_NO_BOTTLES=1
+                return
+            fi
+            ;;
     esac
 
     if [[ "$ARCH" == "arm64" ]]; then      # Q1: Apple Silicon = brew only
