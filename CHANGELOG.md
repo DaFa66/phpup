@@ -81,6 +81,13 @@ current when it was installed.
   so the file restores into a different MariaDB series — which is what a series move or a
   backend switch does. The dump uses the active backend's own client, so a neighbour stack's
   server is never the one being read.
+- **Install and Update offer to restore the newest portable backup.** After the stack comes
+  up, phpup looks for the newest `phpup-backup-*.sql` in `~/phpup/dumps/`, names its date and
+  how many databases and users it holds, and asks before restoring anything. It asks once per
+  file, never offers a dump that the current stack made itself, and restores with
+  `CREATE USER IF NOT EXISTS` so the accounts the fresh server already has do not abort the
+  run. This is the step people skip when moving from Homebrew to MacPorts, and it turns a
+  four-step manual migration into three keystrokes and one `y`.
 - `tests/harness-backup.sh` / `tests/harness-backup.ps1` — the dump binary follows the active
   backend on macOS/Linux (ports series path, both fallbacks), the dump stays portable (users as
   SQL, no raw grant tables), and the command refuses when the database is down. Wired into

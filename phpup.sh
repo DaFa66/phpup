@@ -3099,6 +3099,7 @@ cmd_install() {
         printf "${CYAN}Where to access phpMyAdmin?${RESET} http://localhost/phpmyadmin\n"
         printf "${CYAN}How to log into phpMyAdmin?${RESET} Username: root | Password: [blank]\n"
         printf "\n"
+        offer_dump_restore
     else
         print_err "INSTALLATION FAILED! Check the output above for errors."
     fi
@@ -3449,6 +3450,7 @@ cmd_update() {
     [[ -d "$stale_backup" ]] && sudo rm -rf "$stale_backup" 2>/dev/null || true
 
     print_update_summary "${update_ok:-1}" "${components_ok:-1}"
+    [[ "${update_ok:-1}" == 1 ]] && offer_dump_restore
     printf "\n"
     read -r -p "Press Enter to return to the dashboard..."
 }
@@ -3564,6 +3566,67 @@ cmd_backup() {
     print_note "Users are stored as CREATE USER/GRANT statements, so this file restores into another MariaDB series"
     print_info "Restore with:  $(basename "$mysql_bin") -u root < ${out}"
     printf "\n"; read -r -p "Press Enter to continue..."
+}
+
+# ---- Restore Offer ------------------------------------------
+# The step people skip when they move between backends: the new stack has its own
+# data directory, so their databases are not in it until someone restores them.
+# Offered once per file, after a stack comes up, and never for a dump that this
+# stack made itself (that would just be its own data read back).
+dump_when() {   # <file> -> 28/11/2026, from the timestamp in the file name
+    local stamp
+    stamp=$(printf '%s' "$1" | sed -n 's/.*-\([0-9]\{8\}\)-[0-9]\{6\}\.sql$/\1/p')
+    [[ -n "$stamp" ]] || return 0
+    printf '%s/%s/%s' "${stamp:6:2}" "${stamp:4:2}" "${stamp:0:4}"
+}
+
+dump_counts() {  # <file> -> "3 databases, 4 users"
+    local dbs users
+    dbs=$(grep -c '^CREATE DATABASE' "$1" 2>/dev/null || true)
+    users=$(grep -c '^CREATE USER' "$1" 2>/dev/null || true)
+    printf '%s databases, %s users' "${dbs:-0}" "${users:-0}"
+}
+
+offer_dump_restore() {
+    [[ $MARIADB == 1 ]] || return 0
+    local dir="${BASE_DIR}/dumps"
+    [[ -d "$dir" ]] || return 0
+    is_service_running mariadb || return 0
+
+    local f handled
+    handled="${dir}/.handled"
+    f=$(ls -t "$dir"/phpup-backup-*.sql 2>/dev/null | head -1)
+    [[ -n "$f" && -s "$f" ]] || return 0
+    # A dump carrying this stack's own version is its own data; nothing to offer.
+    case "$(basename "$f")" in *-"${MARIADB_VERSION}"-*) return 0 ;; esac
+    grep -qxF "$f" "$handled" 2>/dev/null && return 0
+
+    local ans
+    printf "\n"
+    print_info "Found a backup from another stack: $(basename "$f")"
+    printf "        %s, %s\n" "$(dump_counts "$f")" "$(dump_when "$f")"
+    read -r -p "        Restore it into this stack? [y/N]: " ans
+    case "$ans" in
+        [yY]*)
+            local mysql_bin
+            mysql_bin=$(backup_bin mysql)
+            printf "\n"
+            # Same transform as a series move: the new datadir already holds the
+            # default accounts, and a plain CREATE USER aborts the whole restore.
+            if sed 's/^CREATE USER /CREATE USER IF NOT EXISTS /' "$f" | "$mysql_bin" -u root; then
+                print_ok "Restored $(basename "$f")"
+                # Recorded either way: restoring the same file twice is pointless,
+                # and asking again on every update is nagging.
+                printf '%s\n' "$f" >> "$handled" 2>/dev/null || true
+            else
+                print_err "Restore failed — the file is untouched at ${f}"
+            fi
+            ;;
+        *)
+            printf '%s\n' "$f" >> "$handled" 2>/dev/null || true
+            print_info "Left it alone. The file stays at ${f}"
+            ;;
+    esac
 }
 
 # ---- Delete Command -----------------------------------------

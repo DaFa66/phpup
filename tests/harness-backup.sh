@@ -98,5 +98,27 @@ grep -q '\[bB\]|\[bB\]ackup)' phpup.sh \
     && { PASS=$((PASS+1)); printf '  [PASS] b is dispatched\n'; } \
     || { FAIL=$((FAIL+1)); printf '  [FAIL] b is dispatched\n'; }
 
+printf '\nThe restore offer after a backend switch:\n'
+offer=$(awk '/^offer_dump_restore\(\) \{/{f=1} f{print} f&&/^\}/{exit}' phpup.sh)
+case "$offer" in
+    *"phpup-backup-*.sql"*)        PASS=$((PASS+1)); printf '  [PASS] looks for a portable backup\n' ;;
+    *)                             FAIL=$((FAIL+1)); printf '  [FAIL] looks for a portable backup\n' ;;
+esac
+case "$offer" in
+    *"CREATE USER IF NOT EXISTS"*) PASS=$((PASS+1)); printf '  [PASS] restores accounts without aborting on duplicates\n' ;;
+    *)                             FAIL=$((FAIL+1)); printf '  [FAIL] restores accounts without aborting on duplicates\n' ;;
+esac
+case "$offer" in
+    *'.handled'*)                  PASS=$((PASS+1)); printf '  [PASS] asks about a file only once\n' ;;
+    *)                             FAIL=$((FAIL+1)); printf '  [FAIL] asks about a file only once\n' ;;
+esac
+case "$offer" in
+    *'MARIADB_VERSION'*)           PASS=$((PASS+1)); printf '  [PASS] never offers this stack its own dump\n' ;;
+    *)                             FAIL=$((FAIL+1)); printf '  [FAIL] never offers this stack its own dump\n' ;;
+esac
+grep -q 'offer_dump_restore' phpup.sh && [ "$(grep -c '^        offer_dump_restore\|^    \[\[ "${update_ok:-1}" == 1 \]\] && offer_dump_restore' phpup.sh)" -eq 2 ] \
+    && { PASS=$((PASS+1)); printf '  [PASS] called from both Install and Update\n'; } \
+    || { FAIL=$((FAIL+1)); printf '  [FAIL] called from both Install and Update\n'; }
+
 printf '\nRESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

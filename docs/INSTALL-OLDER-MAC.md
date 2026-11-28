@@ -185,7 +185,7 @@ The move is four steps, and the first one is the one that matters.
 
 **3. Install the MacPorts stack.** Run `PHPPUP_BACKEND=port ~/phpup.sh`. phpup installs Apache, PHP, MariaDB and phpMyAdmin from MacPorts, records the backend in `config.json` so later runs stay on it, and leaves the brew stack installed but idle.
 
-**4. Bring the databases across.** The MacPorts stack is a separate install with its own data directory, so your databases are not in it until you put them there:
+**4. Bring the databases across.** The MacPorts stack is a separate install with its own data directory, so your databases are not in it until you put them there. phpup offers to do it for you: the first Install or Update afterwards prints the backup it found, with the database and user counts, and asks before touching anything. Say yes and it restores it with `CREATE USER IF NOT EXISTS`, which is what keeps the restore from stopping at the first account the new server already has. To do it by hand instead:
 
 ```bash
 /opt/local/bin/mysql -u root < ~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql
