@@ -132,7 +132,7 @@ check 'ignores an absent stable series'        "$(ports_latest_mariadb)" "mariad
 MARIADB_STABLE=13.1
 
 printf '\nSeries comparison:\n'
-export export PORTS_TREE_FILE="$TMP/tree" PORTS_LIST_FILE="$TMP/tree"
+export PORTS_TREE_FILE="$TMP/tree" PORTS_LIST_FILE="$TMP/tree"
 check 'php86 is newer than php85'         "$(ports_is_newer php86 php85 && echo yes || echo no)"   "yes"
 check 'php85 is not newer than php86'     "$(ports_is_newer php85 php86 && echo yes || echo no)"   "no"
 check 'same series is never newer'        "$(ports_is_newer php86 php86 && echo yes || echo no)"   "no"
@@ -143,6 +143,15 @@ check 'empty candidate is not newer'      "$(ports_is_newer '' php85 && echo yes
 printf '\nSeries arithmetic:\n'
 check 'php86 -> 8.6'                      "$(ports_series_of php86)"           "8.6"
 check 'mariadb-13.1 -> 13.1'              "$(ports_series_of mariadb-13.1)"    "13.1"
+
+printf '\nThe series move carries the accounts, and cannot mistake a 0700 datadir for an empty one:\n'
+move=$(awk '/^ports_move_mariadb\(\) \{/,/^}/' "$SCRIPT")
+cfg=$(awk '/^configure_mariadb_ports\(\) \{/,/^}/' "$SCRIPT")
+check 'move dumps users as well as data'      "$(printf '%s' "$move" | grep -c '\"\$dump_bin\" -u root --system=users')" "2"
+check 'restore tolerates existing accounts'   "$(printf '%s' "$move" | grep -c 'CREATE USER IF NOT EXISTS')" "1"
+check 'users saved when there are no databases' "$(printf '%s' "$move" | grep -c 'users-\$(date')" "1"
+check 'datadir probe runs under sudo'         "$(printf '%s' "$cfg" | grep -A2 'datadir_initialized() {' | grep -c 'sudo ls -A')" "1"
+check 'wipe needs proof of emptiness'         "$(printf '%s' "$cfg" | grep -c 'wipe_ok -eq 1')" "1"
 
 printf '\nRESULT: %d passed, %d failed\n' "$pass" "$fail"
 [[ $fail -eq 0 ]] || exit 1

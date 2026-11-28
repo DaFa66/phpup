@@ -1150,17 +1150,26 @@ ports_move_mariadb() {
     dump_bin="${PORT_PREFIX}/lib/${old_port}/bin/mariadb-dump"
     [[ -x "$dump_bin" ]] || dump_bin="${PORT_PREFIX}/bin/mysqldump"
 
+    # --system=users rides along with the data: a series move that carries only
+    # schemas silently drops every account that is not one of the defaults the
+    # new datadir was initialised with.
     if [[ -n "$user_dbs" ]]; then
         dump_file="${dump_dir}/${old_port}-$(date +%Y%m%d-%H%M%S).sql"
         print_info "Dumping databases before the move: $(printf '%s' "$user_dbs" | tr '\n' ' ')"
         # shellcheck disable=SC2086
-        if ! "$dump_bin" -u root --single-transaction --routines --events --databases $user_dbs > "$dump_file" 2>/dev/null; then
+        if ! "$dump_bin" -u root --system=users --single-transaction --routines --events --databases $user_dbs > "$dump_file" 2>/dev/null; then
             print_err "Dump failed — staying on ${old_port}; nothing was changed"
             return 1
         fi
         print_ok "Dumped to ${dump_file}"
     else
-        print_info "No user databases to carry over"
+        print_info "No user databases to carry over — saving the user accounts"
+        dump_file="${dump_dir}/${old_port}-users-$(date +%Y%m%d-%H%M%S).sql"
+        if ! "$dump_bin" -u root --system=users > "$dump_file" 2>/dev/null; then
+            print_err "Dump failed — staying on ${old_port}; nothing was changed"
+            return 1
+        fi
+        print_ok "Dumped user accounts to ${dump_file}"
     fi
 
     sudo "${PORT_PREFIX}/bin/port" unload "${old_port}-server" >/dev/null 2>&1 || true
@@ -1184,7 +1193,11 @@ ports_move_mariadb() {
     # 4. Restore the user schemas.
     if [[ -n "$dump_file" && -s "$dump_file" ]]; then
         print_info "Restoring databases into ${new_port}..."
-        if "${PORT_PREFIX}/bin/mysql" -u root < "$dump_file"; then
+        # The fresh datadir already holds root@localhost and friends, so a plain
+        # CREATE USER aborts the whole restore on the first duplicate. IF NOT
+        # EXISTS keeps the account that is there and creates the ones that are
+        # not; GRANT statements are idempotent.
+        if sed 's/^CREATE USER /CREATE USER IF NOT EXISTS /' "$dump_file" | "${PORT_PREFIX}/bin/mysql" -u root; then
             print_ok "Databases restored"
         else
             print_err "Restore failed — the dump is kept at ${dump_file}"
@@ -2355,10 +2368,19 @@ configure_mariadb_ports() {
 
     # 2. Initialize data dir if empty (server port pre-creates /opt/local/var/db/<port> owned by _mysql)
     local datadir="${PORT_PREFIX}/var/db/${MARIADB_PORT}"
+    # The mysql system schema ships 0700 _mysql, so an unprivileged `ls` answers
+    # "permission denied" — an empty result that reads as "not initialised" and,
+    # further down, as "safe to wipe". Both probes run under sudo, and emptiness
+    # only counts when sudo could actually list the directory.
     datadir_initialized() {
-        [[ -d "$datadir/mysql" ]] && [[ -n "$(ls -A "$datadir/mysql" 2>/dev/null)" ]]
+        [[ -d "$datadir/mysql" ]] && [[ -n "$(sudo ls -A "$datadir/mysql" 2>/dev/null)" ]]
     }
-    if [[ -d "$datadir" ]] && [[ -z "$(ls -A "$datadir" 2>/dev/null)" ]]; then
+    datadir_entries() {
+        sudo ls -A "$datadir" 2>/dev/null
+    }
+    local datadir_entries_ok=0
+    if sudo test -d "$datadir"; then datadir_entries_ok=1; fi
+    if [[ $datadir_entries_ok -eq 1 ]] && [[ -z "$(datadir_entries)" ]]; then
         print_info "Initializing MariaDB data directory..."
         # Prefer --auth-root-authentication-method=normal (native-password root, no
         # unix_socket dance) — documented for MariaDB 10.4+ (12.3/11.4 both qualify).
@@ -2378,7 +2400,7 @@ configure_mariadb_ports() {
         # Never destroy data: a missing/broken mysql/ system schema with
         # user databases present is a corruption case, not a fresh-init
         # case. Only wipe a truly empty datadir; preserve anything else.
-        if [[ -d "$datadir" ]] && [[ -n "$(ls -A "$datadir" 2>/dev/null)" ]]; then
+        if [[ $datadir_entries_ok -eq 1 ]] && [[ -n "$(datadir_entries)" ]]; then
             local preserve_dir
             preserve_dir="${PORT_PREFIX}/var/db/${MARIADB_PORT}.preserved-$(date +%Y%m%d-%H%M%S)"
             sudo mv "$datadir" "$preserve_dir" 2>/dev/null || true
@@ -2388,7 +2410,14 @@ configure_mariadb_ports() {
         fi
         sudo "${PORT_PREFIX}/bin/port" unload "${MARIADB_PORT}-server" >/dev/null 2>&1
         sleep 1
-        if [[ -d "$datadir" ]] && [[ -z "$(ls -A "$datadir" 2>/dev/null)" ]]; then
+        # Delete only what sudo could prove empty; an unreadable directory is
+        # never treated as a discardable one, and this is re-probed here because
+        # the datadir may have just been moved aside.
+        local wipe_ok=0 wipe_entries=""
+        if sudo test -d "$datadir"; then
+            if wipe_entries=$(sudo ls -A "$datadir" 2>/dev/null); then wipe_ok=1; fi
+        fi
+        if [[ $wipe_ok -eq 1 ]] && [[ -z "$wipe_entries" ]]; then
             sudo rm -rf "$datadir" 2>/dev/null || true
         fi
         sudo mkdir -p "$datadir"

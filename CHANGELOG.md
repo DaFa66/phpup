@@ -85,6 +85,17 @@ current when it was installed.
   backend on macOS/Linux (ports series path, both fallbacks), the dump stays portable (users as
   SQL, no raw grant tables), and the command refuses when the database is down. Wired into
   `tests/run-all.sh` and `tests/run-all.ps1`.
+- **A MacPorts series move now carries the accounts, not just the schemas.** The
+  pre-move dump runs with `--system=users`, so user accounts and grants travel with
+  the databases; the restore rewrites `CREATE USER` to `CREATE USER IF NOT EXISTS`
+  because the freshly initialised datadir already holds `root@localhost` and a plain
+  `CREATE USER` aborts the whole restore at the first duplicate. When there are no
+  user databases, the accounts are still saved to their own file.
+- **The MariaDB data directory probes run under `sudo`.** `/opt/local/var/db/<series>/mysql`
+  is `0700 _mysql`, so an unprivileged `ls` answered "permission denied" — an empty
+  result that read as "not initialised", printed "manual init required" after a
+  successful init, and worse, treated a populated datadir as safe to wipe. Emptiness
+  now only counts when `sudo` could actually list the directory.
 - `tests/harness-ports-series.sh` — offline regression test for the MacPorts series helpers
   (newest phpNN / mariadb series from a stubbed tree, the Stable-list preference, the
   installed-ports fallback, series comparison and arithmetic), wired into `tests/run-all.sh`.
