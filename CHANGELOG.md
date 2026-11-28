@@ -85,6 +85,15 @@ current when it was installed.
   backend on macOS/Linux (ports series path, both fallbacks), the dump stays portable (users as
   SQL, no raw grant tables), and the command refuses when the database is down. Wired into
   `tests/run-all.sh` and `tests/run-all.ps1`.
+- **phpMyAdmin's storage wiring on MacPorts now names every table, and the control
+  user is created on every run.** The override only ever wrote `pmadb`, so phpMyAdmin
+  reported "configuration storage is not completely configured" and left relation
+  features disabled — and because that block was appended only when `pmadb` was
+  absent, the missing lines could never be added afterwards. The control user is also
+  created outside the "schema missing" branch: a restored `pma` schema can outlive the
+  `pma` account, which is exactly what a MariaDB series move leaves behind, and the
+  failure used to be swallowed. The account is now verified over TCP, the way
+  phpMyAdmin uses it, and a failure is reported.
 - **A MacPorts series move now carries the accounts, not just the schemas.** The
   pre-move dump runs with `--system=users`, so user accounts and grants travel with
   the databases; the restore rewrites `CREATE USER` to `CREATE USER IF NOT EXISTS`

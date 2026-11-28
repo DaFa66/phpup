@@ -2804,6 +2804,40 @@ PMACONF
     print_ok "Set blowfish secret"
     print_ok "Applied phpMyAdmin overrides (performance, 4h cookie)"
 
+    # Storage wiring is part of the rewrite, not an append-if-missing: phpMyAdmin
+    # needs a table name for every feature, and a file that only named pmadb made
+    # it report "configuration storage is not completely configured" forever,
+    # because the missing lines could never be added once pmadb was present.
+    # Host is forced to TCP — MacPorts' socket lives in a versioned run dir that
+    # PHP's mysqli does not default to (login would fail with "No such file").
+    sudo tee -a "$pma_override" > /dev/null <<'PMASTORAGE'
+
+$cfg['Servers'][1]['host'] = '127.0.0.1';
+$cfg['Servers'][1]['controluser'] = 'pma';
+$cfg['Servers'][1]['controlpass'] = '';
+$cfg['Servers'][1]['pmadb'] = 'pma';
+$cfg['Servers'][1]['bookmarktable'] = 'pma__bookmark';
+$cfg['Servers'][1]['relation'] = 'pma__relation';
+$cfg['Servers'][1]['table_info'] = 'pma__table_info';
+$cfg['Servers'][1]['table_coords'] = 'pma__table_coords';
+$cfg['Servers'][1]['pdf_pages'] = 'pma__pdf_pages';
+$cfg['Servers'][1]['column_info'] = 'pma__column_info';
+$cfg['Servers'][1]['history'] = 'pma__history';
+$cfg['Servers'][1]['table_uiprefs'] = 'pma__table_uiprefs';
+$cfg['Servers'][1]['tracking'] = 'pma__tracking';
+$cfg['Servers'][1]['userconfig'] = 'pma__userconfig';
+$cfg['Servers'][1]['recent'] = 'pma__recent';
+$cfg['Servers'][1]['favorite'] = 'pma__favorite';
+$cfg['Servers'][1]['users'] = 'pma__users';
+$cfg['Servers'][1]['usergroups'] = 'pma__usergroups';
+$cfg['Servers'][1]['navigationhiding'] = 'pma__navigationhiding';
+$cfg['Servers'][1]['savedsearches'] = 'pma__savedsearches';
+$cfg['Servers'][1]['central_columns'] = 'pma__central_columns';
+$cfg['Servers'][1]['designer_settings'] = 'pma__designer_settings';
+$cfg['Servers'][1]['export_templates'] = 'pma__export_templates';
+PMASTORAGE
+    print_ok "Configured phpMyAdmin storage database (pma, TCP host)"
+
     # Tarball ships without config.inc.php — create one that loads the conf.d
     # overrides so AllowNoPassword and the rest take effect.
     local tarball_conf="${PMA_DIR}/config.inc.php"
@@ -2835,22 +2869,22 @@ CONFDINCLUDE
             print_info "Setting up phpMyAdmin storage database..."
             # Rename the db to 'pma' throughout the SQL
             sed 's/phpmyadmin/pma/g' "$pma_sql" | "$mysqlc" -u root 2>/dev/null || true
-            # Grant pma user limited privileges for the storage tables.
-            # MariaDB 12.x does NOT auto-create users on GRANT — CREATE USER first.
-            "$mysqlc" -u root -e "CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY ''; GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null || true
         fi
-        # Wire storage into the override using server index 1 (conf.d loads early).
-        # Force TCP host: MacPorts' socket lives at the versioned run dir which
-        # PHP's mysqli does not default to (login fails: No such file or directory).
-        if ! grep -q "pmadb" "$pma_override" 2>/dev/null; then
-            sudo tee -a "$pma_override" > /dev/null <<'PMASTORAGE'
-
-$cfg['Servers'][1]['host'] = '127.0.0.1';
-$cfg['Servers'][1]['controluser'] = 'pma';
-$cfg['Servers'][1]['controlpass'] = '';
-$cfg['Servers'][1]['pmadb'] = 'pma';
-PMASTORAGE
-            print_ok "Configured phpMyAdmin storage database (pma, TCP host)"
+        # The control user is created and granted on EVERY run, outside the
+        # "schema missing" branch: the pma schema can outlive the account that
+        # reads it (a MariaDB series move restores the schema into a datadir
+        # whose users are the init defaults), and that is exactly how phpMyAdmin
+        # ends up reporting an access-denied control user.
+        # MariaDB 12.x does NOT auto-create users on GRANT — CREATE USER first.
+        if ! "$mysqlc" -u root -e "CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY ''; GRANT SELECT, INSERT, UPDATE, DELETE ON pma.* TO 'pma'@'localhost'; FLUSH PRIVILEGES;" 2>"${LOGS_DIR}/pma_user.err"; then
+            print_warn "Could not create the phpMyAdmin control user: $(head -1 "${LOGS_DIR}/pma_user.err" 2>/dev/null)"
+        fi
+        rm -f "${LOGS_DIR}/pma_user.err"
+        # Verify it the way phpMyAdmin will use it: over TCP, as the override says.
+        if "$mysqlc" -u pma -h 127.0.0.1 -e "SELECT 1" >/dev/null 2>&1; then
+            print_ok "Control user 'pma' reaches the storage schema over TCP"
+        else
+            print_warn "Control user 'pma' cannot log in over TCP — extended features will stay disabled"
         fi
     else
         print_info "phpMyAdmin storage tables not found — skipping storage setup"

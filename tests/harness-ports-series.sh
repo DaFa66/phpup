@@ -153,5 +153,14 @@ check 'users saved when there are no databases' "$(printf '%s' "$move" | grep -c
 check 'datadir probe runs under sudo'         "$(printf '%s' "$cfg" | grep -A2 'datadir_initialized() {' | grep -c 'sudo ls -A')" "1"
 check 'wipe needs proof of emptiness'         "$(printf '%s' "$cfg" | grep -c 'wipe_ok -eq 1')" "1"
 
+printf '\nphpMyAdmin storage wiring on MacPorts:\n'
+# Ends on the function's closing print, not on "}": the heredoc that writes
+# config.inc.php contains a column-0 "}" of its own.
+pma=$(awk '/^configure_phpmyadmin_ports\(\) \{/{f=1} f{print} /^    print_ok "phpMyAdmin configured \(MacPorts\)"$/{exit}' "$SCRIPT")
+check 'storage names the bookmark table'   "$(printf '%s' "$pma" | grep -c -F bookmarktable)" "1"
+check 'storage names the export templates' "$(printf '%s' "$pma" | grep -c -F export_templates)" "1"
+check 'control user created every run'     "$(printf '%s' "$pma" | grep -c -F "CREATE USER IF NOT EXISTS 'pma'@'localhost'")" "1"
+check 'control user verified over TCP'     "$(printf '%s' "$pma" | grep -c -F 'reaches the storage schema')" "1"
+
 printf '\nRESULT: %d passed, %d failed\n' "$pass" "$fail"
 [[ $fail -eq 0 ]] || exit 1
