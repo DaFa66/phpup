@@ -18,7 +18,7 @@ overview of every release.
 
 ---
 
-## [2.5.6-win] / [1.3.5-nix] — 2026-11-27
+## [2.5.6-win] / [1.3.5-nix] — 2026-11-28
 
 ### Windows (phpup.ps1 v2.5.6) and macOS/Linux (phpup.sh v1.3.5)
 
@@ -1786,7 +1786,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 | Version | Date | Key Changes |
 |---------|------|-------------|
 | [**panel 0.2.2-beta**](#panel-022-beta-win--2026-11-23) | 2026-11-23 | A remembered window position is verified against the current monitors before it is restored, and an unreachable one is never written back — the panel can no longer launch off-screen |
-| [**2.5.6-win**](#256-win--135-nix--2026-11-27) / [**1.3.5-nix**](#256-win--135-nix--2026-11-27) | 2026-11-27 | `u` downloads every zip before it deletes anything and MariaDB's archive URL is built from the full release; MacPorts install and update follow the newest series in the tree (PHP 8.6, MariaDB 13.1) with a dump-restore move; `$FALLBACK_URLS` and the docs track the current stack |
+| [**2.5.6-win**](#256-win--135-nix--2026-11-28) / [**1.3.5-nix**](#256-win--135-nix--2026-11-28) | 2026-11-28 | `u` downloads every zip before it deletes anything and MariaDB's archive URL is built from the full release; MacPorts install and update follow the newest series in the tree (PHP 8.6, MariaDB 13.1) with a dump-restore move; `$FALLBACK_URLS` and the docs track the current stack |
 | [**2.5.5-win**](#255-win--134-nix--2026-11-22) | 2026-11-22 | The handover refuses instead of half-committing (unreadable start type, refused boot-disable, failed registry write); `sc.exe`-free process image paths off the polling path; `--remove`, alias ambiguity refusal and `active_path` |
 | [**panel 0.2.1-beta**](#panel-021-beta-win--2026-11-22) | 2026-11-22 | Output pane takes the slack under the cards, `Links` menu, About back in the header, green/red chips on all four cards, a refresh slider that re-polls, window geometry remembered |
 | [**2.5.4-win**](#254-win--133-nix--2026-11-21) | 2026-11-21 | `switch` reaches Windows and gains `--add`, which registers a stack without touching the ports; the switch payload is one shape on both platforms; a pre-release install no longer passes as the matching stable |
@@ -1822,6 +1822,7 @@ First stable release of the macOS and Linux backend. The `-beta` suffix is dropp
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| [**1.3.5-nix**](#256-win--135-nix--2026-11-28) | 2026-11-28 | `b` writes every database and every account to one portable SQL file and `phpup backup` does it from a script; the hidden `phpup restore` lists those files and applies one only after a safety copy and a typed yes, and Install and Update offer the newest backup after a backend switch; MacPorts follows the newest series in the tree, and a series move carries the accounts and reads its datadirs as root |
 | [**1.3.4-nix**](#255-win--134-nix--2026-11-22) | 2026-11-22 | Handover aborts before phpup's boot state is touched when the registry write fails; a refused `systemctl disable` is read back and warned about instead of swallowed; `--remove`, `active_path`, `foreign_active` marker |
 | [**1.3.3-nix**](#254-win--133-nix--2026-11-21) | 2026-11-21 | `switch --add` registers a stack without touching the ports; the switch payload is one shape on both platforms; the handover logic is covered by the harness (34 → 42 checks on a POSIX host) |
 | [**1.3.2-nix**](#132-nix--2026-11-20) | 2026-11-20 | `switch` hands the ports to XAMPP and back on macOS/Linux; a foreign stack is attributable without root; `brew services` runs as the invoking user; the registry remembers the stack and survives an elevated run |
