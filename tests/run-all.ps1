@@ -49,6 +49,7 @@ $toRun += 'tests/harness-prerelease.ps1'
 $toRun += 'tests/harness-prerelease-menu.ps1'
 $toRun += 'tests/harness-mariadb-url.ps1'
 $toRun += 'tests/harness-backup.ps1'
+$toRun += 'tests/harness-restore.ps1'
 
 foreach ($s in $toRun) {
     $suites++

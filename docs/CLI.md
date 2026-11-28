@@ -564,7 +564,8 @@ mysql -u root < ~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql
 ## 15. `restore` (hidden)
 
 ```
-phpup restore [<number>] [--dry-run] [--json] [--quiet]
+phpup restore [<number>] [--dry-run] [--json] [--quiet]      # sh
+phpup.ps1 restore [<number>] [-DryRun] [-Json] [-Quiet]      # PowerShell
 phpup restore <file name>
 ```
 
@@ -585,7 +586,7 @@ Three rules it does not bend:
 - **It takes a safety copy first** and refuses to continue if that copy cannot be written. Restoring replaces the databases the file contains.
 - **It asks for the word `yes`**, not a keystroke, and anything else cancels with exit 1 and nothing changed.
 
-`--dry-run` lists what the file would create (databases, tables, accounts) and stops. Accounts are applied as `CREATE USER IF NOT EXISTS`, so a dump restores into a server that already has those accounts.
+`--dry-run` lists what the file would create (databases, tables, accounts) and stops. Accounts are applied so that a dump restores into a server that already has them: the sh script rewrites `CREATE USER` to `CREATE USER IF NOT EXISTS` in the stream, and the Windows script runs the client with `--force` and then requires every database named in the file to exist, treating any error other than an account collision as a failure. Same outcome, same exit codes, on both.
 
 Payload (`--json`), listing:
 

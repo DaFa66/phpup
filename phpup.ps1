@@ -28,6 +28,10 @@ param(
     [switch]$DryRun,           # report the plan, change nothing
     [switch]$List,             # list registered foreign stacks
     [switch]$Add,              # register a stack by -Path, leave the ports alone
+
+    # ---- restore verb (hidden: replaces live databases) ----
+    [Parameter(Position=1)]
+    [string]$Target,           # dump number or file name
     [switch]$Remove            # drop a stack from the registry by -Path
 )
 
@@ -5507,9 +5511,217 @@ function Invoke-CliLifecycle {
     }
 }
 
+function Get-RestoreDumps {
+    # Newest first, the same order the nix side uses.
+    $dir = Join-Path $BASE 'dumps'
+    if (-not (Test-Path -LiteralPath $dir)) { return @() }
+    return @(Get-ChildItem -LiteralPath $dir -Filter *.sql -File -ErrorAction SilentlyContinue |
+             Sort-Object LastWriteTime -Descending)
+}
+
+function Measure-Dump {
+    # One pass over the file: the listing shows these counts, and the dry run
+    # and the success check reuse them.
+    param([string]$Path)
+    $dbs = 0; $tables = 0; $users = 0; $grants = 0
+    foreach ($line in [System.IO.File]::ReadLines($Path)) {
+        if ($line.StartsWith('CREATE DATABASE')) { $dbs++ }
+        elseif ($line.StartsWith('CREATE TABLE')) { $tables++ }
+        elseif ($line.StartsWith('CREATE USER')) { $users++ }
+        elseif ($line.StartsWith('GRANT ')) { $grants++ }
+    }
+    return [ordered]@{ databases = $dbs; tables = $tables; users = $users; grants = $grants }
+}
+
+function Get-DumpDate {
+    # The timestamp is in the name, so the listing agrees with the filename even
+    # after a copy changes its mtime.
+    param($File)
+    if ($File.Name -match '-(\d{4})(\d{2})(\d{2})-\d{6}\.sql$') {
+        return ('{0}/{1}/{2}' -f $Matches[3], $Matches[2], $Matches[1])
+    }
+    return $File.LastWriteTime.ToString('dd/MM/yyyy')
+}
+
+function Get-DumpDatabases {
+    param([string]$Path)
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($line in [System.IO.File]::ReadLines($Path)) {
+        if ($line.StartsWith('CREATE DATABASE') -and $line -match '`([^`]+)`') { $names.Add($Matches[1]) }
+    }
+    return $names
+}
+
+function Resolve-RestoreTarget {
+    # Never a guess: a number from the listing, or a file that lives in dumps/.
+    param([string]$Target, $Dumps)
+    if ($Target -match '^\d+$') {
+        $n = [int]$Target
+        if ($n -ge 1 -and $n -le @($Dumps).Count) { return @($Dumps)[$n - 1] }
+        return $null
+    }
+    $candidate = Join-Path (Join-Path $BASE 'dumps') (Split-Path $Target -Leaf)
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return (Get-Item -LiteralPath $candidate) }
+    return $null
+}
+
+function Show-RestoreList {
+    param($Dumps)
+    $dir = Join-Path $BASE 'dumps'
+    if (@($Dumps).Count -eq 0) {
+        Write-Warn "No backups in $dir — press B (or run 'phpup.ps1 backup') first"
+        return
+    }
+    Write-Host ""
+    Write-Host "Backups in $dir (newest first):"
+    Write-Host ("  {0,-3} {1,-11} {2,-8} {3,-42} {4}" -f '#', 'DATE', 'SIZE', 'FILE', 'CONTENTS')
+    $i = 0
+    foreach ($d in @($Dumps)) {
+        $i++
+        $m = Measure-Dump -Path $d.FullName
+        $size = '{0}K' -f [math]::Ceiling($d.Length / 1KB)
+        Write-Host ("  {0,-3} {1,-11} {2,-8} {3,-42} {4} databases, {5} users" -f $i, (Get-DumpDate $d), $size, $d.Name, $m.databases, $m.users)
+    }
+    Write-Host ""
+    Write-Host "  phpup.ps1 restore <#> <file name>   restore one of these"
+    Write-Host "  phpup.ps1 restore <#> -DryRun       show what it would change"
+    Write-Host ""
+}
+
+function Invoke-Restore {
+    # Hidden verb: it replaces live databases, so it never appears in help or the
+    # dashboard. Same three rules as the nix side: no automatic pick, a safety
+    # copy first, and a typed yes.
+    param([string]$Target, [switch]$Json, [switch]$DryRun, [switch]$Quiet)
+
+    $result = [ordered]@{ ok = $false; code = 'action_failed'; file = $null; safety_copy = $null
+                          databases = 0; tables = 0; users = 0; error = $null }
+
+    $dumps = Get-RestoreDumps
+    if ([string]::IsNullOrWhiteSpace($Target)) {
+        $items = @()
+        foreach ($d in $dumps) {
+            $m = Measure-Dump -Path $d.FullName
+            $items += [ordered]@{ file = $d.FullName; date = (Get-DumpDate $d)
+                                  databases = $m.databases; users = $m.users; bytes = $d.Length }
+        }
+        $result.payload = [ordered]@{ schema = $script:STATUS_SCHEMA; ok = $true; dumps = $items }
+        if (-not $Json -and -not $Quiet) { Show-RestoreList $dumps }
+        $result.ok = $true
+        return $result
+    }
+
+    $file = Resolve-RestoreTarget -Target $Target -Dumps $dumps
+    if (-not $file) {
+        $result.code = 'no_such_file'
+        $result.error = "no dump matches: $Target"
+        if (-not $Quiet) { Write-Err "No backup matches '$Target' — run 'phpup restore' to see the list" }
+        return $result
+    }
+    $m = Measure-Dump -Path $file.FullName
+    $result.file = $file.FullName
+    $result.databases = $m.databases
+    $result.tables = $m.tables
+    $result.users = $m.users
+
+    if ($DryRun) {
+        $result.payload = [ordered]@{ schema = $script:STATUS_SCHEMA; ok = $true; dry_run = $true
+                                      file = $file.FullName; databases = $m.databases
+                                      tables = $m.tables; users = $m.users }
+        if (-not $Json -and -not $Quiet) {
+            Write-Host ""
+            Write-Host "Would restore $($file.Name) ($(Get-DumpDate $file)):"
+            foreach ($db in (Get-DumpDatabases -Path $file.FullName)) { Write-Host "  database  $db" }
+            Write-Host ""
+            Write-Host ("  {0} databases, {1} tables, {2} accounts. Nothing changed." -f $m.databases, $m.tables, $m.users)
+            Write-Host ""
+        }
+        $result.ok = $true
+        return $result
+    }
+
+    if (-not (Test-MariaDbRunning)) {
+        $result.error = 'MariaDB is not running'
+        if (-not $Quiet) { Write-Err "MariaDB is not running — start the stack first (S)" }
+        return $result
+    }
+
+    # A restore replaces what is there now, so a copy is taken first. If that
+    # copy cannot be written, nothing is restored.
+    if (-not $Quiet) { Write-Info "Taking a safety copy before restoring..." }
+    $safety = Invoke-DatabaseBackup -NoPause
+    if (-not $safety.ok) {
+        $result.error = 'could not take a safety copy — nothing was restored'
+        if (-not $Quiet) { Write-Err "Could not take a safety copy — nothing was restored" }
+        return $result
+    }
+    $result.safety_copy = $safety.file
+
+    if (-not $Quiet -and -not $Json) {
+        Write-Host ""
+        Write-Host "About to restore $($file.Name) into this stack."
+        Write-Host "It replaces the databases it contains. Safety copy: $(Split-Path $safety.file -Leaf)"
+        $answer = Read-Host "Type yes to continue"
+        if ($answer -ne 'yes') {
+            Write-Info "Cancelled — nothing was changed"
+            $result.code = 'cancelled'
+            $result.error = 'cancelled'
+            return $result
+        }
+    }
+
+    $client = Join-Path $MARIADB_PATH 'bin\mariadb.exe'
+    if (-not (Test-Path -LiteralPath $client)) { $client = Join-Path $MARIADB_PATH 'bin\mysql.exe' }
+    $errFile = Join-Path (Join-Path $BASE 'dumps') '.restore.err'
+    Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+
+    # --force keeps a pre-existing account from aborting the run: the dump's
+    # CREATE USER statements collide with the accounts a live server already has.
+    # Anything else the client complains about is treated as a failure below.
+    $proc = Start-Process -FilePath $client `
+                          -ArgumentList @('-u', 'root', '--skip-password', '--force') `
+                          -RedirectStandardInput $file.FullName `
+                          -RedirectStandardError $errFile -NoNewWindow -PassThru -Wait
+    $errs = @()
+    if (Test-Path -LiteralPath $errFile) {
+        $errs = @(Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue)
+        Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+    }
+    $fatal = @($errs | Where-Object { $_ -match '^ERROR' -and $_ -notmatch 'ERROR 1396' -and $_ -notmatch 'CREATE USER' })
+
+    # The file says which databases it carries; all of them must exist now.
+    $expected = Get-DumpDatabases -Path $file.FullName
+    $present = @()
+    $probe = & $client -u root --skip-password -N -e 'SHOW DATABASES' 2>$null
+    if ($probe) { $present = @($probe | ForEach-Object { $_.Trim() }) }
+    $missing = @($expected | Where-Object { $present -notcontains $_ })
+
+    if ($proc.ExitCode -ne 0 -or $fatal.Count -gt 0 -or $missing.Count -gt 0) {
+        $why = if ($fatal.Count -gt 0) { ($fatal[0..([math]::Min(2, $fatal.Count - 1))] -join ' ') }
+               elseif ($missing.Count -gt 0) { "missing after restore: $($missing -join ', ')" }
+               else { 'the client reported a failure' }
+        $result.error = $why
+        if (-not $Quiet) {
+            Write-Err "Restore failed: $why"
+            Write-Info "The safety copy is untouched at $($safety.file)"
+        }
+        return $result
+    }
+
+    $result.ok = $true; $result.code = $null
+    $result.payload = [ordered]@{ schema = $script:STATUS_SCHEMA; ok = $true; file = $result.file
+                                  safety_copy = $result.safety_copy; databases = $m.databases
+                                  users = $m.users }
+    if (-not $Json -and -not $Quiet) {
+        Write-Ok "Restored $($file.Name)"
+        Write-Host "        Safety copy: $($safety.file)"
+    }
+    return $result
+}
+
 function Invoke-CliVerb {
     param([string]$Verb, [switch]$Json, [switch]$Fast, [switch]$Quiet, [int]$Watch,
-          [string]$To, [string]$SwitchPath, [switch]$DryRun, [switch]$List)
+          [string]$To, [string]$SwitchPath, [switch]$DryRun, [switch]$List, [string]$Target)
 
     # The exit code travels in a script variable, not the return value: the
     # payload goes out on the success stream and capturing both in one
@@ -5552,6 +5764,30 @@ function Invoke-CliVerb {
                 Write-Output ("{0}: {1} (changed: {2})" -f $p.action, $state, $p.changed)
             }
             $script:CliExitCode = $result.code
+            return
+        }
+        'restore' {
+            if ($Fast -or $Watch -gt 0) {
+                [Console]::Error.WriteLine('restore does not accept --fast or --watch')
+                $script:CliExitCode = 2
+                return
+            }
+            $cfg = Get-Config
+            if ($cfg -and $cfg.install_path) { $BASE = $cfg.install_path }
+            Initialize-Paths
+            $r = Invoke-Restore -Target $Target -Json:$Json -DryRun:$DryRun -Quiet:$Quiet
+            if ($Json) {
+                if ($r.payload) { Write-CliJson $r.payload }
+                else {
+                    Write-CliJson ([ordered]@{ schema = $script:STATUS_SCHEMA; ok = $false
+                                               code = $r.code; error = $r.error })
+                }
+            }
+            elseif (-not $Quiet -and $r.ok -and $r.file) { Write-Output $r.file }
+            $script:CliExitCode = if ($r.ok) { 0 }
+                                  elseif ($r.code -eq 'no_such_file') { 2 }
+                                  elseif ($r.code -eq 'cancelled') { 1 }
+                                  else { 1 }
             return
         }
         'backup' {
@@ -5828,7 +6064,7 @@ if (-not [string]::IsNullOrWhiteSpace($Command)) {
     $OutputEncoding = New-Object System.Text.UTF8Encoding $false
     $script:CliExitCode = 0
     Invoke-CliVerb -Verb $Command -Json:$Json -Fast:$Fast -Quiet:$Quiet -Watch $Watch `
-                   -To $To -SwitchPath $SwitchPath -DryRun:$DryRun -List:$List
+                   -To $To -SwitchPath $SwitchPath -DryRun:$DryRun -List:$List -Target $Target
     exit $script:CliExitCode
 }
 
