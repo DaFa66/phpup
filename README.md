@@ -110,6 +110,7 @@ The dashboard shows installed versions, running services, useful paths, and avai
 | **fu** | _(hidden)_ PHP version switch (package manager on Mac/Linux, cached zips on Windows with a missing series downloaded on demand — flags newer patches, handles pre-release labels; on Linux switches Apache's PHP-FPM runtime + CLI together) |
 | **R**  | Restart Apache + MariaDB                                                                        |
 | **S**  | Toggle services — stops if running, starts if stopped. On Windows, offers service registration. |
+| **B**  | Back up every database and user to one portable SQL file in `phpup/dumps/`                      |
 | **D**  | Delete the stack (preserves `www/` and databases)                                               |
 | **Q**  | Quit                                                                                            |
 

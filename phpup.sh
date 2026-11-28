@@ -1422,6 +1422,7 @@ show_dashboard() {
         printf "${CYAN}${UNDERLINE}U${RESET}${CYAN}pdate${RESET}   Update components to latest versions.\n"
         printf "${CYAN}${UNDERLINE}R${RESET}${CYAN}estart${RESET}  Restart all services.\n"
         printf "${CYAN}${UNDERLINE}S${RESET}${CYAN}tart${RESET}    Start / Stop services.\n"
+        printf "${CYAN}${UNDERLINE}B${RESET}${CYAN}ackup${RESET}   Back up all databases and users to an SQL file.\n"
         printf "${CYAN}${UNDERLINE}D${RESET}${CYAN}elete${RESET}   Delete the web stack.\n"
     fi
     printf "${CYAN}${UNDERLINE}Q${RESET}${CYAN}uit${RESET}     Quit this application.\n"
@@ -3389,6 +3390,119 @@ cmd_update() {
     read -r -p "Press Enter to return to the dashboard..."
 }
 
+# ---- Backup Command -----------------------------------------
+# The ACTIVE backend's own client tools. Taking a dump with a neighbour stack's
+# binary is how you dump the wrong server and restore it somewhere it does not
+# belong, so these are pinned the same way the service checks are.
+backup_bin() {
+    local which="$1" d
+    case "$which" in
+        mysql)
+            if [[ $USE_APT == 1 ]]; then
+                command -v mysql || command -v mariadb
+            elif [[ $USE_PORTS == 1 ]]; then
+                printf '%s' "${PORT_PREFIX}/bin/mysql"
+            else
+                printf '%s' "${BREW_PREFIX}/bin/mysql"
+            fi
+            ;;
+        dump)
+            if [[ $USE_APT == 1 ]]; then
+                command -v mariadb-dump || command -v mysqldump
+                return
+            fi
+            if [[ $USE_PORTS == 1 ]]; then
+                d="${PORT_PREFIX}/lib/${MARIADB_PORT}/bin/mariadb-dump"
+                [[ -x "$d" ]] || d="${PORT_PREFIX}/bin/mariadb-dump"
+            else
+                d="${BREW_PREFIX}/opt/mariadb/bin/mariadb-dump"
+                [[ -x "$d" ]] || d="${BREW_PREFIX}/bin/mariadb-dump"
+            fi
+            printf '%s' "$d"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# One file you can carry to another MariaDB series or another backend: the
+# application databases as data, and the users as CREATE USER/GRANT statements
+# rather than raw mysql.global_priv rows, which do not survive a version jump.
+cmd_backup() {
+    if [[ $MARIADB == 0 ]]; then
+        print_warn "MariaDB is not installed — there is nothing to back up"
+        printf "\n"; read -r -p "Press Enter to continue..."; return 0
+    fi
+    if ! is_service_running mariadb; then
+        print_err "MariaDB is not running — start the stack first (S), then run the backup again"
+        printf "\n"; read -r -p "Press Enter to continue..."; return 1
+    fi
+
+    local mysql_bin dump_bin
+    mysql_bin=$(backup_bin mysql)
+    dump_bin=$(backup_bin dump)
+    if [[ -z "$mysql_bin" || ! -x "$mysql_bin" ]]; then
+        print_err "Cannot find the mysql client for this stack — backup cancelled"
+        printf "\n"; read -r -p "Press Enter to continue..."; return 1
+    fi
+    if [[ -z "$dump_bin" || ! -x "$dump_bin" ]]; then
+        print_err "Cannot find mariadb-dump for this stack — backup cancelled"
+        printf "\n"; read -r -p "Press Enter to continue..."; return 1
+    fi
+
+    local dir ts out dbs
+    dir="${BASE_DIR}/dumps"
+    if ! mkdir -p "$dir" 2>/dev/null; then
+        print_err "Cannot create ${dir} — backup cancelled"
+        printf "\n"; read -r -p "Press Enter to continue..."; return 1
+    fi
+    ts=$(date +%Y%m%d-%H%M%S)
+    out="${dir}/phpup-backup-${MARIADB_VERSION}-${ts}.sql"
+
+    dbs=$("$mysql_bin" -u root -N -e "SHOW DATABASES" 2>/dev/null \
+        | grep -vE '^(information_schema|performance_schema|mysql|sys)$' || true)
+
+    print_info "Backing up to ${out}"
+    # No array for the database list: macOS ships bash 3.2, where an empty array
+    # can expand to an empty argument and make mariadb-dump read "" as a schema.
+    local dump_ok=1
+    if [[ -n "$dbs" ]]; then
+        # shellcheck disable=SC2086
+        "$dump_bin" -u root --system=users --single-transaction --routines --events --triggers \
+            --databases $dbs > "$out" 2>"${dir}/.backup.err" || dump_ok=0
+    else
+        "$dump_bin" -u root --system=users --single-transaction --routines --events --triggers \
+            > "$out" 2>"${dir}/.backup.err" || dump_ok=0
+    fi
+    if [[ $dump_ok -eq 0 ]]; then
+        print_err "Backup failed:"
+        sed -n '1,5p' "${dir}/.backup.err" 2>/dev/null | sed 's/^/        /'
+        rm -f "$out"
+        printf "\n"; read -r -p "Press Enter to continue..."; return 1
+    fi
+    rm -f "${dir}/.backup.err"
+
+    local bytes db_count user_count grant_count
+    bytes=$(wc -c < "$out" 2>/dev/null | tr -d ' ')
+    db_count=$(grep -c '^CREATE DATABASE' "$out" 2>/dev/null || true)
+    user_count=$(grep -c '^CREATE USER' "$out" 2>/dev/null || true)
+    grant_count=$(grep -c '^GRANT ' "$out" 2>/dev/null || true)
+    [[ -z "$bytes" ]] && bytes=0
+
+    if [[ "$bytes" -lt 512 ]]; then
+        print_err "The dump is only ${bytes} bytes — treating it as failed and removing it"
+        rm -f "$out"
+        printf "\n"; read -r -p "Press Enter to continue..."; return 1
+    fi
+
+    print_ok "Backup written: ${out}"
+    printf "        %s databases, %s users, %s grants, %s\n" \
+        "${db_count:-0}" "${user_count:-0}" "${grant_count:-0}" "$(du -h "$out" 2>/dev/null | awk '{print $1}')"
+    [[ "${db_count:-0}" -eq 0 ]] && print_note "No user databases were found — the file holds the user grants only"
+    print_note "Users are stored as CREATE USER/GRANT statements, so this file restores into another MariaDB series"
+    print_info "Restore with:  $(basename "$mysql_bin") -u root < ${out}"
+    printf "\n"; read -r -p "Press Enter to continue..."
+}
+
 # ---- Delete Command -----------------------------------------
 cmd_delete() {
     if [[ $STACK == 0 ]]; then
@@ -4247,13 +4361,23 @@ detect_backend() {
     saved=$(config_value package_manager 2>/dev/null || true)
     case "$saved" in
         port|macports)
+            [[ -x "${PORT_PREFIX}/bin/port" ]] || PORT_PREFIX=$(config_value port_prefix 2>/dev/null || true)
+            [[ -z "$PORT_PREFIX" ]] && PORT_PREFIX="/opt/local"
             if [[ -x "${PORT_PREFIX}/bin/port" ]]; then
                 USE_PORTS=1
                 return
             fi
             ;;
         brew|homebrew)
-            if [[ -n "$BREW_PREFIX" ]]; then
+            # BREW_PREFIX is only populated when `brew` is on PATH. Over ssh, or
+            # from a GUI launch, it may not be — and falling through to the
+            # "existing Cellar" rule then reads as "no brew stack" and quietly
+            # switches a brew user to ports. config.json records the prefix, so
+            # use it as the second opinion.
+            local bp="${BREW_PREFIX:-}"
+            [[ -z "$bp" ]] && bp=$(config_value brew_prefix 2>/dev/null || true)
+            if [[ -n "$bp" && -x "${bp}/bin/brew" ]]; then
+                BREW_PREFIX="$bp"
                 USE_PORTS=0
                 [[ "$ARCH" == "x86_64" ]] && INTEL_BREW_NO_BOTTLES=1
                 return
@@ -5793,6 +5917,10 @@ main() {
                     printf "\n"
                     read -r -p "Press Enter to continue..."
                 fi
+                ;;
+            [bB]|[bB]ackup)
+                cmd_backup
+                detect_all
                 ;;
             [dD]|[dD]elete)
                 cmd_delete

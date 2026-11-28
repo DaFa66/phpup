@@ -44,8 +44,9 @@ PYEOF
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/phpup-backend-XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
-mkdir -p "$TMP/brew/Cellar/mariadb/12.3.3" "$TMP/ports/bin"
+mkdir -p "$TMP/brew/Cellar/mariadb/12.3.3" "$TMP/brew/bin" "$TMP/ports/bin" "$TMP/empty"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/ports/bin/port"; chmod +x "$TMP/ports/bin/port"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/brew/bin/brew";  chmod +x "$TMP/brew/bin/brew"
 
 extract_fn config_value    > "$TMP/lib.sh" || { echo "ABORT: config_value"; exit 1; }
 extract_fn detect_backend >> "$TMP/lib.sh" || { echo "ABORT: detect_backend"; exit 1; }
@@ -61,14 +62,19 @@ BREW_PREFIX="$TMP/brew"
 PORT_PREFIX="$TMP/ports"
 CONFIG_FILE="$TMP/config.json"
 
-write_config() { # write_config <package_manager|"">
+write_config() { # write_config <package_manager|""> [brew_prefix] [port_prefix]
     if [ -z "$1" ]; then rm -f "$TMP/config.json"; return; fi
-    printf '{\n  "install_path": "%s",\n  "package_manager": "%s",\n  "php_version": "8.6.0"\n}\n' "$TMP" "$1" > "$TMP/config.json"
+    {
+        printf '{\n  "install_path": "%s",\n  "package_manager": "%s",\n' "$TMP" "$1"
+        [ -n "${2:-}" ] && printf '  "brew_prefix": "%s",\n' "$2"
+        [ -n "${3:-}" ] && printf '  "port_prefix": "%s",\n' "$3"
+        printf '  "php_version": "8.6.0"\n}\n'
+    } > "$TMP/config.json"
 }
 
-run() { # run <env-backend|""> <config-pm|""> <arch> <brew-prefix|"">
+run() { # run <env-backend|""> <config-pm|""> <arch> <brew-prefix|""> [config-brew-prefix] [config-port-prefix]
     PHPPUP_BACKEND="$1"
-    write_config "$2"
+    write_config "$2" "${5:-}" "${6:-}"
     ARCH="$3"
     BREW_PREFIX="$4"
     USE_PORTS=0
@@ -102,6 +108,14 @@ eq 'config port but no port binary -> brew'     "0/1" "$(run "" port x86_64 "$TM
 eq 'config port, no port binary, no Cellar -> ports' "1/0" "$(run "" port x86_64 "$TMP/empty")"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/ports/bin/port"; chmod +x "$TMP/ports/bin/port"
 eq 'config brew but no brew prefix -> ports'    "1/0" "$(run "" brew x86_64 "")"
+
+printf '\nWhen the package manager is not on PATH (ssh, GUI launch):\n'
+eq 'brew off PATH, config records the prefix -> brew' \
+   "$(run "" brew x86_64 "" "$TMP/brew")" "0/1"
+PORT_PREFIX="$TMP/nowhere"
+eq 'port off PATH, config records the prefix -> ports' \
+   "$(run "" port x86_64 "$TMP/brew" "" "$TMP/ports")" "1/0"
+PORT_PREFIX="$TMP/ports"
 
 printf '\nPlatform defaults when there is no config at all:\n'
 eq 'existing brew stack wins on Intel'          "0/1" "$(run "" "" x86_64 "$TMP/brew")"
