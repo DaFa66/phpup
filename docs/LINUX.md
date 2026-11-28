@@ -180,6 +180,14 @@ Pressing **D**:
 
 On reinstall, configs in `/etc` are re-applied automatically. MariaDB data is restored from `data_backup/`.
 
+## Backups
+
+Press **B** to write every database and every account to a single file, `~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql`. The file holds the application databases as data, and the users as `CREATE USER` / `GRANT` statements rather than rows copied out of the `mysql` schema, so it restores into a different MariaDB version. It uses the active backend's own client tools, takes a consistent snapshot of a running server, and declines to run while MariaDB is stopped.
+
+```bash
+mysql -u root < ~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql
+```
+
 ## Configuration
 
 phpup keeps a persistent config at **`~/phpup/config.json`** — co-located with the stack so the config travels with the install folder. It's written on install, update, version switch, and delete, and read at startup.

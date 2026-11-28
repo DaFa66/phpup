@@ -80,6 +80,8 @@ PHPPUP_BACKEND=port /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com
 
 If you already have a working Homebrew stack, phpup keeps it — it never silently migrates you to MacPorts, and it never nags. On an Intel Mac the dashboard header carries the caveat (`Homebrew: /usr/local (Intel — PHP builds from source)`), a one-time `[ NOTE ]` explains it and names the way out (`PHPPUP_BACKEND=port`), and any install, update or `fu` that is about to compile PHP from source says so **before** it starts, with the expected time.
 
+One difference between the two is worth knowing before you pick. On Intel, brew's MariaDB 13 formula wants `openjdk 27`, which is arm64-only and needs a full Xcode install, so brew looks set to stop at 12.x there. MacPorts still ships Intel binaries and carries series in its own time: it has MariaDB 12.3 today, and 13 when the tree has it. phpup always offers the newest series the installed tree actually has, never a version the package manager cannot deliver.
+
 > **On an Intel Mac?** Homebrew no longer supports the platform at all, so follow the step-by-step, screenshot-led guide: **[docs/INSTALL-OLDER-MAC.md](docs/INSTALL-OLDER-MAC.md)**
 
 ## The Dashboard

@@ -171,6 +171,16 @@ Pressing **D**:
 
 Config files live in the Homebrew prefix and are wiped on uninstall — that's brew's normal behaviour. phpup re-generates them on reinstall, so there's nothing to back up.
 
+## Backups
+
+Press **B** to write every database and every account to a single file, `~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql`. The file holds the application databases as data, and the users as `CREATE USER` / `GRANT` statements rather than rows copied out of the `mysql` schema, so it restores into a different MariaDB version. It uses the active backend's own client tools, takes a consistent snapshot of a running server, and declines to run while MariaDB is stopped.
+
+```bash
+mysql -u root < ~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql
+```
+
+This is the file to take before an update, a version switch, or a move from Homebrew to MacPorts.
+
 ## Switching Between Stacks (`switch`)
 
 If older projects of yours live in XAMPP, `switch` hands ports 80 and 3306 to it and takes them
@@ -213,13 +223,18 @@ Homebrew moved Intel x86_64 to **Tier 3** in September 2026: no new bottles, sou
 **What that means in practice:**
 
 - **The MacPorts stack follows the ports tree.** `U` compares what is installed with the
-  newest series in the tree (`php86`, `mariadb-13.1`) and moves to it on confirmation,
-  because `port upgrade` never crosses a series: the port name changes with it. MariaDB
-  moves by dumping and restoring your databases, and the old series stays installed with
-  its own data directory.
+  newest series the tree actually carries (`php86` and `mariadb-12.3` at the time of
+  writing) and moves to it on confirmation, because `port upgrade` never crosses a series:
+  the port name changes with it. When MacPorts packages MariaDB 13, the same `U` offers it
+  with no change to phpup. MariaDB moves by dumping and restoring your databases and your
+  accounts, and the old series stays installed with its own data directory.
+- **brew, on the other hand, looks set to stop at 12.x.** Its MariaDB 13.1.2 formula depends
+  on `openjdk 27`, which requires arm64 and a full Xcode install, and Homebrew ships no Intel
+  bottle for it. That is not something phpup can work around, and it is why Intel Macs are
+  routed to MacPorts.
 - **PHP has no Intel bottles any more.** Every install or upgrade compiles from source — 15–30 minutes each, and a single `u` or `fu` can trigger more than one. The same applies to dependencies (`openssl@3`, `curl`, `pcre2` and friends), so a routine update can run for the better part of an hour.
 - **New Intel installs get MacPorts automatically.** phpup routes every Intel Mac to MacPorts, which still ships Intel bottles, whatever the macOS version.
-- **An existing Homebrew stack is not migrated behind your back.** phpup keeps it, and tells you where it matters instead of nagging: the dashboard header carries `(Intel — PHP builds from source)`, a one-time `[ NOTE ]` on first sighting names the `PHPPUP_BACKEND=port` route, and any install, update or `fu` that is about to compile PHP says so **before** it starts — with the expected 15–30 minutes. (Homebrew's own notice arrives only once the build is under way.) Moving to MacPorts is your call, because a stack migration has to bring the databases with it (see the [MacPorts install guide](INSTALL-OLDER-MAC.md)).
+- **An existing Homebrew stack is not migrated behind your back.** phpup keeps it, and tells you where it matters instead of nagging: the dashboard header carries `(Intel — PHP builds from source)`, a one-time `[ NOTE ]` on first sighting names the `PHPPUP_BACKEND=port` route, and any install, update or `fu` that is about to compile PHP says so **before** it starts — with the expected 15–30 minutes. (Homebrew's own notice arrives only once the build is under way.) Moving to MacPorts is your call, and the safe order is one command at a time: press **B** for a portable dump of every database and account, stop the services with **S**, run the installer with `PHPPUP_BACKEND=port`, then restore that dump into the new MariaDB series. The [MacPorts install guide](INSTALL-OLDER-MAC.md) walks through it.
 - **Apple Silicon:** unaffected. This is Intel-only.
 
 ## Troubleshooting

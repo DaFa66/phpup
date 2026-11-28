@@ -163,6 +163,7 @@ Back in phpup's dashboard:
 | `R`           | Restart Apache and MariaDB                      |
 | `S`           | Stop Apache and MariaDB                         |
 | `U`           | Update everything                               |
+| `B`           | Back up every database and user to one SQL file |
 | `D`           | Delete the whole stack (your website files stay)|
 | `fu`          | Switch PHP version (hidden power-user command)  |
 
@@ -171,6 +172,28 @@ PHP or MariaDB series has landed it lists the move (`PHP php85 → php86 (newer 
 performs it on confirmation. MariaDB moves by dumping your databases, installing the new
 series and restoring them: the old series stays installed with its own data directory
 untouched, and the dump is kept in `~/phpup/dumps/`.
+
+## Moving from Homebrew to MacPorts
+
+If this Mac already had a Homebrew stack, phpup keeps it running rather than migrating you behind your back. Homebrew moved Intel to Tier 3 in September 2026, and its newer MariaDB formulas depend on packages that only build for arm64, so brew on Intel effectively stops at 12.x. MacPorts still ships Intel binaries and will carry MariaDB 13 when it packages it.
+
+The move is four steps, and the first one is the one that matters.
+
+**1. Take a backup.** In the dashboard press `B`. It writes `~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql`, holding every database plus every account and grant, written as `CREATE USER` / `GRANT` statements so it restores into a different MariaDB series. Keep that file until the new stack has been checked.
+
+**2. Stop the brew services.** Press `S` while phpup is still in brew mode. Only one stack can own ports 80 and 3306, and phpup will not stop a stack it does not manage.
+
+**3. Install the MacPorts stack.** Run `PHPPUP_BACKEND=port ~/phpup.sh`. phpup installs Apache, PHP, MariaDB and phpMyAdmin from MacPorts, records the backend in `config.json` so later runs stay on it, and leaves the brew stack installed but idle.
+
+**4. Bring the databases across.** The MacPorts stack is a separate install with its own data directory, so your databases are not in it until you put them there:
+
+```bash
+/opt/local/bin/mysql -u root < ~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql
+```
+
+Then check the database list in phpMyAdmin, and open a table or two.
+
+Afterwards `~/phpup.sh` keeps using MacPorts, `PHPPUP_BACKEND=brew` goes back to the Homebrew stack, and neither stack was ever pointed at the other's data directory.
 
 ## Why is it slow?
 
