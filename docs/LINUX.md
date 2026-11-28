@@ -189,6 +189,8 @@ mysql -u root < ~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql
 ```
 From a script: `phpup backup` writes the same file and prints its path, and `phpup backup --json` returns the path, version, database and user counts, and byte size.
 
+Restoring is a hidden command, deliberately absent from this dashboard and from `help`: `phpup restore` lists the dumps with their dates and contents, and `phpup restore 1` (or a file name) applies one, but only after taking a safety copy and asking for the typed word `yes`. `--dry-run` shows what the file would create.
+
 ## Configuration
 
 phpup keeps a persistent config at **`~/phpup/config.json`** — co-located with the stack so the config travels with the install folder. It's written on install, update, version switch, and delete, and read at startup.

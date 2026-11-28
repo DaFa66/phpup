@@ -182,6 +182,8 @@ mysql -u root < ~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql
 This is the file to take before an update, a version switch, or a move from Homebrew to MacPorts.
 From a script: `phpup backup` writes the same file and prints its path, and `phpup backup --json` returns the path, version, database and user counts, and byte size.
 
+Restoring is a hidden command, deliberately absent from this dashboard and from `help`: `phpup restore` lists the dumps with their dates and contents, and `phpup restore 1` (or a file name) applies one, but only after taking a safety copy and asking for the typed word `yes`. `--dry-run` shows what the file would create.
+
 ## Switching Between Stacks (`switch`)
 
 If older projects of yours live in XAMPP, `switch` hands ports 80 and 3306 to it and takes them

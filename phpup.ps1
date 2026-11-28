@@ -5649,7 +5649,8 @@ function Invoke-Restore {
     # A restore replaces what is there now, so a copy is taken first. If that
     # copy cannot be written, nothing is restored.
     if (-not $Quiet) { Write-Info "Taking a safety copy before restoring..." }
-    $safety = Invoke-DatabaseBackup -NoPause
+    $safety = if ($Quiet -or $Json) { Invoke-DatabaseBackup -NoPause 6>$null }
+              else { Invoke-DatabaseBackup -NoPause }
     if (-not $safety.ok) {
         $result.error = 'could not take a safety copy — nothing was restored'
         if (-not $Quiet) { Write-Err "Could not take a safety copy — nothing was restored" }
@@ -5657,17 +5658,25 @@ function Invoke-Restore {
     }
     $result.safety_copy = $safety.file
 
-    if (-not $Quiet -and -not $Json) {
-        Write-Host ""
-        Write-Host "About to restore $($file.Name) into this stack."
-        Write-Host "It replaces the databases it contains. Safety copy: $(Split-Path $safety.file -Leaf)"
+    # Always asked: a restore that skips the question is a one-flag way to
+    # overwrite live data by accident.
+    Write-Host ""
+    Write-Host "About to restore $($file.Name) into this stack."
+    Write-Host "It replaces the databases it contains. Safety copy: $(Split-Path $safety.file -Leaf)"
+    if ([Console]::IsInputRedirected) {
+        # Piped in from a script: Read-Host would wait on a console that is not
+        # there, and the run would hang instead of asking.
+        Write-Host "Type yes to continue:"
+        $answer = [Console]::In.ReadLine()
+    }
+    else {
         $answer = Read-Host "Type yes to continue"
-        if ($answer -ne 'yes') {
-            Write-Info "Cancelled — nothing was changed"
-            $result.code = 'cancelled'
-            $result.error = 'cancelled'
-            return $result
-        }
+    }
+    if ($answer -ne 'yes') {
+        Write-Info "Cancelled — nothing was changed"
+        $result.code = 'cancelled'
+        $result.error = 'cancelled'
+        return $result
     }
 
     $client = Join-Path $MARIADB_PATH 'bin\mariadb.exe'
@@ -5801,7 +5810,8 @@ function Invoke-CliVerb {
             $cfg = Get-Config
             if ($cfg -and $cfg.install_path) { $BASE = $cfg.install_path }
             Initialize-Paths
-            $r = Invoke-DatabaseBackup -NoPause
+            $r = if ($Json -or $Quiet) { Invoke-DatabaseBackup -NoPause 6>$null }
+                 else { Invoke-DatabaseBackup -NoPause }
             if ($Json) {
                 Write-CliJson ([ordered]@{ schema = $script:STATUS_SCHEMA; ok = [bool]$r.ok; code = $r.code
                                            file = $r.file; mariadb_version = $r.mariadb_version

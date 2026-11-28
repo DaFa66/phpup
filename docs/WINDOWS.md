@@ -202,6 +202,8 @@ C:\phpup\mariadb\bin\mariadb.exe -u root --skip-password < C:\phpup\dumps\phpup-
 
 From a script: `phpup backup` writes the same file and prints its path, and `phpup backup --json` returns the path, version, database and user counts, and byte size.
 
+Restoring is a hidden command, deliberately absent from this dashboard and from `help`: `phpup.ps1 restore` lists the dumps with their dates and contents, and `phpup.ps1 restore 1` (or a file name) applies one, but only after taking a safety copy and asking for the typed word `yes`. `-DryRun` shows what the file would create, `-Json` covers both.
+
 ## Safe Delete
 
 Pressing **D** stops services, backs up your config files (`httpd.conf`, `php.ini`, `my.ini`, `config.inc.php`) to `config_backup\` and MariaDB data to `data_backup\`, then removes Apache, PHP, MariaDB, and phpMyAdmin. Your website files in `www\` are untouched.

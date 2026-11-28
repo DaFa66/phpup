@@ -3763,16 +3763,16 @@ cmd_cli_restore() {
         return
     fi
 
-    if [[ $CLI_QUIET == 0 && $CLI_JSON == 0 ]]; then
-        printf "\n%s\n" "About to restore $(basename "$f") into this stack."
-        printf "%s\n" "It replaces the databases it contains. Safety copy: $(basename "$safety")"
-        local ans
-        read -r -p "Type yes to continue: " ans
-        if [[ "$ans" != "yes" ]]; then
-            print_info "Cancelled — nothing was changed"
-            CLI_EXIT=1
-            return
-        fi
+    # Always asked, including in --json and --quiet: a restore that skips the
+    # question is a one-flag way to overwrite live data by accident.
+    printf "\n%s\n" "About to restore $(basename "$f") into this stack."
+    printf "%s\n" "It replaces the databases it contains. Safety copy: $(basename "$safety")"
+    local ans
+    read -r -p "Type yes to continue: " ans
+    if [[ "$ans" != "yes" ]]; then
+        print_info "Cancelled — nothing was changed"
+        CLI_EXIT=1
+        return
     fi
 
     local mysql_bin
