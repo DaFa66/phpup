@@ -81,6 +81,12 @@ current when it was installed.
   so the file restores into a different MariaDB series — which is what a series move or a
   backend switch does. The dump uses the active backend's own client, so a neighbour stack's
   server is never the one being read.
+- **`phpup backup` is a CLI verb on both platforms.** The dashboard's `B` key as a
+  non-interactive command: writes the dump, prints its path, and accepts `--json` for the
+  path, MariaDB version, database, user and grant counts, and byte size. Stream discipline
+  and exit codes follow the existing contract (`0` written, `1` failed or MariaDB stopped,
+  `3` not installed, `2` for `--fast`/`--watch`, which it does not accept). `--quiet` is
+  silent, so `f=$(phpup backup --quiet)` works in a script.
 - **Install and Update offer to restore the newest portable backup.** After the stack comes
   up, phpup looks for the newest `phpup-backup-*.sql` in `~/phpup/dumps/`, names its date and
   how many databases and users it holds, and asks before restoring anything. It asks once per

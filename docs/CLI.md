@@ -42,10 +42,11 @@ No arguments = today's interactive dashboard, byte-for-byte unchanged.
 | `stop`    | stops        | idempotent                                         |
 | `restart` | stop + start | idempotent                                         |
 | `switch`  | stops one stack, starts another | hands ports 80/3306 over; see §13    |
+| `backup`  | writes a dump file | one portable SQL file; see §14                     |
 | `version` | none         | prints script version, no config or stack access   |
 | `help`    | none         | usage text, exit 0                                 |
 
-Reserved for v2, do not alias these names: `install`, `update`, `delete`, `doctor`.
+Reserved for v2, do not alias these names: `install`, `update`, `restore`, `delete`, `doctor`.
 
 ### `version` output
 
@@ -513,3 +514,47 @@ Linux drives `/opt/lampp lampp startapache|startmysql` and records `systemctl is
 On macOS the port probe trusts `port_owner_active()` before any listener path: Apache runs as
 root (invisible to an unprivileged `lsof`) and the MariaDB binary lives in the brew prefix rather
 than under `~/phpup`, so path matching alone would misreport phpup's own stack.
+
+---
+
+## 14. `backup` (portable dump)
+
+```
+phpup backup [--json] [--quiet]
+```
+
+Writes one file to `~/phpup/dumps/phpup-backup-<mariadb-version>-<timestamp>.sql` and prints its path. Same code as the dashboard's **B** key: the application databases as data, the users as `CREATE USER` / `GRANT` statements, routines, events and triggers, taken from a consistent snapshot of the running server with the active backend's own client tools.
+
+The `mysql` schema is deliberately excluded. Its grant tables do not survive a version jump, which is the whole reason the accounts travel as SQL instead.
+
+Requires a running MariaDB: `start` first if it is stopped. A dump smaller than 512 bytes is treated as a failure, deleted, and reported as one, so a broken file is never left looking like a backup.
+
+Payload (`--json`):
+
+```json
+{
+  "schema": 1,
+  "ok": true,
+  "code": null,
+  "file": "/home/dafa/phpup/dumps/phpup-backup-10.11.14-20261128-211748.sql",
+  "mariadb_version": "10.11.14",
+  "databases": 4,
+  "users": 4,
+  "grants": 11,
+  "bytes": 42205
+}
+```
+
+On failure `ok` is `false`, `code` is `not_installed` or `action_failed`, and `error` carries the reason. Exit codes follow §5: `0` written, `1` the dump did not complete or MariaDB is stopped, `3` the stack is not installed, `2` for `--fast` or `--watch`, which this verb does not accept.
+
+`--quiet` suppresses the human output; the file path is still on stdout in human mode, which is what a script wants:
+
+```bash
+f=$(phpup backup --quiet) && echo "backed up to $f"
+```
+
+Restoring is not a verb: the file is ordinary SQL, and any client applies it.
+
+```bash
+mysql -u root < ~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql
+```

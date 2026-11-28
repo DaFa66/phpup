@@ -62,5 +62,12 @@ else {
 }
 
 Write-Host ''
+Write-Host 'The CLI verb:'
+Assert 'backup is dispatched as a verb'   ($source -match "(?m)^\s+'backup'\s*\{")
+Assert 'runs without the dashboard pause' ($source -match 'Invoke-DatabaseBackup -NoPause')
+Assert 'returns a result object'          ($source -match 'param\(\[switch\]\$NoPause\)')
+Assert 'lists itself in the usage text'   ($source -match 'phpup\.ps1 backup \[-Json\]')
+
+Write-Host ''
 Write-Host "RESULT: $pass passed, $fail failed"
 if ($fail -gt 0) { exit 1 } else { exit 0 }

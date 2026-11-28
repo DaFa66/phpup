@@ -3732,15 +3732,26 @@ function Invoke-ForcedUpdate {
 # application databases as data, and the users as CREATE USER/GRANT statements
 # rather than raw mysql.global_priv rows, which do not survive a version jump.
 function Invoke-DatabaseBackup {
+    param([switch]$NoPause)
+
+    # Returns a result object so the CLI verb can print JSON and pick an exit
+    # code. The dashboard ignores it and shows the human lines as before.
+    $r = [ordered]@{ ok = $false; code = 'action_failed'; file = $null
+                     mariadb_version = $null; databases = 0; users = 0
+                     grants = 0; bytes = 0; error = $null }
+    function Pause-IfInteractive { if (-not $NoPause) { Read-Host "Press Enter to continue..." | Out-Null } }
+
     if (-not (Test-MariaDbInstalled)) {
         Write-Err "MariaDB is not installed — there is nothing to back up"
-        Read-Host "Press Enter to continue..." | Out-Null
-        return
+        $r.error = 'MariaDB is not installed'; $r.code = 'not_installed'
+        Pause-IfInteractive
+        return $r
     }
     if (-not (Test-MariaDbRunning)) {
         Write-Err "MariaDB is not running — start the stack first (S), then run the backup again"
-        Read-Host "Press Enter to continue..." | Out-Null
-        return
+        $r.error = 'MariaDB is not running'
+        Pause-IfInteractive
+        return $r
     }
 
     $client  = Join-Path $MARIADB_PATH "bin\mariadb.exe"
@@ -3751,8 +3762,9 @@ function Invoke-DatabaseBackup {
     }
     if (-not (Test-Path $client) -or -not (Test-Path $dumpExe)) {
         Write-Err "Cannot find the MariaDB client tools in $MARIADB_PATH\bin — backup cancelled"
-        Read-Host "Press Enter to continue..." | Out-Null
-        return
+        $r.error = 'MariaDB client tools not found'
+        Pause-IfInteractive
+        return $r
     }
 
     $dumpDir = Join-Path $BASE "dumps"
@@ -3780,8 +3792,9 @@ function Invoke-DatabaseBackup {
             Remove-Item $errFile -Force -ErrorAction SilentlyContinue
         }
         Remove-Item $outFile -Force -ErrorAction SilentlyContinue
-        Read-Host "Press Enter to continue..." | Out-Null
-        return
+        $r.error = 'mariadb-dump failed'
+        Pause-IfInteractive
+        return $r
     }
     Remove-Item $errFile -Force -ErrorAction SilentlyContinue
 
@@ -3789,8 +3802,9 @@ function Invoke-DatabaseBackup {
     if ($bytes -lt 512) {
         Write-Err ("The dump is only {0} bytes — treating it as failed and removing it" -f $bytes)
         Remove-Item $outFile -Force -ErrorAction SilentlyContinue
-        Read-Host "Press Enter to continue..." | Out-Null
-        return
+        $r.error = 'the dump was too small to trust'
+        Pause-IfInteractive
+        return $r
     }
 
     $dbCount    = @(Select-String -Path $outFile -Pattern '^CREATE DATABASE').Count
@@ -3805,7 +3819,11 @@ function Invoke-DatabaseBackup {
     }
     Write-Note "Users are stored as CREATE USER/GRANT statements, so this file restores into a different MariaDB version"
     Write-Info "Restore with:  mariadb.exe -u root --skip-password < $outFile"
-    Read-Host "Press Enter to continue..." | Out-Null
+    $r.ok = $true; $r.code = $null
+    $r.file = $outFile; $r.mariadb_version = $version
+    $r.databases = $dbCount; $r.users = $userCount; $r.grants = $grantCount; $r.bytes = $bytes
+    Pause-IfInteractive
+    return $r
 }
 
 # ============================================================
@@ -5400,6 +5418,7 @@ Usage:
   phpup.ps1                          interactive dashboard
   phpup.ps1 status [-Fast] [-Json]   report stack state
   phpup.ps1 start|stop|restart       control services (idempotent)
+  phpup.ps1 backup [-Json]          write one portable dump of every database and user
   phpup.ps1 switch [-To <target>] [-Path <dir>] [-DryRun] [-List] [-Add] [-Json]
                                      hand ports 80/3306 to a foreign stack (XAMPP) or back;
                                      -Add -Path <dir> registers one without switching
@@ -5533,6 +5552,31 @@ function Invoke-CliVerb {
                 Write-Output ("{0}: {1} (changed: {2})" -f $p.action, $state, $p.changed)
             }
             $script:CliExitCode = $result.code
+            return
+        }
+        'backup' {
+            if ($Fast -or $Watch -gt 0) {
+                [Console]::Error.WriteLine('backup does not accept --fast or --watch')
+                $script:CliExitCode = 2
+                return
+            }
+            # The derived paths are set after the CLI dispatch in the dashboard
+            # flow, so a verb has to resolve them before it can find MariaDB.
+            $cfg = Get-Config
+            if ($cfg -and $cfg.install_path) { $BASE = $cfg.install_path }
+            Initialize-Paths
+            $r = Invoke-DatabaseBackup -NoPause
+            if ($Json) {
+                Write-CliJson ([ordered]@{ schema = $script:STATUS_SCHEMA; ok = [bool]$r.ok; code = $r.code
+                                           file = $r.file; mariadb_version = $r.mariadb_version
+                                           databases = $r.databases; users = $r.users; grants = $r.grants
+                                           bytes = $r.bytes; error = $r.error })
+            }
+            elseif (-not $Quiet) {
+                if ($r.ok) { Write-Output $r.file }
+                elseif ($r.error) { [Console]::Error.WriteLine("phpup: $($r.error)") }
+            }
+            $script:CliExitCode = if ($r.ok) { 0 } elseif ($r.code -eq 'not_installed') { 3 } else { 1 }
             return
         }
         'switch' {

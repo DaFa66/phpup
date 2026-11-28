@@ -180,6 +180,7 @@ mysql -u root < ~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql
 ```
 
 This is the file to take before an update, a version switch, or a move from Homebrew to MacPorts.
+From a script: `phpup backup` writes the same file and prints its path, and `phpup backup --json` returns the path, version, database and user counts, and byte size.
 
 ## Switching Between Stacks (`switch`)
 

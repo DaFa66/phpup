@@ -3490,16 +3490,25 @@ backup_bin() {
 }
 
 # One file you can carry to another MariaDB series or another backend: the
+# The dashboard pauses at the end of a backup; the CLI verb must not, so the same
+# code serves both. BACKUP_NO_PAUSE is set by cmd_cli_backup only.
+backup_pause() {
+    [[ ${BACKUP_NO_PAUSE:-0} == 1 ]] && return 0
+    printf "\n"; read -r -p "Press Enter to continue..."
+}
+
 # application databases as data, and the users as CREATE USER/GRANT statements
 # rather than raw mysql.global_priv rows, which do not survive a version jump.
 cmd_backup() {
     if [[ $MARIADB == 0 ]]; then
         print_warn "MariaDB is not installed — there is nothing to back up"
-        printf "\n"; read -r -p "Press Enter to continue..."; return 0
+        BACKUP_ERROR="MariaDB is not installed — there is nothing to back up"
+        backup_pause; return 0
     fi
     if ! is_service_running mariadb; then
         print_err "MariaDB is not running — start the stack first (S), then run the backup again"
-        printf "\n"; read -r -p "Press Enter to continue..."; return 1
+        BACKUP_ERROR="MariaDB is not running — start the stack first (S), then run the backup again"
+        backup_pause; return 1
     fi
 
     local mysql_bin dump_bin
@@ -3507,18 +3516,21 @@ cmd_backup() {
     dump_bin=$(backup_bin dump)
     if [[ -z "$mysql_bin" || ! -x "$mysql_bin" ]]; then
         print_err "Cannot find the mysql client for this stack — backup cancelled"
-        printf "\n"; read -r -p "Press Enter to continue..."; return 1
+        BACKUP_ERROR="Cannot find the mysql client for this stack — backup cancelled"
+        backup_pause; return 1
     fi
     if [[ -z "$dump_bin" || ! -x "$dump_bin" ]]; then
         print_err "Cannot find mariadb-dump for this stack — backup cancelled"
-        printf "\n"; read -r -p "Press Enter to continue..."; return 1
+        BACKUP_ERROR="Cannot find mariadb-dump for this stack — backup cancelled"
+        backup_pause; return 1
     fi
 
     local dir ts out dbs
     dir="${BASE_DIR}/dumps"
     if ! mkdir -p "$dir" 2>/dev/null; then
         print_err "Cannot create ${dir} — backup cancelled"
-        printf "\n"; read -r -p "Press Enter to continue..."; return 1
+        BACKUP_ERROR="Cannot create ${dir} — backup cancelled"
+        backup_pause; return 1
     fi
     ts=$(date +%Y%m%d-%H%M%S)
     out="${dir}/phpup-backup-${MARIADB_VERSION}-${ts}.sql"
@@ -3540,9 +3552,10 @@ cmd_backup() {
     fi
     if [[ $dump_ok -eq 0 ]]; then
         print_err "Backup failed:"
+        BACKUP_ERROR="Backup failed:"
         sed -n '1,5p' "${dir}/.backup.err" 2>/dev/null | sed 's/^/        /'
         rm -f "$out"
-        printf "\n"; read -r -p "Press Enter to continue..."; return 1
+        backup_pause; return 1
     fi
     rm -f "${dir}/.backup.err"
 
@@ -3555,9 +3568,16 @@ cmd_backup() {
 
     if [[ "$bytes" -lt 512 ]]; then
         print_err "The dump is only ${bytes} bytes — treating it as failed and removing it"
+        BACKUP_ERROR="The dump is only ${bytes} bytes — treating it as failed and removing it"
         rm -f "$out"
-        printf "\n"; read -r -p "Press Enter to continue..."; return 1
+        backup_pause; return 1
     fi
+
+    BACKUP_FILE="${out}"
+    BACKUP_DBS="${db_count:-0}"
+    BACKUP_USERS="${user_count:-0}"
+    BACKUP_GRANTS="${grant_count:-0}"
+    BACKUP_BYTES="${bytes}"
 
     print_ok "Backup written: ${out}"
     printf "        %s databases, %s users, %s grants, %s\n" \
@@ -3565,7 +3585,53 @@ cmd_backup() {
     [[ "${db_count:-0}" -eq 0 ]] && print_note "No user databases were found — the file holds the user grants only"
     print_note "Users are stored as CREATE USER/GRANT statements, so this file restores into another MariaDB series"
     print_info "Restore with:  $(basename "$mysql_bin") -u root < ${out}"
-    printf "\n"; read -r -p "Press Enter to continue..."
+    backup_pause
+}
+
+# `phpup backup` — the same dump as B, without the dashboard's pause. The payload
+# goes to fd3 in JSON mode; the human progress lines already go to stderr.
+cli_backup_fail() {  # <exit-code> <code-string> <message>
+    if [[ $CLI_JSON == 1 ]]; then
+        printf '{"schema":1,"ok":false,"code":"%s","error":%s}\n' "$2" "$(jstr "$3")" >&3
+    elif [[ $CLI_QUIET == 0 ]]; then
+        printf 'phpup: %s\n' "$3" >&2
+    fi
+    CLI_EXIT="$1"
+}
+
+cmd_cli_backup() {
+    if [[ $MARIADB == 0 ]]; then
+        cli_backup_fail 3 not_installed "MariaDB is not installed"
+        return
+    fi
+    if ! is_service_running mariadb; then
+        cli_backup_fail 1 action_failed "MariaDB is not running"
+        return
+    fi
+
+    BACKUP_NO_PAUSE=1
+    BACKUP_FILE=""
+    BACKUP_ERROR=""
+    if [[ $CLI_QUIET == 1 ]]; then
+        cmd_backup >/dev/null 2>&1
+    else
+        cmd_backup
+    fi
+    if [[ $? -ne 0 ]]; then
+        cli_backup_fail 1 action_failed "${BACKUP_ERROR:-the dump did not complete}"
+        return
+    fi
+
+    if [[ $CLI_JSON == 1 ]]; then
+        printf '{"schema":1,"ok":true,"file":%s,"mariadb_version":%s,"databases":%s,"users":%s,"grants":%s,"bytes":%s}\n' \
+            "$(jstr "$BACKUP_FILE")" "$(jstr "${MARIADB_VERSION:-}")" \
+            "${BACKUP_DBS:-0}" "${BACKUP_USERS:-0}" "${BACKUP_GRANTS:-0}" "${BACKUP_BYTES:-0}" >&3
+    else
+        # The path is the payload even without --json: fd3 is the real stdout, so
+        # f=$(phpup backup) works and --quiet still answers with just the path.
+        printf '%s\n' "$BACKUP_FILE" >&3
+    fi
+    CLI_EXIT=0
 }
 
 # ---- Restore Offer ------------------------------------------
@@ -5352,6 +5418,7 @@ Usage:
   phpup.sh                            interactive dashboard
   phpup.sh status [--fast] [--json]   report stack state
   phpup.sh start|stop|restart         control services (idempotent)
+  phpup.sh backup [--json]          write one portable dump of every database and user
   phpup.sh switch [--to <target>] [--path <dir>] [--dry-run] [--list] [--add] [--json]
                                       hand ports 80/3306 to a foreign stack (XAMPP) or back;
                                       --add --path <dir> registers one without switching
@@ -5895,7 +5962,7 @@ cmd_cli_switch() {
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            status|start|stop|restart|switch|version|help)
+            status|start|stop|restart|switch|backup|version|help)
                 CLI_VERB="$1"; CLI_MODE=1 ;;
             --json|-Json|json) CLI_JSON=1 ;;
             --fast|-Fast|fast) CLI_FAST=1 ;;
@@ -5935,6 +6002,7 @@ run_cli() {
         help)    cmd_cli_usage ;;
         start|stop|restart) cmd_cli_lifecycle "$CLI_VERB" ;;
         switch)  cmd_cli_switch ;;
+        backup)  cmd_cli_backup ;;
         *)
             [[ $CLI_EXIT == 2 ]] || printf 'Unknown command: %s\n' "$CLI_VERB" >&2
             [[ $CLI_QUIET == 0 ]] && printf "Run 'phpup.sh help' for usage.\n" >&2

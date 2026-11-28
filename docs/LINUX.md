@@ -187,6 +187,7 @@ Press **B** to write every database and every account to a single file, `~/phpup
 ```bash
 mysql -u root < ~/phpup/dumps/phpup-backup-<version>-<timestamp>.sql
 ```
+From a script: `phpup backup` writes the same file and prints its path, and `phpup backup --json` returns the path, version, database and user counts, and byte size.
 
 ## Configuration
 

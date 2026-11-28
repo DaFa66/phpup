@@ -170,6 +170,7 @@ Every verb accepts flags, so a GUI, tray app or CI job can drive phpup without t
 ```
 phpup status [--json] [--fast] [--watch N] [--quiet]
 phpup start|stop|restart [--json] [--quiet]
+phpup backup [--json] [--quiet]
 phpup switch [--to <stack>] [--add --path <dir>] [--list] [--dry-run] [--json]
 phpup version
 phpup help
@@ -186,8 +187,9 @@ phpup help
 - The status schema is versioned (`schema: 1`), always fully populated — unknown values are
   `null`, never omitted — and additive only.
 
-`install`, `update`, `delete` and `doctor` are reserved for v2, once they have non-interactive
-modes. `switch` is implemented now: released on both platforms in 2.5.6 and 1.3.5.
+`install`, `update`, `restore`, `delete` and `doctor` are reserved for v2, once they have
+non-interactive modes. `switch` is implemented now: released on both platforms in 2.5.6 and 1.3.5,
+and `backup` alongside it.
 The full contract — schema, stream rules, semantics — is in
 [`docs/CLI.md`](docs/CLI.md).
 

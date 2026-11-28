@@ -200,6 +200,8 @@ It uses MariaDB's own `mariadb-dump.exe` from the active install, takes a consis
 C:\phpup\mariadb\bin\mariadb.exe -u root --skip-password < C:\phpup\dumps\phpup-backup-<version>-<timestamp>.sql
 ```
 
+From a script: `phpup backup` writes the same file and prints its path, and `phpup backup --json` returns the path, version, database and user counts, and byte size.
+
 ## Safe Delete
 
 Pressing **D** stops services, backs up your config files (`httpd.conf`, `php.ini`, `my.ini`, `config.inc.php`) to `config_backup\` and MariaDB data to `data_backup\`, then removes Apache, PHP, MariaDB, and phpMyAdmin. Your website files in `www\` are untouched.

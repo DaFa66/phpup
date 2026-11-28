@@ -120,5 +120,17 @@ grep -q 'offer_dump_restore' phpup.sh && [ "$(grep -c '^        offer_dump_resto
     && { PASS=$((PASS+1)); printf '  [PASS] called from both Install and Update\n'; } \
     || { FAIL=$((FAIL+1)); printf '  [FAIL] called from both Install and Update\n'; }
 
+printf '\nThe CLI verb:\n'
+grep -q 'status|start|stop|restart|switch|backup|version|help' phpup.sh \
+    && { PASS=$((PASS+1)); printf '  [PASS] backup is accepted as a verb\n'; } \
+    || { FAIL=$((FAIL+1)); printf '  [FAIL] backup is accepted as a verb\n'; }
+grep -q 'backup)  cmd_cli_backup' phpup.sh \
+    && { PASS=$((PASS+1)); printf '  [PASS] dispatch reaches cmd_cli_backup\n'; } \
+    || { FAIL=$((FAIL+1)); printf '  [FAIL] dispatch reaches cmd_cli_backup\n'; }
+grep -q '"schema":1,"ok":true,"file"' phpup.sh \
+    && { PASS=$((PASS+1)); printf '  [PASS] --json carries the file and the counts\n'; } \
+    || { FAIL=$((FAIL+1)); printf '  [FAIL] --json carries the file and the counts\n'; }
+grep -q 'CLI_QUIET == 1 ]] ; then' phpup.sh || true
+
 printf '\nRESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
